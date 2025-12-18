@@ -1,0 +1,139 @@
+'use client';
+
+import React from 'react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
+import { RegulationData, RegulationValue, Plot } from '@/lib/types';
+import { ScrollArea } from './ui/scroll-area';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
+import { Badge } from './ui/badge';
+import { BookCopy, Building, Scaling, Droplets, ShieldCheck, Banknote, AlertTriangle } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { useBuildingStore } from '@/hooks/use-building-store';
+
+
+interface RegulationViewerModalProps {
+    isOpen: boolean;
+    onOpenChange: (isOpen: boolean) => void;
+    plot: Plot;
+}
+
+const renderValue = (value: any) => {
+    if (typeof value === 'object' && value !== null) {
+        return <Badge variant="secondary">{Object.entries(value).map(([k, v]) => `${k}: ${v}`).join(', ')}</Badge>;
+    }
+    return String(value);
+};
+
+function RegulationCategory({ title, data, icon: Icon }: { title: string, data: { [key: string]: RegulationValue }, icon: React.ElementType }) {
+    return (
+        <AccordionItem value={title}>
+            <AccordionTrigger className="text-lg font-semibold">
+                <div className="flex items-center gap-3">
+                    <Icon className="h-5 w-5 text-primary" />
+                    <span>{title}</span>
+                </div>
+            </AccordionTrigger>
+            <AccordionContent>
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>Parameter</TableHead>
+                            <TableHead>Value</TableHead>
+                            <TableHead>Unit</TableHead>
+                            <TableHead>Min</TableHead>
+                            <TableHead>Max</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {Object.entries(data).map(([key, reg]) => (
+                            <TableRow key={key}>
+                                <TableCell className="font-medium capitalize">{key.replace(/_/g, ' ')}</TableCell>
+                                <TableCell>{renderValue(reg.value)}</TableCell>
+                                <TableCell className="text-muted-foreground">{reg.unit}</TableCell>
+                                <TableCell>{reg.min !== undefined ? renderValue(reg.min) : 'N/A'}</TableCell>
+                                <TableCell>{reg.max !== undefined ? renderValue(reg.max) : 'N/A'}</TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            </AccordionContent>
+        </AccordionItem>
+    );
+}
+
+export function RegulationViewerModal({ isOpen, onOpenChange, plot }: RegulationViewerModalProps) {
+    const { actions } = useBuildingStore();
+
+    if (!plot) return null;
+
+    const { availableRegulations, selectedRegulationType } = plot;
+    const regulation = availableRegulations?.find(r => r.type === selectedRegulationType) || availableRegulations?.[0];
+
+    const handleTypeChange = (newType: string) => {
+        actions.updatePlot(plot.id, { selectedRegulationType: newType });
+    }
+
+    const categories = regulation ? [
+        { key: 'geometry', title: 'Geometry & Zoning', icon: Scaling, data: regulation.geometry },
+        { key: 'facilities', title: 'Facilities', icon: Building, data: regulation.facilities },
+        { key: 'sustainability', title: 'Sustainability', icon: Droplets, data: regulation.sustainability },
+        { key: 'safety_and_services', title: 'Safety & Services', icon: ShieldCheck, data: regulation.safety_and_services },
+        { key: 'administration', title: 'Administration', icon: Banknote, data: regulation.administration },
+    ] : [];
+
+    return (
+        <Dialog open={isOpen} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-4xl h-[80vh] flex flex-col">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <BookCopy className="text-primary"/>
+                        Development Regulations
+                    </DialogTitle>
+                    <DialogDescription>
+                        Displaying rules for <span className="font-semibold text-primary">{plot.location}</span>
+                    </DialogDescription>
+                </DialogHeader>
+                
+                {availableRegulations && availableRegulations.length > 0 ? (
+                    <>
+                         <div className='flex items-center gap-4'>
+                            <span className="text-sm font-medium">Regulation Type:</span>
+                            <Select value={selectedRegulationType} onValueChange={handleTypeChange}>
+                                <SelectTrigger className="w-[250px]">
+                                    <SelectValue placeholder="Select a type..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {availableRegulations.map(reg => (
+                                        <SelectItem key={reg.type} value={reg.type}>{reg.type}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        {regulation && (
+                             <div className="flex-1 overflow-hidden mt-4">
+                                <ScrollArea className="h-full pr-6">
+                                    <Accordion type="multiple" defaultValue={categories.map(c => c.title)} className="w-full">
+                                        {categories.map(cat => (
+                                            cat.data && <RegulationCategory key={cat.key} title={cat.title} data={cat.data} icon={cat.icon} />
+                                        ))}
+                                    </Accordion>
+                                </ScrollArea>
+                            </div>
+                        )}
+                    </>
+                ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center text-muted-foreground bg-secondary/30 rounded-lg">
+                        <AlertTriangle className="h-10 w-10 mb-4 text-amber-500"/>
+                        <h3 className="text-lg font-semibold text-foreground">No Regulations Found</h3>
+                        <p className="max-w-md">
+                            No specific regulations were found for {`"${plot.location}"`}. The application is using default values.
+                            You can add new regulations for this location in the Admin Panel.
+                        </p>
+                    </div>
+                )}
+            </DialogContent>
+        </Dialog>
+    );
+}
