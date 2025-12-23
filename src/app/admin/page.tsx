@@ -7,7 +7,10 @@ import { useEffect } from 'react';
 import { AdminPanel } from '@/components/admin-panel';
 import { Building2, ShieldAlert } from 'lucide-react';
 
-const ADMIN_EMAIL = 'screentechnicals@gmail.com';
+const ADMIN_EMAILS = [
+    'screentechnicals@gmail.com',
+    'anon.skulll@gmail.com'
+];
 
 export default function AdminPage() {
     const { user, isLoading } = useAuth();
@@ -23,10 +26,10 @@ export default function AdminPage() {
     }
 
     if (!user) {
-         return <div className="flex items-center justify-center h-screen">Redirecting...</div>;
+        return <div className="flex items-center justify-center h-screen">Redirecting...</div>;
     }
 
-    if (user.email !== ADMIN_EMAIL) {
+    if (!ADMIN_EMAILS.includes(user.email || '')) {
         return (
             <div className="flex flex-col items-center justify-center h-screen bg-background text-foreground">
                 <div className='flex items-center gap-2'>

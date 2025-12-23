@@ -46,7 +46,9 @@ interface BuildingState {
     isLoading: boolean;
     isSaving: boolean;
     isGeneratingAi: boolean;
+    mapLocation: string | null;
     actions: {
+        setMapLocation: (location: string | null) => void;
         loadProjects: () => Promise<void>;
         createProject: (name: string, totalPlotArea?: number) => Promise<Project | null>;
         deleteProject: (projectId: string) => Promise<void>;
@@ -289,7 +291,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     isLoading: true,
     isSaving: false,
     isGeneratingAi: false,
+    mapLocation: null,
     actions: {
+        setMapLocation: (location) => set({ mapLocation: location }),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
         loadProjects: async () => {

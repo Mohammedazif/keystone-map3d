@@ -1,11 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { assessSoilSuitability, type SoilSuitabilityInput } from '@/ai/flows/ai-soil-suitability-assessment';
+import { ragChat } from '@/ai/flows/rag-chat';
 import { z } from 'zod';
 
 const chatRequestSchema = z.object({
-  buildingDescription: z.string(),
-  soilPh: z.number(),
-  soilBd: z.number(),
+  query: z.string(),
+  isGeneralMode: z.boolean().optional(),
+  buildingContext: z.any().optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -17,15 +17,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid request body', details: parsedBody.error.flatten() }, { status: 400 });
     }
 
-    const input: SoilSuitabilityInput = {
-      soilPh: parsedBody.data.soilPh,
-      soilBd: parsedBody.data.soilBd,
-      buildingDescription: parsedBody.data.buildingDescription,
-    };
-    
-    const result = await assessSoilSuitability(input);
+    const { query, buildingContext, isGeneralMode } = parsedBody.data;
 
-    return NextResponse.json(result);
+    // Convert buildingContext to string if it's an object
+    const contextString = typeof buildingContext === 'object'
+      ? JSON.stringify(buildingContext, null, 2)
+      : buildingContext;
+
+    const answer = await ragChat({
+      query,
+      buildingContext: contextString,
+      isGeneralMode: isGeneralMode
+    });
+
+    return NextResponse.json({ text: answer });
 
   } catch (error) {
     console.error('Chat API error:', error);

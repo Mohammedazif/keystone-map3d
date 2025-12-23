@@ -6,24 +6,25 @@ import { collection, doc, getDocs, setDoc, writeBatch, deleteDoc, getDoc } from 
 import type { RegulationData } from '@/lib/types';
 import { Button } from './ui/button';
 import { toast } from '@/hooks/use-toast';
-import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload } from 'lucide-react';
 import { AdminDetailsSidebar } from './admin-details-sidebar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { cn } from '@/lib/utils';
 import { NewRegulationDialog } from './new-regulation-dialog';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Skeleton } from './ui/skeleton';
 import { produce } from 'immer';
+import { UploadRegulationDialog } from './upload-regulation-dialog';
 
 
 const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
@@ -56,6 +57,7 @@ export function AdminPanel() {
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
     const [isNewRegDialogOpen, setIsNewRegDialogOpen] = useState(false);
+    const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
     const [deletingId, setDeletingId] = useState<string | null>(null);
 
     const regulationsCollection = collection(db, 'regulations');
@@ -79,20 +81,19 @@ export function AdminPanel() {
     }, []);
 
     useEffect(() => {
-      // When the selected regulation changes, close the category sidebar
-      setSelectedCategory(null);
+        setSelectedCategory(null);
     }, [selectedRegulation]);
 
     const categoryDetails = useMemo(() => {
         if (!selectedRegulation || !selectedCategory) return null;
-        
+
         const categoryKey = selectedCategory as keyof Omit<RegulationData, 'location' | 'type'>;
         const categoryData = selectedRegulation[categoryKey];
         const defaultCategoryData = DEFAULT_REGULATION_DATA[categoryKey];
 
         return {
             title: selectedCategory.charAt(0).toUpperCase() + selectedCategory.slice(1).replace(/_/g, ' '),
-            data: categoryData || defaultCategoryData, // Use default if data is missing
+            data: categoryData || defaultCategoryData,
             path: selectedCategory,
         }
     }, [selectedRegulation, selectedCategory]);
@@ -112,9 +113,9 @@ export function AdminPanel() {
             current[keys[keys.length - 1]] = value;
         }));
     };
-    
+
     const handleFullUpdate = (updatedData: any) => {
-       if (!selectedRegulation || !selectedCategory) return;
+        if (!selectedRegulation || !selectedCategory) return;
         setSelectedRegulation(produce(draft => {
             if (draft) {
                 (draft as any)[selectedCategory!] = updatedData;
@@ -129,11 +130,10 @@ export function AdminPanel() {
             const docRef = doc(regulationsCollection, `${selectedRegulation.location}-${selectedRegulation.type}`);
             await setDoc(docRef, selectedRegulation, { merge: true });
 
-            // Update the main regulations list state as well
-            setRegulations(prevRegs => prevRegs.map(reg => 
+            setRegulations(prevRegs => prevRegs.map(reg =>
                 (reg.location === selectedRegulation.location && reg.type === selectedRegulation.type)
-                ? selectedRegulation 
-                : reg
+                    ? selectedRegulation
+                    : reg
             ));
 
             toast({ title: 'Success', description: 'Changes saved successfully.' });
@@ -144,7 +144,7 @@ export function AdminPanel() {
             setIsSaving(false);
         }
     };
-    
+
     const handleCreateRegulation = async (location: string, type: string) => {
         setIsSaving(true);
         const docId = `${location}-${type}`;
@@ -167,8 +167,8 @@ export function AdminPanel() {
             setSelectedRegulation(newRegulation);
             toast({ title: 'Success!', description: `${location} - ${type} has been created.` });
         } catch (error) {
-             console.error("Error creating regulation:", error);
-             toast({ variant: 'destructive', title: 'Error', description: 'Could not create new regulation.' });
+            console.error("Error creating regulation:", error);
+            toast({ variant: 'destructive', title: 'Error', description: 'Could not create new regulation.' });
         } finally {
             setIsSaving(false);
             setIsNewRegDialogOpen(false);
@@ -192,6 +192,28 @@ export function AdminPanel() {
             setDeletingId(null);
         }
     }
+
+    const handleExtractedRegulation = async (extractedData: Partial<RegulationData>) => {
+        console.log('Received extracted data in admin panel:', extractedData);
+
+        if (!extractedData.location || !extractedData.type) {
+            console.error('Missing location or type:', { location: extractedData.location, type: extractedData.type });
+            toast({ variant: 'destructive', title: 'Error', description: 'Location and type are required.' });
+            return;
+        }
+
+        const newRegulation: RegulationData = {
+            ...JSON.parse(JSON.stringify(DEFAULT_REGULATION_DATA)),
+            ...extractedData,
+            location: extractedData.location,
+            type: extractedData.type,
+        };
+
+        console.log('Created new regulation:', newRegulation);
+
+        setSelectedRegulation(newRegulation);
+        toast({ title: 'Data Loaded', description: 'Review and save the extracted regulation data.' });
+    };
 
 
     const handleBackToList = () => {
@@ -238,31 +260,38 @@ export function AdminPanel() {
 
     return (
         <div className="min-h-screen bg-background text-foreground flex">
-             <div className="flex-1 transition-all duration-300">
+            <div className="flex-1 transition-all duration-300">
                 <header className="p-4 border-b border-border sticky top-0 bg-background/80 backdrop-blur-sm z-10">
                     <div className="container mx-auto flex items-center justify-between">
                         <h1 className="text-2xl font-headline font-bold">Regulations Admin</h1>
                         <div className="flex items-center gap-4">
                             {selectedRegulation && (
                                 <>
-                                 <Button variant="outline" onClick={handleBackToList}>Back to List</Button>
-                                 <Button onClick={handleSaveChanges} disabled={isSaving}>
-                                     {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                     Save Changes
-                                 </Button>
+                                    <Button variant="outline" onClick={handleBackToList}>Back to List</Button>
+                                    <Button onClick={handleSaveChanges} disabled={isSaving}>
+                                        {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                        Save Changes
+                                    </Button>
                                 </>
                             )}
-                             {!selectedRegulation && (
-                                <Button onClick={() => setIsNewRegDialogOpen(true)}><Plus className="mr-2 h-4 w-4" /> New Regulation</Button>
+                            {!selectedRegulation && (
+                                <div className="flex gap-2">
+                                    <Button onClick={() => setIsNewRegDialogOpen(true)}>
+                                        <Plus className="mr-2 h-4 w-4" /> New Regulation
+                                    </Button>
+                                    <Button variant="outline" onClick={() => setIsUploadDialogOpen(true)}>
+                                        <Upload className="mr-2 h-4 w-4" /> Upload Document
+                                    </Button>
+                                </div>
                             )}
                         </div>
                     </div>
                 </header>
                 <main className="container mx-auto py-8">
-                     {!selectedRegulation ? (
-                         <>
+                    {!selectedRegulation ? (
+                        <>
                             <h2 className="text-xl font-semibold mb-6">Existing Regulations</h2>
-                             {regulations.length > 0 ? (
+                            {regulations.length > 0 ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                                     {regulations.map(reg => {
                                         const docId = `${reg.location}-${reg.type}`;
@@ -281,21 +310,21 @@ export function AdminPanel() {
                                                     <AlertDialog>
                                                         <AlertDialogTrigger asChild>
                                                             <Button variant="ghost" size="icon" className="text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()} disabled={isDeleting}>
-                                                                {isDeleting ? <Loader2 className="h-4 w-4 animate-spin"/> : <Trash2 className="h-4 w-4"/>}
+                                                                {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                                                             </Button>
                                                         </AlertDialogTrigger>
                                                         <AlertDialogContent>
                                                             <AlertDialogHeader>
-                                                            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                                                            <AlertDialogDescription>
-                                                                This action cannot be undone. This will permanently delete the regulation for {reg.location} - {reg.type}.
-                                                            </AlertDialogDescription>
+                                                                <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                                                                <AlertDialogDescription>
+                                                                    This action cannot be undone. This will permanently delete the regulation for {reg.location} - {reg.type}.
+                                                                </AlertDialogDescription>
                                                             </AlertDialogHeader>
                                                             <AlertDialogFooter>
-                                                            <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
-                                                            <AlertDialogAction onClick={(e) => { e.stopPropagation(); handleDeleteRegulation(reg.location, reg.type); }}>
-                                                                Delete
-                                                            </AlertDialogAction>
+                                                                <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
+                                                                <AlertDialogAction onClick={(e) => { e.stopPropagation(); handleDeleteRegulation(reg.location, reg.type); }}>
+                                                                    Delete
+                                                                </AlertDialogAction>
                                                             </AlertDialogFooter>
                                                         </AlertDialogContent>
                                                     </AlertDialog>
@@ -304,7 +333,7 @@ export function AdminPanel() {
                                         );
                                     })}
                                 </div>
-                             ) : (
+                            ) : (
                                 <div className="text-center py-16 border-2 border-dashed border-border rounded-lg flex flex-col items-center justify-center">
                                     <p className="text-muted-foreground mb-4">No regulations found.</p>
                                     <Button onClick={() => setIsNewRegDialogOpen(true)}>
@@ -312,9 +341,9 @@ export function AdminPanel() {
                                         Create Your First Regulation
                                     </Button>
                                 </div>
-                             )}
+                            )}
                         </>
-                     ) : (
+                    ) : (
                         <>
                             <div className="mb-8">
                                 <h2 className="text-2xl font-bold">{selectedRegulation.location} - {selectedRegulation.type}</h2>
@@ -338,7 +367,7 @@ export function AdminPanel() {
                     )}
                 </main>
             </div>
-             {categoryDetails && selectedRegulation && (
+            {categoryDetails && selectedRegulation && (
                 <AdminDetailsSidebar
                     title={categoryDetails.title}
                     data={categoryDetails.data as any}
@@ -348,14 +377,17 @@ export function AdminPanel() {
                     onClose={() => setSelectedCategory(null)}
                 />
             )}
-            <NewRegulationDialog 
+            <NewRegulationDialog
                 isOpen={isNewRegDialogOpen}
                 onOpenChange={setIsNewRegDialogOpen}
                 onCreate={handleCreateRegulation}
                 isSaving={isSaving}
             />
+            <UploadRegulationDialog
+                isOpen={isUploadDialogOpen}
+                onOpenChange={setIsUploadDialogOpen}
+                onExtracted={handleExtractedRegulation}
+            />
         </div>
     );
 }
-
-    
