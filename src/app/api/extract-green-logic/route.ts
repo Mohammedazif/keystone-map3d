@@ -8,34 +8,6 @@ const pdf = require('pdf-parse');
 
 import { createWorker } from 'tesseract.js';
 
-async function performOCR(buffer: Buffer): Promise<string> {
-    try {
-        console.log('[GreenLogic] Starting OCR...');
-        // Dynamic import for pdf-img-convert
-        const pdf2img = await import('pdf-img-convert');
-
-        // Convert PDF pages to images
-        const images = await pdf2img.default.convert(buffer);
-        console.log(`[GreenLogic] Converted PDF to ${images.length} images for OCR`);
-
-        const worker = await createWorker('eng');
-        let fullText = '';
-
-        for (let i = 0; i < images.length; i++) {
-            // pdf-img-convert returns Uint8Array or Buffer. worker.recognize takes Buffer/string/etc.
-            const ret = await worker.recognize(Buffer.from(images[i]));
-            fullText += ret.data.text + '\n\n';
-            console.log(`[GreenLogic] OCR processed page ${i + 1}/${images.length}`);
-        }
-
-        await worker.terminate();
-        return fullText;
-    } catch (e) {
-        console.error('[GreenLogic] OCR Extraction Failed:', e);
-        return '';
-    }
-}
-
 async function extractTextFromFile(file: File): Promise<string> {
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileName = file.name.toLowerCase();
@@ -50,12 +22,10 @@ async function extractTextFromFile(file: File): Promise<string> {
             console.warn('[GreenLogic] Standard PDF parse failed, trying OCR...', e);
         }
 
-        // If standard parsing yielded little to no text, try OCR
+        // If standard parsing yielded little to no text, warn the user
         if (!text || text.trim().length < 100) {
-            console.log('[GreenLogic] Low text content detected, attempting OCR...');
-            const ocrText = await performOCR(buffer);
-            // Append OCR text (or use it if primary was empty)
-            text = (text || '') + '\n' + ocrText;
+            console.warn('[GreenLogic] Low text content detected. This might be a scanned PDF. OCR is currently disabled for Vercel compatibility.');
+            text = (text || '') + '\n[SYSTEM WARNING: This document appears to be a scanned image or has no selectable text. OCR is currently disabled.]';
         }
     } else if (fileName.endsWith('.docx')) {
         const result = await mammoth.extractRawText({ buffer });
