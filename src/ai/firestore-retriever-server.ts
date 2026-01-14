@@ -10,12 +10,21 @@ import path from 'path';
 // Initialize Firebase Admin SDK
 if (!getApps().length) {
     try {
-        const keyPath = path.resolve(process.cwd(), 'firebase-admin-key.json');
-        console.log('[Firebase Admin] Initializing with key:', keyPath);
-        initializeApp({
-            credential: cert(keyPath),
-            projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'keystone-map3d',
-        });
+        if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+            console.log('[Firebase Admin] Initializing with Service Account environment variable');
+            const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            initializeApp({
+                credential: cert(serviceAccount),
+                projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'keystone-map3d',
+            });
+        } else {
+            const keyPath = path.resolve(process.cwd(), 'firebase-admin-key.json');
+            console.log('[Firebase Admin] Initializing with key file:', keyPath);
+            initializeApp({
+                credential: cert(keyPath),
+                projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'keystone-map3d',
+            });
+        }
         console.log('[Firebase Admin] Initialization successful');
     } catch (error) {
         console.error('Failed to initialize Firebase Admin:', error);
