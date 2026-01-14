@@ -1,16 +1,22 @@
-
 'use client';
 import { useEffect, useState, useMemo } from 'react';
 import { db } from '@/lib/firebase';
 import { collection, doc, getDocs, setDoc, writeBatch, deleteDoc, getDoc } from 'firebase/firestore';
-import type { RegulationData } from '@/lib/types';
+import type { RegulationData, GreenRegulationData, VastuRegulationData } from '@/lib/types';
 import { Button } from './ui/button';
 import { toast } from '@/hooks/use-toast';
-import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload } from 'lucide-react';
+import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload, Leaf, Compass } from 'lucide-react';
 import { AdminDetailsSidebar } from './admin-details-sidebar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { cn } from '@/lib/utils';
 import { NewRegulationDialog } from './new-regulation-dialog';
+import {
+    Accordion,
+    AccordionContent,
+    AccordionItem,
+    AccordionTrigger,
+} from "@/components/ui/accordion"
+import { Badge } from "@/components/ui/badge"
 import {
     AlertDialog,
     AlertDialogAction,
@@ -25,7 +31,13 @@ import {
 import { Skeleton } from './ui/skeleton';
 import { produce } from 'immer';
 import { UploadRegulationDialog } from './upload-regulation-dialog';
-
+import { UploadGreenRegulationDialog } from './upload-green-regulation-dialog';
+import { UploadVastuDialog } from './upload-vastu-dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { UnitTemplatesPanel } from './unit-templates-panel';
+import { CostRevenuePanel } from './cost-revenue-panel';
+import { TimeEstimationPanel } from './time-estimation-panel';
+import { PlanningParamsPanel } from './planning-params-panel';
 
 const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
     geometry: {
@@ -33,6 +45,7 @@ const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
         road_width: { desc: "Adjacent road width", unit: "m", value: 9, min: 6, max: 30 },
         max_ground_coverage: { desc: "Maximum ground coverage", unit: "%", value: 40, min: 10, max: 80 },
         floor_area_ratio: { desc: "Floor Area Ratio (FAR)", unit: "", value: 1.8, min: 0.5, max: 5 },
+        max_height: { desc: "Maximum building height", unit: "m", value: 30, min: 10, max: 100 },
     },
     facilities: {
         parking: { desc: "Parking requirements per unit", unit: "spaces/unit", value: 1, min: 0.5, max: 3 },
@@ -52,15 +65,24 @@ const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
 
 export function AdminPanel() {
     const [regulations, setRegulations] = useState<RegulationData[]>([]);
+    const [greenRegulations, setGreenRegulations] = useState<GreenRegulationData[]>([]);
+    const [vastuRegulations, setVastuRegulations] = useState<VastuRegulationData[]>([]);
+
     const [selectedRegulation, setSelectedRegulation] = useState<RegulationData | null>(null);
     const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
+
     const [isNewRegDialogOpen, setIsNewRegDialogOpen] = useState(false);
     const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
+    const [isUploadGreenDialogOpen, setIsUploadGreenDialogOpen] = useState(false);
+    const [isUploadVastuDialogOpen, setIsUploadVastuDialogOpen] = useState(false);
+
     const [deletingId, setDeletingId] = useState<string | null>(null);
 
     const regulationsCollection = collection(db, 'regulations');
+    const greenRegulationsCollection = collection(db, 'greenRegulations');
+    const vastuRegulationsCollection = collection(db, 'vastuRegulations');
 
     const fetchRegulations = async () => {
         setIsLoading(true);
@@ -68,6 +90,15 @@ export function AdminPanel() {
             const snapshot = await getDocs(regulationsCollection);
             const data = snapshot.docs.map(doc => doc.data() as RegulationData);
             setRegulations(data);
+
+            const greenSnapshot = await getDocs(greenRegulationsCollection);
+            const greenData = greenSnapshot.docs.map(doc => doc.data() as GreenRegulationData);
+            setGreenRegulations(greenData);
+
+            const vastuSnapshot = await getDocs(vastuRegulationsCollection);
+            const vastuData = vastuSnapshot.docs.map(doc => doc.data() as VastuRegulationData);
+            setVastuRegulations(vastuData);
+
         } catch (error) {
             console.error("Error fetching regulations:", error);
             toast({ variant: 'destructive', title: 'Error', description: 'Could not fetch regulations.' });
@@ -97,6 +128,21 @@ export function AdminPanel() {
             path: selectedCategory,
         }
     }, [selectedRegulation, selectedCategory]);
+
+    const groupedRegulations = useMemo(() => {
+        const groups: Record<string, RegulationData[]> = {};
+        regulations.forEach(reg => {
+            if (!groups[reg.location]) {
+                groups[reg.location] = [];
+            }
+            groups[reg.location].push(reg);
+        });
+        // Sort keys alphabetically
+        return Object.keys(groups).sort().reduce((acc, key) => {
+            acc[key] = groups[key];
+            return acc;
+        }, {} as Record<string, RegulationData[]>);
+    }, [regulations]);
 
     const handleUpdate = (path: string, value: any) => {
         setSelectedRegulation(produce(draft => {
@@ -193,26 +239,104 @@ export function AdminPanel() {
         }
     }
 
-    const handleExtractedRegulation = async (extractedData: Partial<RegulationData>) => {
-        console.log('Received extracted data in admin panel:', extractedData);
-
-        if (!extractedData.location || !extractedData.type) {
-            console.error('Missing location or type:', { location: extractedData.location, type: extractedData.type });
-            toast({ variant: 'destructive', title: 'Error', description: 'Location and type are required.' });
+    const handleExtractedRegulation = async (extractedDataArray: Partial<RegulationData>[]) => {
+        if (!extractedDataArray || extractedDataArray.length === 0) {
+            toast({ variant: 'destructive', title: 'Error', description: 'No regulations extracted.' });
             return;
         }
 
-        const newRegulation: RegulationData = {
-            ...JSON.parse(JSON.stringify(DEFAULT_REGULATION_DATA)),
-            ...extractedData,
-            location: extractedData.location,
-            type: extractedData.type,
-        };
+        try {
+            const batch = writeBatch(db);
+            let savedCount = 0;
 
-        console.log('Created new regulation:', newRegulation);
+            for (const extractedData of extractedDataArray) {
+                if (!extractedData.location || !extractedData.type) {
+                    continue;
+                }
 
-        setSelectedRegulation(newRegulation);
-        toast({ title: 'Data Loaded', description: 'Review and save the extracted regulation data.' });
+                const newRegulation: RegulationData = {
+                    ...JSON.parse(JSON.stringify(DEFAULT_REGULATION_DATA)),
+                    ...extractedData,
+                    location: extractedData.location,
+                    type: extractedData.type,
+                };
+
+                const regulationId = `${newRegulation.location}-${newRegulation.type}`.replace(/\s+/g, '-');
+                const regulationRef = doc(db, 'regulations', regulationId);
+                batch.set(regulationRef, newRegulation);
+                savedCount++;
+            }
+
+            if (savedCount === 0) {
+                toast({ variant: 'destructive', title: 'Error', description: 'No valid regulations to save.' });
+                return;
+            }
+
+            await batch.commit();
+            await fetchRegulations();
+            toast({
+                title: 'Success',
+                description: `Saved ${savedCount} regulation${savedCount > 1 ? 's' : ''} to database.`
+            });
+        } catch (error) {
+            console.error('Error saving regulations:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'Failed to save regulations.' });
+        }
+    };
+
+    const handleSaveGreenRegulation = async (data: GreenRegulationData) => {
+        try {
+            const id = data.id || `${data.certificationType}-${data.name.replace(/\s+/g, '-')}`.toLowerCase();
+            const docRef = doc(greenRegulationsCollection, id);
+
+            const dataToSave = {
+                ...data,
+                id,
+                lastModified: Date.now()
+            };
+
+            await setDoc(docRef, dataToSave);
+            setGreenRegulations(prev => [...prev.filter(p => p.id !== id), dataToSave]);
+
+            toast({ title: 'Success', description: 'Green regulations saved successfully.' });
+            setIsUploadGreenDialogOpen(false);
+        } catch (error) {
+            console.error('Error saving green regulation:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'Failed to save green regulations.' });
+        }
+    };
+
+    const handleSaveVastuRegulation = async (data: VastuRegulationData) => {
+        try {
+            const id = data.id || data.name.replace(/\s+/g, '-').toLowerCase();
+            const docRef = doc(vastuRegulationsCollection, id);
+
+            const dataToSave = {
+                ...data,
+                id,
+                lastModified: Date.now()
+            };
+
+            await setDoc(docRef, dataToSave);
+            setVastuRegulations(prev => [...prev.filter(p => p.id !== id), dataToSave]);
+
+            toast({ title: 'Success', description: 'Vastu guidelines saved successfully.' });
+            setIsUploadVastuDialogOpen(false);
+        } catch (error) {
+            console.error('Error saving vastu regulation:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'Could not save Vastu guidelines.' });
+        }
+    };
+
+    const handleDeleteGreenRegulation = async (id: string) => {
+        try {
+            await deleteDoc(doc(greenRegulationsCollection, id));
+            setGreenRegulations(prev => prev.filter(p => p.id !== id));
+            toast({ title: 'Success', description: 'Green regulation deleted.' });
+        } catch (error) {
+            console.error('Error deleting green regulation:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete.' });
+        }
     };
 
 
@@ -232,28 +356,8 @@ export function AdminPanel() {
 
     if (isLoading) {
         return (
-            <div className="min-h-screen bg-background text-foreground flex">
-                <div className="flex-1">
-                    <header className="p-4 border-b border-border sticky top-0 bg-background/80 backdrop-blur-sm z-10">
-                        <div className="container mx-auto flex items-center justify-between">
-                            <h1 className="text-2xl font-headline font-bold">Regulations Admin</h1>
-                            <Skeleton className="h-10 w-40" />
-                        </div>
-                    </header>
-                    <main className="container mx-auto py-8">
-                        <h2 className="text-xl font-semibold mb-6">Existing Regulations</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                            {[...Array(8)].map((_, i) => (
-                                <Card key={i}>
-                                    <CardHeader>
-                                        <Skeleton className="h-6 w-3/4" />
-                                        <Skeleton className="h-4 w-1/2" />
-                                    </CardHeader>
-                                </Card>
-                            ))}
-                        </div>
-                    </main>
-                </div>
+            <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin" />
             </div>
         );
     }
@@ -265,106 +369,294 @@ export function AdminPanel() {
                     <div className="container mx-auto flex items-center justify-between">
                         <h1 className="text-2xl font-headline font-bold">Regulations Admin</h1>
                         <div className="flex items-center gap-4">
-                            {selectedRegulation && (
-                                <>
-                                    <Button variant="outline" onClick={handleBackToList}>Back to List</Button>
-                                    <Button onClick={handleSaveChanges} disabled={isSaving}>
-                                        {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                        Save Changes
-                                    </Button>
-                                </>
-                            )}
-                            {!selectedRegulation && (
-                                <div className="flex gap-2">
-                                    <Button onClick={() => setIsNewRegDialogOpen(true)}>
-                                        <Plus className="mr-2 h-4 w-4" /> New Regulation
-                                    </Button>
-                                    <Button variant="outline" onClick={() => setIsUploadDialogOpen(true)}>
-                                        <Upload className="mr-2 h-4 w-4" /> Upload Document
-                                    </Button>
-                                </div>
-                            )}
+                            {/* Actions will appear in Tabs */}
                         </div>
                     </div>
                 </header>
                 <main className="container mx-auto py-8">
-                    {!selectedRegulation ? (
-                        <>
-                            <h2 className="text-xl font-semibold mb-6">Existing Regulations</h2>
-                            {regulations.length > 0 ? (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                                    {regulations.map(reg => {
-                                        const docId = `${reg.location}-${reg.type}`;
-                                        const isDeleting = deletingId === docId;
-                                        return (
+                    <Tabs defaultValue="building" className="w-full">
+                        <TabsList className="mb-4">
+                            <TabsTrigger value="building">Building Regulations</TabsTrigger>
+                            <TabsTrigger value="green">Green Regulations</TabsTrigger>
+                            <TabsTrigger value="vastu">Vastu Guidelines</TabsTrigger>
+                            <TabsTrigger value="units">Unit Types</TabsTrigger>
+                            <TabsTrigger value="costs">Cost & Revenue</TabsTrigger>
+                            <TabsTrigger value="time">Time & Schedule</TabsTrigger>
+                            <TabsTrigger value="planning">Planning Logic</TabsTrigger>
+                        </TabsList>
+
+                        <TabsContent value="building">
+                            {!selectedRegulation ? (
+                                <>
+                                    <div className="flex justify-between items-center mb-6">
+                                        <h2 className="text-xl font-semibold">Existing Regulations</h2>
+                                        <div className="flex gap-2">
+                                            <Button onClick={() => setIsNewRegDialogOpen(true)}>
+                                                <Plus className="mr-2 h-4 w-4" /> New Regulation
+                                            </Button>
+                                            <Button variant="outline" onClick={() => setIsUploadDialogOpen(true)}>
+                                                <Upload className="mr-2 h-4 w-4" /> Upload Document
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    {regulations.length > 0 ? (
+                                        <Accordion type="single" collapsible className="w-full space-y-4">
+                                            {Object.entries(groupedRegulations).map(([location, locationRegulations]) => (
+                                                <AccordionItem value={location} key={location} className="border rounded-lg bg-card px-4">
+                                                    <AccordionTrigger className="hover:no-underline py-4">
+                                                        <div className="flex items-center gap-4">
+                                                            <span className="text-xl font-semibold text-primary">{location}</span>
+                                                            <Badge variant="secondary" className="ml-2">{locationRegulations.length} Types</Badge>
+                                                        </div>
+                                                    </AccordionTrigger>
+                                                    <AccordionContent className="pt-2 pb-6">
+                                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pt-4">
+                                                            {locationRegulations.map(reg => {
+                                                                const docId = `${reg.location}-${reg.type}`;
+                                                                const isDeleting = deletingId === docId;
+                                                                return (
+                                                                    <Card
+                                                                        key={docId}
+                                                                        className="cursor-pointer hover:bg-secondary/50 transition-colors hover:shadow-lg relative group border-border/50"
+                                                                        onClick={() => setSelectedRegulation(reg)}
+                                                                    >
+                                                                        <CardHeader>
+                                                                            <div className="flex items-start justify-between">
+                                                                                <Badge variant="outline" className="mb-2">{reg.type}</Badge>
+                                                                                <AlertDialog>
+                                                                                    <AlertDialogTrigger asChild>
+                                                                                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity -mr-2 -mt-2" onClick={(e) => e.stopPropagation()} disabled={isDeleting}>
+                                                                                            {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                                                                                        </Button>
+                                                                                    </AlertDialogTrigger>
+                                                                                    <AlertDialogContent>
+                                                                                        <AlertDialogHeader>
+                                                                                            <AlertDialogTitle>Delete {reg.type}?</AlertDialogTitle>
+                                                                                            <AlertDialogTitle>Delete {reg.type} regulation?</AlertDialogTitle>
+                                                                                            <AlertDialogDescription>
+                                                                                                This will permanently delete the regulation for {reg.location} - {reg.type}.
+                                                                                            </AlertDialogDescription>
+                                                                                        </AlertDialogHeader>
+                                                                                        <AlertDialogFooter>
+                                                                                            <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
+                                                                                            <AlertDialogAction className="bg-destructive hover:bg-destructive/90" onClick={(e) => { e.stopPropagation(); handleDeleteRegulation(reg.location, reg.type); }}>
+                                                                                                Delete
+                                                                                            </AlertDialogAction>
+                                                                                        </AlertDialogFooter>
+                                                                                    </AlertDialogContent>
+                                                                                </AlertDialog>
+                                                                            </div>
+                                                                            <div className="space-y-1">
+                                                                                <div className="text-sm text-muted-foreground flex justify-between">
+                                                                                    <span>Max Height:</span>
+                                                                                    <span className="font-medium text-foreground">{reg.geometry?.max_height?.value || '-'}m</span>
+                                                                                </div>
+                                                                                <div className="text-sm text-muted-foreground flex justify-between">
+                                                                                    <span>FAR:</span>
+                                                                                    <span className="font-medium text-foreground">{reg.geometry?.floor_area_ratio?.value || '-'}</span>
+                                                                                </div>
+                                                                            </div>
+                                                                        </CardHeader>
+                                                                    </Card>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </AccordionContent>
+                                                </AccordionItem>
+                                            ))}
+                                        </Accordion>
+                                    ) : (
+                                        <div className="text-center py-16 border-2 border-dashed border-border rounded-lg">
+                                            <p className="text-muted-foreground mb-4">No regulations found.</p>
+                                        </div>
+                                    )}
+                                </>
+                            ) : (
+                                <>
+                                    <div className="flex items-center justify-between mb-8">
+                                        <div>
+                                            <h2 className="text-2xl font-bold">{selectedRegulation.location} - {selectedRegulation.type}</h2>
+                                            <p className="text-muted-foreground">Select a category to edit its parameters.</p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <Button variant="outline" onClick={handleBackToList}>Back to List</Button>
+                                            <Button onClick={handleSaveChanges} disabled={isSaving}>
+                                                {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                                Save Changes
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                                        {categories.map(({ key, icon: Icon }) => (
                                             <Card
-                                                key={docId}
-                                                className="cursor-pointer hover:bg-secondary/50 transition-colors hover:shadow-lg relative group"
-                                                onClick={() => setSelectedRegulation(reg)}
+                                                key={key}
+                                                className={cn("cursor-pointer hover:bg-secondary/50 transition-colors", selectedCategory === key && "ring-2 ring-primary")}
+                                                onClick={() => setSelectedCategory(key)}
                                             >
-                                                <CardHeader>
-                                                    <CardTitle>{reg.location}</CardTitle>
-                                                    <CardDescription>{reg.type}</CardDescription>
-                                                </CardHeader>
-                                                <div className="absolute top-2 right-2">
-                                                    <AlertDialog>
-                                                        <AlertDialogTrigger asChild>
-                                                            <Button variant="ghost" size="icon" className="text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()} disabled={isDeleting}>
-                                                                {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                                                            </Button>
-                                                        </AlertDialogTrigger>
-                                                        <AlertDialogContent>
-                                                            <AlertDialogHeader>
-                                                                <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                                                                <AlertDialogDescription>
-                                                                    This action cannot be undone. This will permanently delete the regulation for {reg.location} - {reg.type}.
-                                                                </AlertDialogDescription>
-                                                            </AlertDialogHeader>
-                                                            <AlertDialogFooter>
-                                                                <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
-                                                                <AlertDialogAction onClick={(e) => { e.stopPropagation(); handleDeleteRegulation(reg.location, reg.type); }}>
-                                                                    Delete
-                                                                </AlertDialogAction>
-                                                            </AlertDialogFooter>
-                                                        </AlertDialogContent>
-                                                    </AlertDialog>
+                                                <div className="p-6 flex flex-col items-center justify-center text-center gap-4">
+                                                    <Icon className="h-10 w-10 text-primary" />
+                                                    <h3 className="text-lg font-semibold capitalize">{key.replace(/_/g, ' ')}</h3>
                                                 </div>
                                             </Card>
-                                        );
-                                    })}
-                                </div>
-                            ) : (
-                                <div className="text-center py-16 border-2 border-dashed border-border rounded-lg flex flex-col items-center justify-center">
-                                    <p className="text-muted-foreground mb-4">No regulations found.</p>
-                                    <Button onClick={() => setIsNewRegDialogOpen(true)}>
-                                        <Plus className="mr-2 h-4 w-4" />
-                                        Create Your First Regulation
-                                    </Button>
-                                </div>
+                                        ))}
+                                    </div>
+                                </>
                             )}
-                        </>
-                    ) : (
-                        <>
-                            <div className="mb-8">
-                                <h2 className="text-2xl font-bold">{selectedRegulation.location} - {selectedRegulation.type}</h2>
-                                <p className="text-muted-foreground">Select a category to edit its parameters.</p>
+                        </TabsContent>
+
+                        <TabsContent value="green">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-xl font-semibold">Green Building Regulations</h2>
+                                <Button variant="outline" onClick={() => setIsUploadGreenDialogOpen(true)}>
+                                    <Leaf className="mr-2 h-4 w-4" /> Upload Green Document
+                                </Button>
                             </div>
+
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                                {categories.map(({ key, icon: Icon }) => (
-                                    <Card
-                                        key={key}
-                                        className={cn("cursor-pointer hover:bg-secondary/50 transition-colors", selectedCategory === key && "ring-2 ring-primary")}
-                                        onClick={() => setSelectedCategory(key)}
-                                    >
-                                        <div className="p-6 flex flex-col items-center justify-center text-center gap-4">
-                                            <Icon className="h-10 w-10 text-primary" />
-                                            <h3 className="text-lg font-semibold capitalize">{key.replace(/_/g, ' ')}</h3>
-                                        </div>
+                                {greenRegulations.map(reg => (
+                                    <Card key={reg.id} className="relative group border-border/50">
+                                        <CardHeader>
+                                            <div className="flex justify-between items-start">
+                                                <Badge variant="default">{reg.certificationType}</Badge>
+                                                <AlertDialog>
+                                                    <AlertDialogTrigger asChild>
+                                                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity -mr-2 -mt-2">
+                                                            <Trash2 className="h-3 w-3" />
+                                                        </Button>
+                                                    </AlertDialogTrigger>
+                                                    <AlertDialogContent>
+                                                        <AlertDialogHeader>
+                                                            <AlertDialogTitle>Delete {reg.name}?</AlertDialogTitle>
+                                                            <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
+                                                        </AlertDialogHeader>
+                                                        <AlertDialogFooter>
+                                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                            <AlertDialogAction className="bg-destructive" onClick={() => reg.id && handleDeleteGreenRegulation(reg.id)}>Delete</AlertDialogAction>
+                                                        </AlertDialogFooter>
+                                                    </AlertDialogContent>
+                                                </AlertDialog>
+                                            </div>
+                                            <CardTitle className="text-base mt-2">{reg.name}</CardTitle>
+                                        </CardHeader>
+                                        <CardContent>
+                                            <div className="space-y-4 text-sm">
+                                                <div className="space-y-2">
+                                                    <div className="flex justify-between">
+                                                        <span className="text-muted-foreground">Min Open Space:</span>
+                                                        <span className="font-mono font-medium">{reg.constraints.minOpenSpace ? `${(reg.constraints.minOpenSpace * 100).toFixed(0)}%` : '-'}</span>
+                                                    </div>
+                                                    <div className="flex justify-between">
+                                                        <span className="text-muted-foreground">Max Coverage:</span>
+                                                        <span className="font-mono font-medium">{reg.constraints.maxGroundCoverage ? `${(reg.constraints.maxGroundCoverage * 100).toFixed(0)}%` : '-'}</span>
+                                                    </div>
+                                                    <div className="flex justify-between">
+                                                        <span className="text-muted-foreground">Min Green Cover:</span>
+                                                        <span className="font-mono font-medium">{reg.constraints.minGreenCover ? `${(reg.constraints.minGreenCover * 100).toFixed(0)}%` : '-'}</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Detailed Categories */}
+                                                {reg.categories && reg.categories.length > 0 && (
+                                                    <Accordion type="single" collapsible className="w-full border-t pt-2">
+                                                        {reg.categories.map((category, idx) => (
+                                                            <AccordionItem key={idx} value={`item-${idx}`} className="border-b-0">
+                                                                <AccordionTrigger className="py-2 text-xs hover:no-underline">
+                                                                    <div className="flex justify-between w-full pr-2">
+                                                                        <span>{category.name}</span>
+                                                                        <span className="text-muted-foreground">{category.credits.length}</span>
+                                                                    </div>
+                                                                </AccordionTrigger>
+                                                                <AccordionContent>
+                                                                    <div className="space-y-2 pl-2">
+                                                                        {category.credits.map((credit, cIdx) => (
+                                                                            <div key={cIdx} className="text-xs border-l-2 border-primary/20 pl-2 py-1">
+                                                                                <div className="font-medium">{credit.code} {credit.name}</div>
+                                                                                <div className="flex gap-2 text-[10px] text-muted-foreground mt-0.5">
+                                                                                    {credit.type === 'mandatory' && <span className="text-destructive font-semibold">MANDATORY</span>}
+                                                                                    {credit.points && <span>{credit.points} Pts</span>}
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </AccordionContent>
+                                                            </AccordionItem>
+                                                        ))}
+                                                    </Accordion>
+                                                )}
+                                            </div>
+                                        </CardContent>
                                     </Card>
                                 ))}
                             </div>
-                        </>
-                    )}
+                            {greenRegulations.length === 0 && (
+                                <div className="text-center py-16 border-2 border-dashed border-border rounded-lg">
+                                    <p className="text-muted-foreground mb-4">No Green Regulations found.</p>
+                                </div>
+                            )}
+                        </TabsContent>
+
+                        <TabsContent value="vastu">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-xl font-semibold">Vastu Shastra Guidelines</h2>
+                                <Button variant="outline" onClick={() => setIsUploadVastuDialogOpen(true)}>
+                                    <Compass className="mr-2 h-4 w-4" /> Upload Vastu PDF
+                                </Button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                                {vastuRegulations.map(reg => (
+                                    <Card key={reg.id || reg.name} className="relative group border-border/50">
+                                        <CardHeader>
+                                            <div className="flex justify-between items-start">
+                                                <Badge variant="outline" className="text-xs">Vastu</Badge>
+                                                {/* Delete Handler would go here */}
+                                            </div>
+                                            <CardTitle className="text-base mt-2">{reg.name}</CardTitle>
+                                        </CardHeader>
+                                        <CardContent>
+                                            <div className="text-sm text-muted-foreground mb-4">
+                                                {reg.recommendations.length} Guidelines
+                                            </div>
+                                            <div className="space-y-2">
+                                                {reg.recommendations.slice(0, 3).map((rec, idx) => (
+                                                    <div key={idx} className="text-xs border-l-2 border-primary/30 pl-2">
+                                                        <span className="font-semibold">{rec.category}:</span> {rec.idealDirections.join(', ')}
+                                                    </div>
+                                                ))}
+                                                {reg.recommendations.length > 3 && (
+                                                    <div className="text-xs text-muted-foreground italic">
+                                                        + {reg.recommendations.length - 3} more...
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </CardContent>
+                                    </Card>
+                                ))}
+                            </div>
+                            {vastuRegulations.length === 0 && (
+                                <div className="text-center py-16 border-2 border-dashed border-border rounded-lg">
+                                    <p className="text-muted-foreground mb-4">No Vastu Guidelines found.</p>
+                                </div>
+                            )}
+                        </TabsContent>
+
+                        <TabsContent value="units">
+                            <UnitTemplatesPanel />
+                        </TabsContent>
+
+                        <TabsContent value="costs">
+                            <CostRevenuePanel />
+                        </TabsContent>
+
+                        <TabsContent value="time">
+                            <TimeEstimationPanel />
+                        </TabsContent>
+
+                        <TabsContent value="planning">
+                            <PlanningParamsPanel />
+                        </TabsContent>
+                    </Tabs>
                 </main>
             </div>
             {categoryDetails && selectedRegulation && (
@@ -387,6 +679,16 @@ export function AdminPanel() {
                 isOpen={isUploadDialogOpen}
                 onOpenChange={setIsUploadDialogOpen}
                 onExtracted={handleExtractedRegulation}
+            />
+            <UploadGreenRegulationDialog
+                isOpen={isUploadGreenDialogOpen}
+                onOpenChange={setIsUploadGreenDialogOpen}
+                onExtracted={handleSaveGreenRegulation}
+            />
+            <UploadVastuDialog
+                isOpen={isUploadVastuDialogOpen}
+                onOpenChange={setIsUploadVastuDialogOpen}
+                onExtracted={handleSaveVastuRegulation}
             />
         </div>
     );

@@ -7,16 +7,17 @@ import { useBuildingStore } from '@/hooks/use-building-store';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { BuildingIntendedUse } from '@/lib/types';
+import { BuildingIntendedUse, UtilityType } from '@/lib/types';
 import { LandPlot } from 'lucide-react';
 
-type ZoneType = 'BuildableArea' | 'GreenArea' | 'ParkingArea';
+type ZoneType = 'BuildableArea' | 'GreenArea' | 'ParkingArea' | 'UtilityArea';
 
 export function DefineZoneModal() {
     const { zoneDefinition, actions } = useBuildingStore();
     const [zoneName, setZoneName] = useState('');
     const [zoneType, setZoneType] = useState<ZoneType>('BuildableArea');
     const [intendedUse, setIntendedUse] = useState<BuildingIntendedUse>(BuildingIntendedUse.Residential);
+    const [utilityType, setUtilityType] = useState<UtilityType>(UtilityType.STP);
 
     useEffect(() => {
         if (zoneDefinition.isDefining) {
@@ -24,6 +25,7 @@ export function DefineZoneModal() {
             setZoneName('');
             setZoneType('BuildableArea');
             setIntendedUse(BuildingIntendedUse.Residential);
+            setUtilityType(UtilityType.STP);
         }
     }, [zoneDefinition.isDefining]);
 
@@ -32,23 +34,22 @@ export function DefineZoneModal() {
             actions.cancelDefineZone();
         }
     };
-    
+
     const handleDefineZone = () => {
         if (!zoneName.trim()) return;
         const use = zoneType === 'BuildableArea' ? intendedUse : undefined;
-        actions.defineZone(zoneName, zoneType, use);
+        const uType = zoneType === 'UtilityArea' ? utilityType : undefined;
+        actions.defineZone(zoneName, zoneType, use, uType);
     }
 
-    const buildingUses = Object.values(BuildingIntendedUse).filter(
-        (use) => use !== BuildingIntendedUse.GreenArea && use !== BuildingIntendedUse.ParkingArea
-    );
+    const buildingUses = Object.values(BuildingIntendedUse);
 
     return (
         <Dialog open={zoneDefinition.isDefining} onOpenChange={handleOpenChange}>
             <DialogContent>
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
-                        <LandPlot className="text-primary"/>
+                        <LandPlot className="text-primary" />
                         Define New Zone
                     </DialogTitle>
                     <DialogDescription>
@@ -75,11 +76,29 @@ export function DefineZoneModal() {
                                 <SelectItem value="BuildableArea">Buildable Area</SelectItem>
                                 <SelectItem value="GreenArea">Green Area</SelectItem>
                                 <SelectItem value="ParkingArea">Parking Area</SelectItem>
+                                <SelectItem value="UtilityArea">Utility Area</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
+                    {zoneType === 'UtilityArea' && (
+                        <div>
+                            <Label htmlFor="utility-type">Utility Type</Label>
+                            <Select value={utilityType} onValueChange={(v) => setUtilityType(v as UtilityType)}>
+                                <SelectTrigger id="utility-type">
+                                    <SelectValue placeholder="Select utility type..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {Object.values(UtilityType).map(type => (
+                                        <SelectItem key={type} value={type}>
+                                            {type}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    )}
                     {zoneType === 'BuildableArea' && (
-                         <div>
+                        <div>
                             <Label htmlFor="intended-use">Intended Use</Label>
                             <Select value={intendedUse} onValueChange={(v) => setIntendedUse(v as BuildingIntendedUse)}>
                                 <SelectTrigger id="intended-use">

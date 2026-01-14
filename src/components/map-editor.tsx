@@ -1,10 +1,15 @@
-import { useBuildingStore } from '@/hooks/use-building-store';
+import { useBuildingStore, UTILITY_COLORS } from '@/hooks/use-building-store';
+import { BUILDING_MATERIALS, hslToRgb } from '@/lib/color-utils';
 import { useToast } from '@/hooks/use-toast';
-import { BuildingIntendedUse } from '@/lib/types';
+import { BuildingIntendedUse, GreenRegulationData } from '@/lib/types';
 import * as turf from '@turf/turf';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import Script from 'next/script';
+import { createShaktiChakraGroup } from '@/lib/shakti-chakra-visualizer';
+import { AnalysisMode } from './solar-controls';
+import { runVisualAnalysis } from '@/lib/engines/visual-analysis-engine';
+import { useRegulations } from '@/hooks/use-regulations';
 
 declare global {
   interface Window {
@@ -13,7 +18,6 @@ declare global {
     Threebox: any;
   }
 }
-
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
@@ -34,18 +38,58 @@ const adjustColorBrightness = (hex: string, percent: number) => {
 };
 
 interface MapEditorProps {
-  onMapReady: () => void;
+  onMapReady?: () => void;
+  solarDate: Date;
+  setSolarDate: (d: Date) => void;
+  isSolarEnabled: boolean;
+  setIsSolarEnabled: (b: boolean) => void;
+  analysisMode: AnalysisMode;
+  setAnalysisMode: (m: AnalysisMode) => void;
+  activeGreenRegulations?: GreenRegulationData[];
 }
 
-export function MapEditor({ onMapReady }: MapEditorProps) {
+export function MapEditor({
+  onMapReady,
+  solarDate,
+  setSolarDate,
+  isSolarEnabled,
+  setIsSolarEnabled,
+  analysisMode,
+  setAnalysisMode,
+  activeGreenRegulations = []
+}: MapEditorProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<Map | null>(null);
+  const [buildingsReady, setBuildingsReady] = useState(false); // Track when buildings are ready for analysis
+
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isThreeboxLoaded, setIsThreeboxLoaded] = useState(false);
   const markers = useRef<Marker[]>([]);
   const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); // Default primary color
 
-  const { actions, drawingPoints, drawingState, selectedObjectId, isLoading, plots } = useBuildingStore();
+  const { actions, drawingPoints, drawingState, selectedObjectId, isLoading, plots, uiState, activeProjectId, projects } = useBuildingStore();
+
+
+  const activeProject = projects.find(p => p.id === activeProjectId);
+  const { regulations } = useRegulations(activeProject || null);
+
+
+
+  // Sync uploaded regulations to store so Sidebar/Charts use them too
+  useEffect(() => {
+    if (activeProject && regulations) {
+      plots.forEach(plot => {
+        // If plot doesn't have regulation or it doesn't match the active fetched one
+        const currentId = plot.regulation ? `${plot.regulation.location}-${plot.regulation.type}` : '';
+        const newId = `${regulations.location}-${regulations.type}`;
+
+        if (currentId !== newId) {
+          console.log(`Syncing regulation ${newId} to plot ${plot.id}`);
+          actions.updatePlot(plot.id, { regulation: regulations });
+        }
+      });
+    }
+  }, [activeProject, plots, regulations, actions]);
 
   const { toast } = useToast();
 
@@ -112,7 +156,10 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
           [
             `plot-base-${p.id}`,
             ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
-            ...p.buildableAreas.map(b => `buildable-area-${b.id}`)
+            ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
+            ...p.greenAreas.map(g => `green-area-${g.id}`),
+            ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
+            ...p.utilityAreas.map(u => `utility-area-${u.id}`)
           ]
         ).filter(id => allMapLayers.includes(id));
 
@@ -124,7 +171,8 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
 
         if (features && features.length > 0) {
           const feature = features[0];
-          const layerId = feature.layer.id;
+          const layerId = feature.layer?.id;
+          if (!layerId) return;
 
           if (layerId.startsWith('plot-base-')) {
             const plotId = layerId.replace('plot-base-', '');
@@ -148,6 +196,15 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
                 break;
               }
             }
+          } else if (layerId.startsWith('green-area-')) {
+            const greenAreaId = layerId.replace('green-area-', '');
+            actions.selectObject(greenAreaId, 'GreenArea');
+          } else if (layerId.startsWith('parking-area-')) {
+            const parkingAreaId = layerId.replace('parking-area-', '');
+            actions.selectObject(parkingAreaId, 'ParkingArea');
+          } else if (layerId.startsWith('utility-area-')) {
+            const utilityAreaId = layerId.replace('utility-area-', '');
+            actions.selectObject(utilityAreaId, 'UtilityArea');
           }
         }
       }
@@ -176,7 +233,10 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
         [
           `plot-base-${p.id}`,
           ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
-          ...p.buildableAreas.map(b => `buildable-area-${b.id}`)
+          ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
+          ...p.greenAreas.map(g => `green-area-${g.id}`),
+          ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
+          ...p.utilityAreas.map(u => `utility-area-${u.id}`)
         ]
       ).filter(id => allMapLayers.includes(id));
 
@@ -289,7 +349,7 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
     const mapInstance = map.current;
 
     mapInstance.on('load', () => {
-      onMapReady();
+      onMapReady?.();
       mapInstance.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
       // Enable 3D buildings in Mapbox Standard Style
@@ -310,6 +370,167 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
   }, []);
 
 
+
+  // Effect: Run Visual Analysis when mode/date changes or buildings change
+  useEffect(() => {
+    if (!isMapLoaded || !window.tb || !window.tb.world) return;
+
+    console.log('[Analysis Effect] Mode:', analysisMode, 'Date:', solarDate);
+    console.log('[Analysis Effect] Active Green Regulations:', activeGreenRegulations);
+
+    // Collect buildings immediately (synchronously)
+    const buildings: any[] = [];
+    const context: any[] = [];
+
+    if (window.tb.world && window.tb.world.children) {
+      window.tb.world.children.forEach((child: any) => {
+        if (child.userData.isBuildingGroup) {
+          child.traverse((node: any) => {
+            if (node.isMesh) {
+              buildings.push(node);
+            }
+          });
+        } else if (child.name && child.name.startsWith('building-group')) {
+          child.traverse((node: any) => {
+            if (node.isMesh) {
+              buildings.push(node);
+            }
+          });
+        }
+      });
+    }
+
+    console.log(`[Analysis Effect] Found ${buildings.length} building meshes`);
+
+    // IMMEDIATE: Reset colors synchronously when switching to 'none'
+    if (analysisMode === 'none') {
+      console.log('[Analysis Effect] Resetting colors immediately');
+      runVisualAnalysis(buildings, context, 'none', solarDate, activeGreenRegulations);
+      return; // Don't run debounced analysis
+    }
+
+    // For analysis modes: small debounce to batch rapid changes
+    const timer = setTimeout(() => {
+      console.log('[Analysis Effect] Running analysis after debounce');
+
+      if (buildings.length === 0) {
+        console.warn('[Analysis Effect] No buildings found - skipping analysis');
+        return;
+      }
+
+      runVisualAnalysis(buildings, context, analysisMode, solarDate, activeGreenRegulations);
+    }, 150); // Fast response time
+
+    return () => clearTimeout(timer);
+  }, [analysisMode, solarDate, plots, isMapLoaded, activeGreenRegulations]); // Added isMapLoaded dependency
+
+  // Solar Lighting Effect
+  useEffect(() => {
+    if (!window.tb || !isMapLoaded) return;
+    const THREE = window.tb.THREE || window.THREE;
+    if (!THREE) return;
+
+    // Access the scene
+    const scene = window.tb.scene || window.tb.world; // Threebox attaches to 'world'? 
+    // Threebox structure: tb.world is the root Group added to Mapbox. 
+    // But lights are usually attached to tb.scene? Wait, Threebox doesn't expose 'scene' officially in docs easily?
+    // usually tb.world.parent or just search the scene graph.
+    // In Threebox, 'tb.scene' might be undefined.
+    // Let's assume standard Threebox behavior: lights are children of window.tb.world or similar?
+    // Actually, Threebox adds lights to the map scene?
+
+    // Best bet: Create a group for our custom lights, remove 'default' lights if we can find them.
+    // For 'defaultLights: true', it adds `tb.lights` array.
+
+    // Strategy: 
+    // 1. Find and remove existing sun/simulation lights.
+    // 2. If simulation enabled, calculate position and add directional shadow casting light.
+    // 3. If disabled, ensure default generic lighting exists (Ambient + Directional from Top).
+
+    const LIGHT_GROUP_NAME = 'simulation-lights-group';
+    let lightGroup = scene.getObjectByName(LIGHT_GROUP_NAME);
+
+    if (!lightGroup) {
+      lightGroup = new THREE.Group();
+      lightGroup.name = LIGHT_GROUP_NAME;
+      scene.add(lightGroup);
+    }
+
+    // Clear previous frame lights
+    lightGroup.clear();
+
+    if (isSolarEnabled) {
+      // Calculate position
+      // Center of map for light target?
+      const center = map.current?.getCenter();
+      if (center) {
+        const { getSunPosition } = require('@/lib/sun-utils');
+        const { azimuth, altitude } = getSunPosition(solarDate, center.lat, center.lng);
+
+        // Convert Az/Alt to Vector3
+        // Azimuth 0 = South, PI/2 = West. 
+        // Three.js Y up? No, Mapbox Z up.
+        // X = East, Y = North, Z = Up.
+        // Azimuth Ref: 0 is usually North in Map/Navigation, but solar formula might be South-based.
+        // Our formula: 0->South. 
+        // To Mapbox (Z-up, Y-North):
+        // South vector: (0, -1, 0).
+        // Altitude (angle from horizon).
+
+        // Simple conversion:
+        // dist * [ sin(azi) * cos(alt),  -cos(azi) * cos(alt), sin(alt) ] ??
+        // Let's trial and error or use standard conversion.
+        // Formula returned Azimuth 0 -> South. 
+        // Vector should be:
+        // x = sin(azimuth) * cos(altitude)
+        // y = -cos(azimuth) * cos(altitude) // South is -y
+        // z = sin(altitude)
+
+        const dist = 1000; // Far away
+        const x = dist * Math.sin(azimuth) * Math.cos(altitude);
+        const y = dist * -1 * Math.cos(azimuth) * Math.cos(altitude);
+        const z = dist * Math.sin(altitude);
+
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        sunLight.position.set(x, y, z);
+        // Target the center (0,0,0 of the scene is usually map center in Mercator? No, Threebox handles unit coords.)
+        // We set target to 0,0,0 local? 
+        sunLight.castShadow = true;
+
+        // Shadow Props
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        const d = 500; // Shadow camera size
+        sunLight.shadow.camera.left = -d;
+        sunLight.shadow.camera.right = d;
+        sunLight.shadow.camera.top = d;
+        sunLight.shadow.camera.bottom = -d;
+
+        lightGroup.add(sunLight);
+        lightGroup.add(sunLight.target);
+
+        // Softer Ambient
+        const ambient = new THREE.AmbientLight(0x404040, 0.4);
+        lightGroup.add(ambient);
+
+        // console.log(`Sun Sim: Az=${azimuth.toFixed(2)}, Alt=${altitude.toFixed(2)}`, {x,y,z});
+      }
+
+      // Try to disable default lights if possible
+      // if(window.tb.lights) window.tb.lights.forEach(l => l.visible = false);
+
+    } else {
+      // Default Lighting (if we disabled built-ins, we restore, OR we just let built-ins handle it)
+      // Assuming built-ins are always on. If we add strong lights on top, might be too bright?
+      // Let's assume built-ins are "Base".
+      // Simulation Mode adds a STRONG shadow caster.
+      // Ideally we turn off defaults.
+    }
+
+    window.tb.repaint();
+
+  }, [isSolarEnabled, solarDate, isMapLoaded]);
+
   useEffect(() => {
     if (!isMapLoaded || !isThreeboxLoaded || !map.current) return;
 
@@ -329,6 +550,12 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
         // @ts-ignore
         if (window.Threebox) {
           // @ts-ignore
+          // Initialize with defaultLights: true initially, but we might control them later
+          // Actually, Threebox 'defaultLights' creates an Ambient and a DirectionalLight.
+          // To have full control, passing false is better, then we add our own.
+          // But for backward compatibility with existing views, we start with true?
+          // Let's stick to true for now, and try to remove/replace them if possible.
+          // Or just init with false and add our own "Default" set.
           window.tb = new window.Threebox(map, mbxContext, {
             defaultLights: true,
             passiveRendering: false
@@ -348,6 +575,10 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
             gl.depthMask(true);
             gl.enable(gl.CULL_FACE);
             gl.cullFace(gl.BACK);
+
+            // Shadows setup
+            window.tb.renderer.shadowMap.enabled = true;
+            window.tb.renderer.shadowMap.type = window.THREE.PCFSoftShadowMap;
           }
 
           console.log('Threebox initialized with shared depth buffer');
@@ -355,12 +586,193 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
       },
       render: function (gl, matrix) {
         if (window.tb) {
-          window.tb.update();
+          try {
+            window.tb.update();
+          } catch (e) {
+            // Suppress repeating errors or log once
+            // console.warn('Threebox update error:', e);
+          }
         }
       },
     });
 
   }, [isMapLoaded, isThreeboxLoaded]);
+
+  // --- MANAGE SOLAR LIGHTING ---
+  useEffect(() => {
+    if (!window.tb || !isMapLoaded) return;
+    const THREE = window.tb.THREE || window.THREE;
+    if (!THREE) return;
+
+    // Access the scene
+    const scene = window.tb.scene || window.tb.world; // Threebox attaches to 'world'? 
+    // Threebox structure: tb.world is the root Group added to Mapbox. 
+    // But lights are usually attached to tb.scene? Wait, Threebox doesn't expose 'scene' officially in docs easily?
+    // usually tb.world.parent or just search the scene graph.
+    // In Threebox, 'tb.scene' might be undefined.
+    // Let's assume standard Threebox behavior: lights are children of window.tb.world or similar?
+    // Actually, Threebox adds lights to the map scene?
+
+    // Best bet: Create a group for our custom lights, remove 'default' lights if we can find them.
+    // For 'defaultLights: true', it adds `tb.lights` array.
+
+    // Strategy: 
+    // 1. Find and remove existing sun/simulation lights.
+    // 2. If simulation enabled, calculate position and add directional shadow casting light.
+    // 3. If disabled, ensure default generic lighting exists (Ambient + Directional from Top).
+
+    const LIGHT_GROUP_NAME = 'simulation-lights-group';
+    let lightGroup = scene.getObjectByName(LIGHT_GROUP_NAME);
+
+    if (!lightGroup) {
+      lightGroup = new THREE.Group();
+      lightGroup.name = LIGHT_GROUP_NAME;
+      scene.add(lightGroup);
+    }
+
+    // Clear previous frame lights
+    lightGroup.clear();
+
+    if (isSolarEnabled) {
+      // Calculate position
+      // Center of map for light target?
+      const center = map.current?.getCenter();
+      if (center) {
+        const { getSunPosition } = require('@/lib/sun-utils');
+        const { azimuth, altitude } = getSunPosition(solarDate, center.lat, center.lng);
+
+        // Convert Az/Alt to Vector3
+        // Azimuth 0 = South, PI/2 = West. 
+        // Three.js Y up? No, Mapbox Z up.
+        // X = East, Y = North, Z = Up.
+        // Azimuth Ref: 0 is usually North in Map/Navigation, but solar formula might be South-based.
+        // Our formula: 0=South. 
+        // To Mapbox (Z-up, Y-North):
+        // South vector: (0, -1, 0).
+        // Altitude (angle from horizon).
+
+        // Simple conversion:
+        // dist * [ sin(azi) * cos(alt),  -cos(azi) * cos(alt), sin(alt) ] ??
+        // Let's trial and error or use standard conversion.
+        // Formula returned Azimuth 0 -> South. 
+        // Vector should be:
+        // x = sin(azimuth) * cos(altitude)
+        // y = -cos(azimuth) * cos(altitude) // South is -y
+        // z = sin(altitude)
+
+        const dist = 1000; // Far away
+        const x = dist * Math.sin(azimuth) * Math.cos(altitude);
+        const y = dist * -1 * Math.cos(azimuth) * Math.cos(altitude);
+        const z = dist * Math.sin(altitude);
+
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        sunLight.position.set(x, y, z);
+        // Target the center (0,0,0 of the scene is usually map center in Mercator? No, Threebox handles unit coords.)
+        // We set target to 0,0,0 local? 
+        sunLight.castShadow = true;
+
+        // Shadow Props
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        const d = 500; // Shadow camera size
+        sunLight.shadow.camera.left = -d;
+        sunLight.shadow.camera.right = d;
+        sunLight.shadow.camera.top = d;
+        sunLight.shadow.camera.bottom = -d;
+
+        lightGroup.add(sunLight);
+        lightGroup.add(sunLight.target);
+
+        // Softer Ambient
+        const ambient = new THREE.AmbientLight(0x404040, 0.4);
+        lightGroup.add(ambient);
+
+        // console.log(`Sun Sim: Az=${azimuth.toFixed(2)}, Alt=${altitude.toFixed(2)}`, {x,y,z});
+      }
+
+      // Try to disable default lights if possible
+      // if(window.tb.lights) window.tb.lights.forEach(l => l.visible = false);
+
+    } else {
+      // Default Lighting (if we disabled built-ins, we restore, OR we just let built-ins handle it)
+      // Assuming built-ins are always on. If we add strong lights on top, might be too bright?
+      // Let's assume built-ins are "Base".
+      // Simulation Mode adds a STRONG shadow caster.
+      // Ideally we turn off defaults.
+    }
+
+    window.tb.repaint();
+
+  }, [isSolarEnabled, solarDate, isMapLoaded]);
+
+  const vastuObjectsRef = useRef<any[]>([]);
+
+  // Vastu Compass Rendering
+  useEffect(() => {
+    if (!window.tb || !isMapLoaded) return;
+
+    // 1. Cleanup existing objects using our kept references
+    vastuObjectsRef.current.forEach(obj => {
+      try {
+        window.tb.remove(obj);
+      } catch (e) {
+        console.warn('Failed to remove Vastu object', e);
+      }
+    });
+    vastuObjectsRef.current = [];
+
+    // 2. Add if enabled
+    if (uiState?.showVastuCompass && plots.length > 0) {
+      const THREE = window.tb.THREE || window.THREE;
+      if (!THREE) return;
+
+      plots.forEach(plot => {
+        // Calculate true center by averaging polygon vertices
+        let center: [number, number] | undefined;
+
+        const geom = plot.geometry?.geometry;
+        if (geom && geom.type === 'Polygon' && geom.coordinates && geom.coordinates[0]) {
+          const coords = geom.coordinates[0];
+          let sumLng = 0, sumLat = 0;
+          const numPoints = coords.length - 1; // Exclude duplicate closing point
+
+          for (let i = 0; i < numPoints; i++) {
+            sumLng += coords[i][0];
+            sumLat += coords[i][1];
+          }
+
+          center = [sumLng / numPoints, sumLat / numPoints];
+          console.log('📍 Vastu Compass Center:', center, 'Plot:', plot.id);
+        }
+
+        if (!center) {
+          console.warn('⚠️ Could not calculate center for plot:', plot.id);
+          return;
+        }
+
+        // Radius: Make it smaller to fit within plot (0.5x the calculated radius)
+        const r = Math.sqrt(plot.area / Math.PI) * 0.5;
+
+        const compassGroup = createShaktiChakraGroup(THREE, r);
+        const compassName = 'vastu-compass-group';
+        compassGroup.name = `${compassName}-${plot.id}`;
+
+        // Create Threebox Object
+        // @ts-ignore
+        const tbObj = window.tb.Object3D({ obj: compassGroup, units: 'meters' })
+          .setCoords(center);
+
+        // Set name for debugging
+        tbObj.name = compassGroup.name;
+
+        window.tb.add(tbObj);
+        vastuObjectsRef.current.push(tbObj);
+      });
+      window.tb.repaint();
+    } else {
+      window.tb.repaint();
+    }
+  }, [uiState?.showVastuCompass, plots, isMapLoaded]);
 
 
   const buildingProps = useMemo(() =>
@@ -425,6 +837,8 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
 
           // Create building group
           const buildingGroup = new THREE.Group();
+          buildingGroup.userData.isBuildingGroup = true;
+          buildingGroup.name = `building-group-${building.id}`;
           const buildingCoords = [...coordinates];
 
           // --- GEOMETRY GENERATION ---
@@ -475,7 +889,46 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
 
 
           // --- HELPERS & CONFIG ---
-          const opacityVal = Number(building.opacity);
+          // --- HELPERS & CONFIG ---
+
+          // GHOST MODE / OPACITY LOGIC
+          let activeOpacity = 1.0;
+          let isGhostMode = false;
+          let isBasementActive = false; // Specific mode for underground viewing
+          let highlightedFloorId: string | null = null;
+
+          // Categorize floors (needed for floor selection logic below)
+          const allFloors = building.floors || [];
+          const basementFloors = allFloors.filter(f => f.type === 'Parking' && f.parkingType === 'Basement');
+          const stiltFloors = allFloors.filter(f => f.type === 'Parking' && (f.parkingType === 'Stilt' || f.parkingType === 'Podium'));
+          const towerFloors = allFloors.filter(f => f.type !== 'Parking' && !(f.type === 'Utility' && f.utilityType === 'Electrical'));
+
+
+          // Only activate Ghost Mode when clicking Electrical/HVAC (floor components) OR Basement
+          if (selectedObjectId && selectedObjectId.id.startsWith('floor-')) {
+            highlightedFloorId = selectedObjectId.id;
+            // If this building contains the highlighted floor
+            if (highlightedFloorId.includes(building.id)) {
+              // Check if the selected floor is a BASEMENT
+              const selectedFloor = allFloors.find(f => f.id === highlightedFloorId);
+              if (selectedFloor && selectedFloor.parkingType === 'Basement') {
+                isBasementActive = true;
+                isGhostMode = true;
+                activeOpacity = 0.1; // Fade superstructure significantly
+              } else {
+                // Normal floor selection? Maybe just highlight that floor, keep others normal?
+                // For now, let's keep existing logic which might have ghosted? 
+                // Previous logic: activeOpacity = 0.15. 
+                // Let's stick to ghosting for any floor selection to focus?
+                isGhostMode = true;
+                activeOpacity = 0.15;
+              }
+            } else {
+              activeOpacity = 0.1; // Fade other buildings to keep focus on the utility
+            }
+          }
+
+          const opacityVal = activeOpacity;
           const isFullyOpaque = opacityVal >= 0.85;
 
           const configureMaterial = (mat: any, isOpaque: boolean, opacity: number) => {
@@ -502,11 +955,41 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
 
           // --- MATERIALS ---
           // Mapbox Style Colors
-          const isCommercial = building.intendedUse === BuildingIntendedUse.Commercial || building.intendedUse === BuildingIntendedUse.MixedUse;
+          // Mapbox Style Colors - Dynamic based on Use
+          const matParams = BUILDING_MATERIALS[building.intendedUse] || BUILDING_MATERIALS[BuildingIntendedUse.Residential];
 
-          const floorColor = new THREE.Color(isCommercial ? '#E8E8E8' : '#F0EAD6'); // White/Beige
-          const glassColor = new THREE.Color(isCommercial ? '#8DA3B4' : '#7D8B96'); // Blue-Grey
-          const roofColor = new THREE.Color('#E6E6E6');
+          const floorColorHex = hslToRgb(matParams.baseHue, matParams.saturation, matParams.baseLightness);
+          const glassHue = (matParams.baseHue + 180) % 360; // Complementary for glass or specific? 
+          // Actually, let's keep glass bluish/neutral for transparency? 
+          // Commercial uses bluish glass. Residential uses clearer/warmer.
+          // Let's customize glass per type if needed, or stick to a derived one.
+          // For now, let's derive glass color slightly shifted from base or fixed.
+          // Better: Fixed glass styles per type?
+          // Commercial: Blue-Grey. Resi: Neutral. Ind: Dark.
+
+          let glassColorHex = '#8DA3B4';
+          let roofColorHex = '#E6E6E6'; // Default light gray
+
+          if (building.intendedUse === BuildingIntendedUse.Residential) {
+            glassColorHex = '#C8D5E0'; // Light blue-gray
+            roofColorHex = '#D4C5B0'; // Warm beige roof
+          } else if (building.intendedUse === BuildingIntendedUse.Commercial) {
+            glassColorHex = '#8DA3B4'; // Blue-gray
+            roofColorHex = '#B8C5D6'; // Cool blue-gray roof
+          } else if (building.intendedUse === BuildingIntendedUse.Industrial) {
+            glassColorHex = '#708090'; // Slate gray
+            roofColorHex = '#9CA3A8'; // Dark gray roof
+          } else if (building.intendedUse === BuildingIntendedUse.Public) {
+            glassColorHex = '#A0B0C0'; // Neutral gray-blue
+            roofColorHex = '#C8A090'; // Terracotta-tinted roof
+          } else if (building.intendedUse === BuildingIntendedUse.MixedUse) {
+            glassColorHex = '#9DA3B8'; // Purple-gray
+            roofColorHex = '#C8BED6'; // Purple-tinted roof
+          }
+
+          const floorColor = new THREE.Color(floorColorHex);
+          const glassColor = new THREE.Color(glassColorHex);
+          const roofColor = new THREE.Color(roofColorHex);
 
           const floorMaterial = new THREE.MeshStandardMaterial({
             color: floorColor,
@@ -528,73 +1011,219 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
           });
 
           // --- MESH GENERATION ---
+          // (Floor categorization moved up before selection logic)
 
-          // 1. Glass Core (The main volume, slightly recessed)
-          const glassExtrudeSettings = {
-            depth: building.height,
-            bevelEnabled: false,
-          };
-          const glassGeometry = new THREE.ExtrudeGeometry(glassShape, glassExtrudeSettings);
-          const glassMesh = new THREE.Mesh(glassGeometry, glassMaterial);
-          glassMesh.castShadow = true;
-          glassMesh.receiveShadow = true;
-          buildingGroup.add(glassMesh);
+          // 1. Render Basements (Downwards)
+          // VISIBILITY: Only if isBasementActive is true
+          if (isBasementActive) {
+            const basementMat = new THREE.MeshStandardMaterial({
+              color: 0x404040, // Darker Concrete
+              roughness: 0.9,
+              metalness: 0.1,
+              transparent: true,
+              opacity: 0.8, // Slightly see-through? Or solid? User said "shown by making building ghosted". 
+              // Implies basement should be clear.
+              depthTest: false // IMPORTANT: See through ground
+            });
 
-          // 2. Floor Slabs (Protruding rings)
-          const floorCount = building.numFloors || Math.max(1, Math.floor(building.height / 3.5));
-          const floorHeight = building.height / floorCount;
-          const slabThickness = 0.25; // meters
+            const basementParametMat = new THREE.LineDashedMaterial({
+              color: 0xffffff,
+              dashSize: 1,
+              gapSize: 0.5,
+              linewidth: 1,
+            });
 
-          const slabGeometry = new THREE.ExtrudeGeometry(shape, {
-            depth: slabThickness,
-            bevelEnabled: false
-          });
+            basementFloors.forEach((f, idx) => {
+              const h = f.height || 3.5;
+              const level = f.level !== undefined ? f.level : -(idx + 1);
 
-          for (let i = 1; i <= floorCount; i++) {
-            const slab = new THREE.Mesh(slabGeometry, floorMaterial);
-            slab.position.z = i * floorHeight - slabThickness;
-            slab.castShadow = true;
-            slab.receiveShadow = true;
-            buildingGroup.add(slab);
+              // Solid Mesh
+              const bGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+              const bMesh = new THREE.Mesh(bGeo, basementMat);
+              bMesh.position.z = level * h;
+
+              const isSelected = highlightedFloorId === f.id;
+
+              // Highlight selected basement
+              if (isSelected) {
+                basementMat.color.setHex(0x606060);
+                basementMat.opacity = 0.9;
+              } else {
+                basementMat.color.setHex(0x404040);
+                basementMat.opacity = 0.6;
+              }
+
+              bMesh.renderOrder = 999; // Draw on top of ground?
+              buildingGroup.add(bMesh);
+
+              // Dotted Outline (Edges)
+              const edges = new THREE.EdgesGeometry(bGeo);
+              const line = new THREE.LineSegments(edges, basementParametMat);
+              line.computeLineDistances();
+              line.position.copy(bMesh.position);
+              line.renderOrder = 1000;
+              // @ts-ignore
+              line.material.depthTest = false;
+              buildingGroup.add(line);
+            });
           }
 
-          // Base slab
-          const baseSlab = new THREE.Mesh(slabGeometry, floorMaterial);
-          baseSlab.position.z = 0;
-          buildingGroup.add(baseSlab);
+          // 2. Base Height (Stilt/Podium)
+          let currentZ = 0;
 
+          if (stiltFloors.length > 0) {
+            stiltFloors.forEach(f => {
+              const h = f.height || 3.5;
+              const sGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+              const sMesh = new THREE.Mesh(sGeo, floorMaterial);
+              sMesh.position.z = currentZ;
 
-          // 3. Roof Parapet (Wall around the top)
+              const isSelected = highlightedFloorId === f.id;
+              configureMaterial(floorMaterial, isSelected || isFullyOpaque, opacityVal);
+
+              sMesh.castShadow = true;
+              sMesh.receiveShadow = true;
+              buildingGroup.add(sMesh);
+
+              currentZ += h;
+            });
+          } else {
+            // 2b. Check for Electrical Room (Ground Floor utility) replacing first floor logic?
+            // Or just standard ground floor.
+            // If we have electrical utility, render specifically?
+            // Existing logic handled this. Let's incorporate.
+            const firstFloor = allFloors.find(f => f.utilityType === 'Electrical');
+            if (firstFloor) {
+              const h = 3.5;
+              const eGeo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+              const eMesh = new THREE.Mesh(eGeo, floorMaterial);
+              eMesh.position.z = currentZ;
+
+              const isSelected = highlightedFloorId === firstFloor.id;
+              configureMaterial(floorMaterial, isSelected || isFullyOpaque, isSelected ? 1.0 : opacityVal);
+              buildingGroup.add(eMesh);
+
+              // Skip this floor in towerFloors if it's there?
+              // We filtered 'Utility' type earlier from towerFloors.
+              currentZ += h;
+            }
+          }
+
+          // 3. Tower (Glass Core + Slabs)
+          // Aggregated height of remaining floors
+          if (towerFloors.length > 0) {
+            const towerHeight = towerFloors.reduce((sum, f) => sum + (f.height || 3.0), 0);
+
+            // Glass Core
+            const glassExtrudeSettings = {
+              depth: towerHeight,
+              bevelEnabled: false,
+            };
+            const glassGeometry = new THREE.ExtrudeGeometry(glassShape, glassExtrudeSettings);
+            const glassMesh = new THREE.Mesh(glassGeometry, glassMaterial);
+            glassMesh.position.z = currentZ;
+            glassMesh.castShadow = true;
+            glassMesh.receiveShadow = true;
+            configureMaterial(glassMaterial, isFullyOpaque, opacityVal);
+            buildingGroup.add(glassMesh);
+
+            // Slabs (Protruding Rings) + Walls
+            const slabThickness = 0.25;
+            const slabGeometry = new THREE.ExtrudeGeometry(shape, {
+              depth: slabThickness,
+              bevelEnabled: false
+            });
+
+            // Create wall ring shape (outer shape with glass cutout as hole)
+            const wallRingShape = new THREE.Shape();
+            localCoords.forEach((pt, index) => {
+              if (index === 0) wallRingShape.moveTo(pt[0], pt[1]);
+              else wallRingShape.lineTo(pt[0], pt[1]);
+            });
+
+            // Add glass shape as hole in wall ring
+            try {
+              const buffered = turf.buffer(building.geometry as any, -0.0005, { units: 'kilometers' } as any);
+              if (buffered && buffered.geometry && buffered.geometry.type === 'Polygon') {
+                const innerCoords = buffered.geometry.coordinates[0];
+                const hole = new THREE.Path();
+                innerCoords.forEach((coord: any, index: number) => {
+                  const lngDiff = -1 * (coord[0] - center[0]) * 111320 * Math.cos(center[1] * Math.PI / 180);
+                  const latDiff = -1 * (coord[1] - center[1]) * 110540;
+                  if (index === 0) hole.moveTo(lngDiff, latDiff);
+                  else hole.lineTo(lngDiff, latDiff);
+                });
+                wallRingShape.holes.push(hole);
+              }
+            } catch (e) { }
+
+            towerFloors.forEach((f, i) => {
+              const floorHeight = f.height || 3.0;
+              const wallHeight = floorHeight - slabThickness; // Wall is floor height minus slab
+              const relativeZ = i * floorHeight;
+
+              // Add WALL RING (colored perimeter wall between glass and outer edge)
+              const wallRingGeometry = new THREE.ExtrudeGeometry(wallRingShape, {
+                depth: wallHeight,
+                bevelEnabled: false
+              });
+              const wallRing = new THREE.Mesh(wallRingGeometry, floorMaterial);
+              wallRing.position.z = currentZ + relativeZ + slabThickness;
+              wallRing.castShadow = true;
+              wallRing.receiveShadow = true;
+              configureMaterial(floorMaterial, isFullyOpaque, opacityVal);
+              buildingGroup.add(wallRing);
+
+              // Add FLOOR SLAB at top of each floor
+              const slabZ = (i + 1) * floorHeight - slabThickness;
+              const slab = new THREE.Mesh(slabGeometry, floorMaterial);
+              slab.position.z = currentZ + slabZ;
+              slab.castShadow = true;
+              slab.receiveShadow = true;
+              configureMaterial(floorMaterial, isFullyOpaque, opacityVal);
+              buildingGroup.add(slab);
+            });
+
+            currentZ += towerHeight;
+
+            // Add wall under parapet to close the gap
+            const lastFloorHeight = towerFloors.length > 0 ? (towerFloors[towerFloors.length - 1].height || 3.0) : 3.0;
+            const gapHeight = lastFloorHeight - slabThickness;
+            if (gapHeight > 0) {
+              const gapWallGeometry = new THREE.ExtrudeGeometry(wallRingShape, {
+                depth: gapHeight,
+                bevelEnabled: false
+              });
+              const gapWall = new THREE.Mesh(gapWallGeometry, floorMaterial);
+              gapWall.position.z = currentZ - lastFloorHeight + slabThickness;
+              gapWall.castShadow = true;
+              gapWall.receiveShadow = true;
+              configureMaterial(floorMaterial, isFullyOpaque, opacityVal);
+              buildingGroup.add(gapWall);
+            }
+          }
+
+          // 4. Parapet
           const parapetHeight = 1.2;
-          const parapetThickness = 0.3;
-
-          // Create a shape with a hole for the parapet
           const parapetShape = new THREE.Shape();
           localCoords.forEach((pt, index) => {
             if (index === 0) parapetShape.moveTo(pt[0], pt[1]);
             else parapetShape.lineTo(pt[0], pt[1]);
           });
 
-          // Use the glass shape (inner) as the hole
-          const holePath = new THREE.Path();
-          // We need to reverse the hole points for Three.js shape holes
-          // Actually Three.js handles holes in Shape automatically if winding order is correct, 
-          // but Shape.holes is explicit.
-          // Let's just use the glassShape points.
-          // Note: glassShape is a Shape, we need its points.
-          // A simpler way for parapet is to extrude the outer shape and subtract inner, 
-          // but Three.js ExtrudeGeometry supports holes.
+          // Add hole (glass shape)
+          // Simplified: just extrude outer. Creating holes from points is tricky without robust function.
+          // Reuse glassShape directly as hole? Parapet shouldn't cover glass?
+          // If we just render a thin wall strip?
+          // Fallback: Just render a cap if holes fail.
+          // For now, simple block for parapet.
 
           if (glassShape.curves.length > 0) {
-            // Extract points from glass shape to create a hole path
-            // This is a bit complex to extract back from shape commands.
-            // Easier to just re-use the logic we used to create glassShape.
-            // Let's assume glassShape is simple polygon.
-
-            // Re-calculate inner points for the hole
             try {
+              // Try to add hole if possible.
+              // ... (Simulated hole logic from before)
               const buffered = turf.buffer(building.geometry as any, -0.0005, { units: 'kilometers' } as any);
-              if (buffered && buffered.geometry && buffered.geometry.type === 'Polygon') {
+              if (buffered && buffered.geometry) {
                 const innerCoords = buffered.geometry.coordinates[0];
                 const hole = new THREE.Path();
                 innerCoords.forEach((coord: any, index: number) => {
@@ -612,25 +1241,316 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
             depth: parapetHeight,
             bevelEnabled: false
           });
-          const parapet = new THREE.Mesh(parapetGeometry, floorMaterial);
-          parapet.position.z = building.height;
+          const parapet = new THREE.Mesh(parapetGeometry, roofMaterial);
+          parapet.position.z = currentZ;
           parapet.castShadow = true;
           parapet.receiveShadow = true;
           buildingGroup.add(parapet);
 
-          // Roof Penthouse (Mechanical structure)
-          // Simple box at 0,0 (centroid)
-          // Check if building is large enough
-          // if (building.area > 100) {
-          //   const penthouseSize = Math.sqrt(building.area) * 0.3;
-          //   const penthouseHeight = 2.5;
-          //   const penthouseGeo = new THREE.BoxGeometry(penthouseSize, penthouseSize, penthouseHeight);
-          //   const penthouse = new THREE.Mesh(penthouseGeo, floorMaterial);
-          //   penthouse.position.z = building.height + penthouseHeight / 2;
-          //   penthouse.castShadow = true;
-          //   penthouse.receiveShadow = true;
-          //   buildingGroup.add(penthouse);
-          // }
+          // --- UTILITY 3D VISUALIZATION ---
+
+          // 1. HVAC Rooftop Unit (Box on top)
+          if (building.utilities && building.utilities.includes('HVAC' as any)) {
+            // Calculate size relative to roof area, but keep it reasonable
+            const buildingWidth = Math.sqrt(building.area);
+            const hvacSize = Math.max(3.0, Math.min(5.0, buildingWidth * 0.2)); // Balanced size (3m to 5m)
+            const hvacHeight = 2.0;
+
+            // Calculate safe position (Midpoint of Longest Wall, pushed inward via Normal)
+            let hvacX = 0, hvacY = 0;
+            try {
+              const geo = (building.geometry as any);
+              const coords = geo.coordinates || geo.geometry?.coordinates;
+              const type = geo.type || geo.geometry?.type;
+              const ring = (type === 'MultiPolygon') ? coords[0][0] : coords[0];
+
+              if (ring && ring.length >= 3) {
+                // 1. Determine Winding Order
+                let signedArea = 0;
+                for (let i = 0; i < ring.length - 1; i++) {
+                  signedArea += (ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]);
+                }
+                const isCCW = signedArea > 0;
+
+                // 2. Find Longest Edge
+                let p0 = ring[0], p1 = ring[1];
+                let maxDist = 0;
+                for (let i = 0; i < ring.length - 1; i++) {
+                  const dist = Math.sqrt(Math.pow(ring[i + 1][0] - ring[i][0], 2) + Math.pow(ring[i + 1][1] - ring[i][1], 2));
+                  if (dist > maxDist) {
+                    maxDist = dist;
+                    p0 = ring[i];
+                    p1 = ring[i + 1];
+                  }
+                }
+
+                // 3. Midpoint
+                const mx = (p0[0] + p1[0]) / 2;
+                const my = (p0[1] + p1[1]) / 2;
+
+                // 4. Inward Normal based on Winding
+                // Vector along edge
+                const dx = p1[0] - p0[0];
+                const dy = p1[1] - p0[1];
+                const len = Math.sqrt(dx * dx + dy * dy);
+                const ux = dx / len;
+                const uy = dy / len;
+
+                // If CCW, Inward is Left (-uy, ux)
+                // If CW, Inward is Right (uy, -ux)
+                const inwardN = isCCW ? [-uy, ux] : [uy, -ux];
+
+                // 5. Convert to Local & Push
+                const wxLocal = -1 * (mx - center[0]) * 111320 * Math.cos(center[1] * Math.PI / 180);
+                const wyLocal = -1 * (my - center[1]) * 110540;
+
+                // Calculate Local Vector for Normal
+                const nxPt = mx + inwardN[0] * 0.0001;
+                const nyPt = my + inwardN[1] * 0.0001;
+                const nxLocal = -1 * (nxPt - center[0]) * 111320 * Math.cos(center[1] * Math.PI / 180);
+                const nyLocal = -1 * (nyPt - center[1]) * 110540;
+
+                const lvx = nxLocal - wxLocal;
+                const lvy = nyLocal - wyLocal;
+                const lvLen = Math.sqrt(lvx * lvx + lvy * lvy);
+
+                const offset = (hvacSize / 2) + 0.5; // Half size + 0.5m padding
+
+                if (lvLen > 0) {
+                  hvacX = wxLocal + (lvx / lvLen) * offset;
+                  hvacY = wyLocal + (lvy / lvLen) * offset;
+                } else {
+                  hvacX = wxLocal; hvacY = wyLocal;
+                }
+              }
+            } catch (e) { }
+
+            const hvacGeo = new THREE.BoxGeometry(hvacSize, hvacSize, hvacHeight);
+            const hvacMat = new THREE.MeshStandardMaterial({
+              color: 0x808080, // Silver/Grey
+              roughness: 0.4,
+              metalness: 0.7,
+            });
+
+            // Check if HVAC floor is selected
+            const hvacFloorId = `floor-${building.id}-hvac`;
+            const isHvacSelected = highlightedFloorId === hvacFloorId;
+            configureMaterial(hvacMat, isHvacSelected || isFullyOpaque, isHvacSelected ? 1.0 : opacityVal);
+
+            const hvacBox = new THREE.Mesh(hvacGeo, hvacMat);
+            hvacBox.position.set(hvacX, hvacY, building.height + hvacHeight / 2);
+            hvacBox.castShadow = true;
+            hvacBox.receiveShadow = true;
+            hvacBox.renderOrder = getRenderOrder(isFullyOpaque, 2);
+            buildingGroup.add(hvacBox);
+
+            // Add some mechanical detail (fan grill texture simulation via simple geometry?)
+            const fanGeo = new THREE.CylinderGeometry(hvacSize * 0.3, hvacSize * 0.3, 0.2, 16);
+            const fanMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            configureMaterial(fanMat, isFullyOpaque, opacityVal);
+            const fan = new THREE.Mesh(fanGeo, fanMat);
+            fan.position.set(hvacX, hvacY, building.height + hvacHeight + 0.1);
+            fan.rotation.x = Math.PI / 2;
+            fan.renderOrder = getRenderOrder(isFullyOpaque, 2);
+            buildingGroup.add(fan);
+          }
+
+          // 2. Electrical MEP Infrastructure (Detailed System)
+          if (building.utilities && building.utilities.includes('Electrical' as any)) {
+            const elecColor = 0xFFD700; // Gold
+            const buildingWidth = Math.sqrt(building.area);
+            const pipeRadius = 0.15;
+            const segments = 8;
+
+            const elecMat = new THREE.MeshStandardMaterial({
+              color: elecColor,
+              emissive: 0xAA6600,
+              emissiveIntensity: 0.3,
+              roughness: 0.3,
+              metalness: 0.8,
+              transparent: false,  // Not transparent - hidden by facade
+              opacity: 1.0,
+              depthTest: true,
+              depthWrite: true
+            });
+
+            // Transformer Room (using pointOnSurface for guaranteed interior fit)
+            const transformerSize = Math.max(1.5, Math.min(3.0, buildingWidth * 0.15));
+            const transformerHeight = 2.5;
+
+            // Calculate safe interior position (Midpoint of Longest Wall, pushed inward via Normal)
+            let transX = 0, transY = 0;
+            try {
+              const geo = (building.geometry as any);
+              const coords = geo.coordinates || geo.geometry?.coordinates;
+              const type = geo.type || geo.geometry?.type;
+              const ring = (type === 'MultiPolygon') ? coords[0][0] : coords[0];
+
+              if (ring && ring.length >= 3) {
+                // 1. Determine Winding Order
+                let signedArea = 0;
+                for (let i = 0; i < ring.length - 1; i++) {
+                  signedArea += (ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]);
+                }
+                const isCCW = signedArea > 0;
+
+                // 2. Find Longest Edge
+                let p0 = ring[0], p1 = ring[1];
+                let maxDist = 0;
+                for (let i = 0; i < ring.length - 1; i++) {
+                  const dist = Math.sqrt(Math.pow(ring[i + 1][0] - ring[i][0], 2) + Math.pow(ring[i + 1][1] - ring[i][1], 2));
+                  if (dist > maxDist) {
+                    maxDist = dist;
+                    p0 = ring[i];
+                    p1 = ring[i + 1];
+                  }
+                }
+
+                // 3. Midpoint
+                const mx = (p0[0] + p1[0]) / 2;
+                const my = (p0[1] + p1[1]) / 2;
+
+                // 4. Inward Normal based on Winding
+                // Vector along edge
+                const dx = p1[0] - p0[0];
+                const dy = p1[1] - p0[1];
+                const len = Math.sqrt(dx * dx + dy * dy);
+                const ux = dx / len;
+                const uy = dy / len;
+
+                // If CCW, Inward is Left (-uy, ux)
+                // If CW, Inward is Right (uy, -ux)
+                const inwardN = isCCW ? [-uy, ux] : [uy, -ux];
+
+                // 5. Convert to Local & Push
+                const wxLocal = -1 * (mx - center[0]) * 111320 * Math.cos(center[1] * Math.PI / 180);
+                const wyLocal = -1 * (my - center[1]) * 110540;
+
+                // Calculate Local Vector for Normal
+                const nxPt = mx + inwardN[0] * 0.0001;
+                const nyPt = my + inwardN[1] * 0.0001;
+                const nxLocal = -1 * (nxPt - center[0]) * 111320 * Math.cos(center[1] * Math.PI / 180);
+                const nyLocal = -1 * (nyPt - center[1]) * 110540;
+
+                const lvx = nxLocal - wxLocal;
+                const lvy = nyLocal - wyLocal;
+                const lvLen = Math.sqrt(lvx * lvx + lvy * lvy);
+
+                const offset = (transformerSize / 2) + 0.5; // Half size + 0.5m padding
+
+                if (lvLen > 0) {
+                  transX = wxLocal + (lvx / lvLen) * offset;
+                  transY = wyLocal + (lvy / lvLen) * offset;
+                } else {
+                  transX = wxLocal; transY = wyLocal;
+                }
+              }
+            } catch (e) { }
+            const transformerGeo = new THREE.BoxGeometry(transformerSize, transformerSize, transformerHeight);
+            const transformer = new THREE.Mesh(transformerGeo, elecMat);
+            transformer.position.set(transX, transY, transformerHeight / 2);
+            buildingGroup.add(transformer);
+
+            // Calculate safe interior positions using geometry buffer analysis
+            let riserPositions: { x: number; y: number }[] = [];
+
+            // Pipes & Risers calculation - DISABLED
+            // To show only transformers, we keep riserPositions empty
+            /*
+            try {
+              // ... geometry analysis code ...
+            } catch (e) { console.warn(e); }
+            if (riserPositions.length < 3) { riserPositions = [{x:0,y:0}]; }
+            */
+
+            riserPositions.forEach((pos, idx) => {
+              const riserGeo = new THREE.CylinderGeometry(pipeRadius, pipeRadius, building.height, segments);
+              const riser = new THREE.Mesh(riserGeo, elecMat);
+              riser.position.set(pos.x, pos.y, building.height / 2);
+              buildingGroup.add(riser);
+
+              const enclosureGeo = new THREE.BoxGeometry(0.6, 0.6, building.height);
+              const enclosureMat = elecMat.clone();
+              enclosureMat.opacity = 0.3;
+              const enclosure = new THREE.Mesh(enclosureGeo, enclosureMat);
+              enclosure.position.set(pos.x, pos.y, building.height / 2);
+              buildingGroup.add(enclosure);
+            });
+
+
+            // NOTE: Water, Fire, STP, WTP, Gas are now rendered as plot-level zones (see utilityAreas rendering below)
+
+
+            if (false && building.numFloors) {
+              const floorHeight = building.height / building.numFloors;
+              for (let floor = 1; floor <= building.numFloors; floor++) {
+                const floorZ = floor * floorHeight - 0.5;
+
+                const run1Length = Math.abs(riserPositions[0].x - riserPositions[1].x);
+                const run1Geo = new THREE.CylinderGeometry(pipeRadius * 0.7, pipeRadius * 0.7, run1Length, segments);
+                const run1 = new THREE.Mesh(run1Geo, elecMat);
+                run1.rotation.z = Math.PI / 2;
+                run1.position.set(
+                  (riserPositions[0].x + riserPositions[1].x) / 2,
+                  riserPositions[0].y,
+                  floorZ
+                );
+                buildingGroup.add(run1);
+
+                if (riserPositions.length > 2) {
+                  const run2Length = Math.abs(riserPositions[2].y - riserPositions[0].y);
+                  const run2Geo = new THREE.CylinderGeometry(pipeRadius * 0.7, pipeRadius * 0.7, run2Length, segments);
+                  const run2 = new THREE.Mesh(run2Geo, elecMat);
+                  run2.rotation.x = Math.PI / 2;
+                  run2.position.set(
+                    0,
+                    (riserPositions[0].y + riserPositions[2].y) / 2,
+                    floorZ
+                  );
+                  buildingGroup.add(run2);
+                }
+
+                if (floor % 2 === 0 && riserPositions.length > 0) {
+                  const panelGeo = new THREE.BoxGeometry(0.5, 0.25, 0.8);
+                  const panel = new THREE.Mesh(panelGeo, elecMat);
+                  panel.position.set(buildingWidth * 0.08, buildingWidth * 0.08, floorZ);
+                  buildingGroup.add(panel);
+                }
+              }
+            }
+
+            // Ground Distribution (from transformer to risers)
+            const transformerX = -buildingWidth * 0.08;
+            const transformerY = -buildingWidth * 0.08;
+
+            riserPositions.forEach((pos) => {
+              const conduitLength = Math.sqrt(
+                Math.pow(pos.x - transformerX, 2) +
+                Math.pow(pos.y - transformerY, 2)
+              );
+              const angle = Math.atan2(pos.y - transformerY, pos.x - transformerX);
+
+              const conduitGeo = new THREE.CylinderGeometry(pipeRadius * 0.8, pipeRadius * 0.8, conduitLength, segments);
+              const conduit = new THREE.Mesh(conduitGeo, elecMat);
+              conduit.rotation.z = -angle + Math.PI / 2;
+              conduit.position.set(
+                (transformerX + pos.x) / 2,
+                (transformerY + pos.y) / 2,
+                0.5
+              );
+              buildingGroup.add(conduit);
+            });
+
+            // Roof Junction
+            const roofJunctionGeo = new THREE.BoxGeometry(1, 1, 0.8);
+            const roofJunction = new THREE.Mesh(roofJunctionGeo, elecMat);
+            roofJunction.position.set(transX, transY, building.height + 0.4);
+            buildingGroup.add(roofJunction);
+          }
+
+
+          // Roof Penthouse (Legacy - commented out)
+          // ... 
 
           // Roof Floor 
           const roofFloorGeo = new THREE.ExtrudeGeometry(glassShape, {
@@ -942,22 +1862,22 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
               insetCoords.forEach(p => { cx += p[0]; cy += p[1]; });
               cx /= insetCoords.length;
               cy /= insetCoords.length;
-
+  
               const numUnits = Math.floor(Math.random() * 2) + 1; // 1-2 units
               const unitMat = new THREE.MeshStandardMaterial({ color: 0xDDDDDD, roughness: 0.7 });
               configureMaterial(unitMat, isFullyOpaque, opacityVal);
-
+  
               for (let u = 0; u < numUnits; u++) {
                 const w = 2.0 + Math.random() * 2;
                 const d = 2.0 + Math.random() * 2;
                 const h = 1.2 + Math.random() * 1.0;
                 const unitGeo = new THREE.BoxGeometry(w, d, h);
                 const unit = new THREE.Mesh(unitGeo, unitMat);
-
+  
                 // Small random offset from center
                 const offsetX = (Math.random() - 0.5) * 3;
                 const offsetY = (Math.random() - 0.5) * 3;
-
+  
                 unit.position.set(cx + offsetX, cy + offsetY, building.height + h / 2);
                 unit.renderOrder = getRenderOrder(isFullyOpaque, 2);
                 buildingGroup.add(unit);
@@ -1063,6 +1983,10 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
             anchor: 'center'
           }).setCoords([center[0], center[1]]);
 
+          // IMPORTANT: Tag the wrapper object so our Analysis Engine can find it
+          tbObject.userData.isBuildingGroup = true;
+          tbObject.name = `building-wrapper-${building.id}`;
+
           window.tb.add(tbObject);
         } catch (error) {
           console.error(`Error rendering building ${building.id}:`, error);
@@ -1074,7 +1998,7 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
     // Force repaint
     map.current?.triggerRepaint();
 
-  }, [isMapLoaded, isThreeboxLoaded, buildingProps]);
+  }, [isMapLoaded, isThreeboxLoaded, buildingProps, selectedObjectId]);
 
   // Effect to handle drawing state
   useEffect(() => {
@@ -1173,9 +2097,11 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
       // Add building labels
       plot.buildings.forEach(building => {
         if (building.centroid) {
+          let labelText = `${building.name}\n${building.intendedUse}\n${building.area.toFixed(0)} m²`;
+
           allLabels.push(
             turf.point(building.centroid.geometry.coordinates, {
-              label: `${building.name}\n${building.intendedUse}\n${building.area.toFixed(0)} m²`,
+              label: labelText,
               id: `building-label-${building.id}`,
             })
           );
@@ -1210,6 +2136,16 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
             turf.point(area.centroid.geometry.coordinates, {
               label: `${area.name}\n${area.area.toFixed(0)} m²`,
               id: `buildable-area-label-${area.id}`
+            })
+          )
+        }
+      });
+      plot.utilityAreas.forEach(area => {
+        if (area.centroid) {
+          allLabels.push(
+            turf.point(area.centroid.geometry.coordinates, {
+              label: `${area.name}\n(${area.type})\n${area.area.toFixed(0)} m²`,
+              id: `utility-area-label-${area.id}`
             })
           )
         }
@@ -1249,6 +2185,10 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
         renderedIds.add(`buildable-area-${b.id}`);
         renderedIds.add(`buildable-area-border-${b.id}`);
         renderedIds.add(`buildable-area-label-${b.id}`);
+      });
+      plot.utilityAreas.forEach(u => {
+        renderedIds.add(`utility-area-${u.id}`);
+        renderedIds.add(`utility-area-label-${u.id}`);
       });
 
       const plotBaseSourceId = `plot-base-${plotId}`;
@@ -1341,13 +2281,44 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
           mapInstance.setPaintProperty(borderId, 'line-color', selectedObjectId?.id === area.id ? '#c4b5fd' : '#8b5cf6');
         }
       });
+
+      // Debug logging for utility zones
+      console.log('[Utility Render Debug] Plot has', plot.utilityAreas?.length || 0, 'utility areas');
+
+      plot.utilityAreas.forEach(area => {
+        const areaId = `utility-area-${area.id}`;
+        console.log('[Utility Render Debug] Rendering', area.name, 'type:', area.type, 'id:', areaId);
+
+        let source = mapInstance.getSource(areaId) as GeoJSONSource;
+        if (source) source.setData(area.geometry);
+        else mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
+
+        const color = UTILITY_COLORS[area.type] || '#cccccc';
+
+        if (!mapInstance.getLayer(areaId)) {
+          mapInstance.addLayer({
+            id: areaId,
+            type: 'fill-extrusion',
+            source: areaId,
+            paint: {
+              'fill-extrusion-color': color,
+              'fill-extrusion-height': 2, // Extrude them slightly to make them visible
+              'fill-extrusion-opacity': 0.9
+            }
+          }, LABELS_LAYER_ID);
+          console.log('[Utility Render Debug] Created layer for', area.name, 'with color', color);
+        } else {
+          // Update color if type changes (dynamic color update)
+          mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', color);
+        }
+      });
     });
 
     const currentStyle = mapInstance.getStyle();
     if (currentStyle && currentStyle.layers) {
       currentStyle.layers.forEach(layer => {
         const layerId = layer.id;
-        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-');
+        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('utility-');
 
         if (isManagedByPlots && !renderedIds.has(layerId) && layerId !== LABELS_LAYER_ID) {
           if (mapInstance.getLayer(layerId)) mapInstance.removeLayer(layerId);
@@ -1357,7 +2328,7 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
 
     if (currentStyle && currentStyle.sources) {
       Object.keys(currentStyle.sources).forEach(sourceId => {
-        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-');
+        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('utility-');
 
         if (isManagedByPlots && !renderedIds.has(sourceId) && sourceId !== LABELS_SOURCE_ID) {
           const isSourceInUse = mapInstance.getStyle().layers.some(layer => (layer as any).source === sourceId);
@@ -1382,6 +2353,10 @@ export function MapEditor({ onMapReady }: MapEditorProps) {
         }}
       />
       <div ref={mapContainer} className="w-full h-full" />
+
+      {/* Sidebar Overlay */}
+
+
     </div>
   );
 }

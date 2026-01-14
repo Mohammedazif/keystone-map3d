@@ -4,110 +4,158 @@ import { generateWithFallback } from '@/ai/model-fallback';
 
 // Schema matching the RegulationData structure
 const RegulationValueSchema = z.object({
-    desc: z.string(),
-    unit: z.string(),
-    value: z.number(),
-    min: z.number().optional(),
-    max: z.number().optional(),
+  desc: z.string(),
+  unit: z.string(),
+  value: z.number(),
+  min: z.number().optional(),
+  max: z.number().optional(),
 });
 
 const ExtractedRegulationSchema = z.object({
-    location: z.string().describe('The geographic location this regulation applies to (e.g., "Kerala", "Mumbai", "Andhra Pradesh")'),
-    type: z.string().describe('The regulation type/category (e.g., "Residential", "Commercial", "Mixed-Use")'),
-    geometry: z.object({
-        setback: RegulationValueSchema.optional(),
-        road_width: RegulationValueSchema.optional(),
-        max_ground_coverage: RegulationValueSchema.optional(),
-        floor_area_ratio: RegulationValueSchema.optional(),
-    }).describe('Geometric constraints and spatial requirements'),
-    facilities: z.object({
-        parking: RegulationValueSchema.optional(),
-        open_space: RegulationValueSchema.optional(),
-    }).describe('Facility and amenity requirements'),
-    sustainability: z.object({
-        rainwater_harvesting: RegulationValueSchema.optional(),
-        solar_panels: RegulationValueSchema.optional(),
-    }).describe('Environmental and sustainability requirements'),
-    safety_and_services: z.object({
-        fire_safety: RegulationValueSchema.optional(),
-    }).describe('Safety standards and service requirements'),
-    administration: z.object({
-        fee_rate: RegulationValueSchema.optional(),
-    }).describe('Administrative fees and processing costs'),
-    confidence: z.number().min(0).max(1).describe('Confidence score for this extraction (0-1)'),
+  location: z.string().describe('The geographic location this regulation applies to (e.g., "Kerala", "Mumbai", "Andhra Pradesh")'),
+  type: z.string().describe('The regulation type/category (e.g., "Residential", "Commercial", "Mixed-Use")'),
+  geometry: z.object({
+    setback: RegulationValueSchema.optional(),
+    road_width: RegulationValueSchema.optional(),
+    max_ground_coverage: RegulationValueSchema.optional(),
+    floor_area_ratio: RegulationValueSchema.optional(),
+    max_height: RegulationValueSchema.optional(),
+  }).describe('Geometric constraints and spatial requirements'),
+  facilities: z.object({
+    parking: RegulationValueSchema.optional(),
+    open_space: RegulationValueSchema.optional(),
+  }).describe('Facility and amenity requirements'),
+  sustainability: z.object({
+    rainwater_harvesting: RegulationValueSchema.optional(),
+    solar_panels: RegulationValueSchema.optional(),
+  }).describe('Environmental and sustainability requirements'),
+  safety_and_services: z.object({
+    fire_safety: RegulationValueSchema.optional(),
+  }).describe('Safety standards and service requirements'),
+  administration: z.object({
+    fee_rate: RegulationValueSchema.optional(),
+  }).describe('Administrative fees and processing costs'),
+  confidence: z.number().min(0).max(1).describe('Confidence score for this extraction (0-1)'),
 });
 
 export const extractRegulationData = ai.defineFlow(
-    {
-        name: 'extractRegulationData',
-        inputSchema: z.object({
-            documentText: z.string().describe('The full text content of the regulation document'),
-            fileName: z.string().describe('The name of the source file for context'),
-        }),
-        outputSchema: ExtractedRegulationSchema,
-    },
-    async (input) => {
-        const prompt = `You are an expert at extracting structured building regulation data from documents.
+  {
+    name: 'extractRegulationData',
+    inputSchema: z.object({
+      documentText: z.string().describe('The full text content of the regulation document'),
+      fileName: z.string().describe('The name of the source file for context'),
+    }),
+    outputSchema: z.array(ExtractedRegulationSchema),
+  },
+  async (input) => {
+    const prompt = `You are an expert at extracting structured building regulation data from documents.
 
 Document: ${input.fileName}
 Content:
-${input.documentText}
+${input.documentText.slice(0, 500000)} ...
 
-Extract the following information and return ONLY a valid JSON object (no markdown, no explanation):
+Task:
+1. **EXTRACT ALL** land use types and subtypes mentioned. Do NOT limit to a few examples.
+   - Look for specific categories like "Residential Plotted", "Residential Group Housing", "Commercial Local Shopping", "Commercial General", "Industrial Light", etc.
+   - If there are 20 different table columns for different uses, create 20 separate entries.
+2. **SANITIZATION**:
+   - **FAR**: Must be a small decimal (e.g. 1.5, 2.0, 3.5). If you see "225" and it represents area, IGNORE it. If you see "225" and it means 2.25, use 2.25.
+   - **Coverage**: Must be Percentage (0-100).
+   - **Setback**: Must be reasonable (meters).
 
-**IMPORTANT - Location must be an Indian State/UT name from this list:**
 Andaman and Nicobar Islands, Andhra Pradesh, Arunachal Pradesh, Assam, Bihar, Chandigarh, Chhattisgarh, Dadra and Nagar Haveli and Daman and Diu, Delhi, Goa, Gujarat, Haryana, Himachal Pradesh, Jammu and Kashmir, Jharkhand, Karnataka, Kerala, Ladakh, Lakshadweep, Madhya Pradesh, Maharashtra, Manipur, Meghalaya, Mizoram, Nagaland, Odisha, Puducherry, Punjab, Rajasthan, Sikkim, Tamil Nadu, Telangana, Tripura, Uttar Pradesh, Uttarakhand, West Bengal
 
-**Type must be one of:** Residential, Commercial, Mixed Use, Industrial, Public
+**Type**: use the SPECIFIC ZONE NAME from the document (e.g. "Residential Plotted", "Residential Group Housing", "Commercial C-1").
+**CRITICAL**: Do NOT simplify to just "Residential" or "Commercial" if distinct subtypes exist. We need separate entries for each subtype.
 
-{
-  "location": "The Indian state/UT name (MUST match one from the list above exactly)",
-  "type": "Building category (MUST be one of: Residential, Commercial, Mixed Use, Industrial, Public)",
-  "geometry": {
-    "setback": {"desc": "Distance from plot boundary", "unit": "m", "value": 0, "min": 0, "max": 20},
-    "road_width": {"desc": "Adjacent road width", "unit": "m", "value": 0, "min": 6, "max": 30},
-    "max_ground_coverage": {"desc": "Maximum ground coverage", "unit": "%", "value": 0, "min": 10, "max": 80},
-    "floor_area_ratio": {"desc": "FAR/FSI value", "unit": "", "value": 0, "min": 0.5, "max": 5}
-  },
-  "facilities": {
-    "parking": {"desc": "Parking spaces per unit", "unit": "spaces/unit", "value": 0, "min": 0.5, "max": 3},
-    "open_space": {"desc": "Required open space", "unit": "%", "value": 0, "min": 5, "max": 50}
-  },
-  "sustainability": {
-    "rainwater_harvesting": {"desc": "Capacity", "unit": "liters/sqm", "value": 0, "min": 10, "max": 100},
-    "solar_panels": {"desc": "Solar coverage", "unit": "% of roof", "value": 0, "min": 0, "max": 100}
-  },
-  "safety_and_services": {
-    "fire_safety": {"desc": "Compliance level", "unit": "", "value": 1, "min": 1, "max": 3}
-  },
-  "administration": {
-    "fee_rate": {"desc": "Processing fee", "unit": "% of cost", "value": 0, "min": 0.05, "max": 1}
-  },
-  "confidence": 0.8
-}
+Return a JSON array of objects.
+[
+  {
+    "location": "Delhi",
+    "type": "Residential - Plotted",
+    "geometry": {
+      "setback": {"desc": "Distance from plot boundary", "unit": "m", "value": 4, "min": 3, "max": 6},
+      "road_width": {"desc": "Adjacent road width", "unit": "m", "value": 12, "min": 6, "max": 30},
+      "max_ground_coverage": {"desc": "Maximum ground coverage", "unit": "%", "value": 60, "min": 10, "max": 80},
+      "floor_area_ratio": {"desc": "FAR/FSI value", "unit": "", "value": 2.0, "min": 0.5, "max": 5},
+      "max_height": {"desc": "Maximum building height", "unit": "m", "value": 15, "min": 10, "max": 100}
+    },
+    "facilities": {
+      "parking": {"desc": "Parking spaces per unit", "unit": "spaces/unit", "value": 1, "min": 0.5, "max": 3},
+      "open_space": {"desc": "Required open space", "unit": "%", "value": 20, "min": 5, "max": 50}
+    },
+    "sustainability": {
+      "rainwater_harvesting": {"desc": "Capacity", "unit": "liters/sqm", "value": 50, "min": 10, "max": 100},
+      "solar_panels": {"desc": "Solar coverage", "unit": "% of roof", "value": 30, "min": 0, "max": 100}
+    },
+    "safety_and_services": {
+      "fire_safety": {"desc": "Compliance level", "unit": "", "value": 2, "min": 1, "max": 3}
+    },
+    "administration": {
+      "fee_rate": {"desc": "Processing fee", "unit": "% of cost", "value": 0.5, "min": 0.05, "max": 1}
+    },
+    "confidence": 0.9
+  }
+]
+`;
 
-**Important**:
-- Location MUST be an exact match from the Indian states list (e.g., "Andhra Pradesh", "Kerala", "Tamil Nadu")
-- If document mentions a city, identify which state it's in and use the state name
-- Type MUST be exactly one of: Residential, Commercial, Mixed Use, Industrial, Public
-- If a parameter value is not mentioned in the document, use 0
-- Set confidence (0-1) based on how clear the extraction was
-- Return ONLY the JSON object, no other text`;
+    // Use fallback mechanism with OpenAI as primary
+    const text = await generateWithFallback(prompt);
 
-        // Use fallback mechanism with OpenAI as primary
-        const text = await generateWithFallback(prompt);
+    // Parse the JSON response
+    try {
+      const firstBracket = text.indexOf('[');
+      const lastBracket = text.lastIndexOf(']');
 
-        // Parse the JSON response
-        try {
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                throw new Error('No JSON found in response');
+      if (firstBracket === -1 || lastBracket === -1 || lastBracket <= firstBracket) {
+        throw new Error('No JSON array found in response');
+      }
+
+      const jsonString = text.substring(firstBracket, lastBracket + 1);
+      let parsed = JSON.parse(jsonString);
+
+      // Ensure it's an array
+      if (!Array.isArray(parsed)) {
+        parsed = [parsed];
+      }
+
+      // SANITIZATION STEP
+      parsed = parsed.map((item: any) => {
+        // Sanitize Geometry
+        if (item.geometry) {
+          // FAR Sanity Check
+          if (item.geometry.floor_area_ratio) {
+            let far = item.geometry.floor_area_ratio.value;
+            // If FAR > 20, it's likely an error (e.g. 225) or percentage disguised as number
+            if (far > 20) {
+              if (far >= 100 && far <= 500) {
+                // Maybe it's missing decimal? 225 -> 2.25
+                far = far / 100;
+              } else {
+                // Reset to safe default or null
+                far = 1.5;
+              }
+              item.geometry.floor_area_ratio.value = far;
             }
-            const parsed = JSON.parse(jsonMatch[0]);
-            return parsed as z.infer<typeof ExtractedRegulationSchema>;
-        } catch (e) {
-            console.error('Failed to parse AI response:', text);
-            throw new Error('Failed to parse regulation data from AI response');
+          }
+          // Max Ground Coverage Check
+          if (item.geometry.max_ground_coverage) {
+            let cov = item.geometry.max_ground_coverage.value;
+            if (cov > 100) cov = 100;
+            item.geometry.max_ground_coverage.value = cov;
+          }
         }
+
+        // Ensure Location matches valid list or fallback
+        // (Optional: Implement robust location mapping if needed)
+
+        return item;
+      });
+
+      return parsed as z.infer<typeof ExtractedRegulationSchema>[];
+    } catch (e) {
+      console.error('Failed to parse AI response:', text);
+      throw new Error('Failed to parse regulation data from AI response');
     }
+  }
 );

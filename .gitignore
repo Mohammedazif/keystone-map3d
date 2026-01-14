@@ -43,10 +43,31 @@ next-env.d.ts
 # firebase
 firebase-debug.log
 firestore-debug.log
+firebase.json
+firebase.rules
+firestore.rules
+firebase-admin-key.json
 
 /Regulations doc
 /implementing vector rag.md
 /rules zip
 __db_compliance-rag.json
-firebase-admin-key.json
+
 /Scripts
+
+GRIHA TABLE OF CONTENTS.md
+IGBC TABLE OF CONTENT.md
+LEED TABLE OF CONTENT.md
+Logic & Methodology for Calculating Maxi.md
+pendings.txt
+implementation_plan.md.resolved
+vastu.txt
+typecheck_log.txt
+typecheck_log_2.txt
+typecheck_log_3.txt
+implementation_plan.md
+Implementation Plan - Advanced Feasibi.txt
+CLIENT INPUTS.md
+Implementation Plan - Additional Typologies & KPIs.md
+Debugging Extraction and Saving.md
+dashboard_and_admin_enhancement_plan.md.resolved

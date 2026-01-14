@@ -6,10 +6,9 @@ import { useEffect, useState } from 'react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './ui/card';
 import { Building2, Plus, Trash2 } from 'lucide-react';
+import { CreateProjectDialog } from './create-project-dialog';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Input } from './ui/input';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from './ui/dialog';
 import { formatDistanceToNow } from 'date-fns';
 import { Label } from './ui/label';
 import {
@@ -35,9 +34,8 @@ export function DashboardClient() {
   const { projects, actions, isLoading } = useBuildingStore();
   const [isMounted, setIsMounted] = useState(false);
   const router = useRouter();
-  const [newProjectName, setNewProjectName] = useState('');
-  const [totalPlotArea, setTotalPlotArea] = useState<number | ''>('');
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+
   const { user, isLoading: isAuthLoading } = useAuth();
 
   useEffect(() => {
@@ -47,19 +45,7 @@ export function DashboardClient() {
     }
   }, [actions, user, isAuthLoading]);
 
-  const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return;
-    const newProject = await actions.createProject(
-      newProjectName,
-      typeof totalPlotArea === 'number' ? totalPlotArea : undefined,
-    );
-    if (newProject) {
-      setNewProjectName('');
-      setTotalPlotArea('');
-      setIsDialogOpen(false);
-      router.push(`/dashboard/project/${newProject.id}`);
-    }
-  }
+
 
   const handleDeleteProject = (e: React.MouseEvent, projectId: string) => {
     e.preventDefault();
@@ -111,46 +97,12 @@ export function DashboardClient() {
             <h1 className="text-2xl font-headline font-bold">Key Stone AI</h1>
           </div>
           <div className="flex items-center gap-4">
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-              <DialogTrigger asChild>
-                <Button>
-                  <Plus className="mr-2 h-4 w-4" />
-                  New Project
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Create a new project</DialogTitle>
-                  <DialogDescription>
-                    Enter the details for your new project below.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className='py-4 space-y-4'>
-                  <div>
-                    <Label htmlFor="project-name">Project Name</Label>
-                    <Input
-                      id="project-name"
-                      placeholder="Enter project name..."
-                      value={newProjectName}
-                      onChange={(e) => setNewProjectName(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="total-plot-area">Total Plot Area (m²)</Label>
-                    <Input
-                      id="total-plot-area"
-                      type="number"
-                      placeholder="e.g., 5000"
-                      value={totalPlotArea}
-                      onChange={(e) => setTotalPlotArea(e.target.value === '' ? '' : parseFloat(e.target.value))}
-                    />
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button onClick={handleCreateProject} disabled={!newProjectName.trim()}>Create Project</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            <CreateProjectDialog>
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                New Project
+              </Button>
+            </CreateProjectDialog>
             {user && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -185,46 +137,12 @@ export function DashboardClient() {
         {projects.length === 0 ? (
           <div className="text-center py-16 border-2 border-dashed border-border rounded-lg">
             <p className="text-muted-foreground mb-4">You have no projects yet.</p>
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-              <DialogTrigger asChild>
-                <Button>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create Your First Project
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Create a new project</DialogTitle>
-                  <DialogDescription>
-                    Start your journey by creating your first project.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className='py-4 space-y-4'>
-                  <div>
-                    <Label htmlFor="project-name-2">Project Name</Label>
-                    <Input
-                      id="project-name-2"
-                      placeholder="Enter project name..."
-                      value={newProjectName}
-                      onChange={(e) => setNewProjectName(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="total-plot-area-2">Total Plot Area (m²)</Label>
-                    <Input
-                      id="total-plot-area-2"
-                      type="number"
-                      placeholder="e.g., 5000"
-                      value={totalPlotArea}
-                      onChange={(e) => setTotalPlotArea(e.target.value === '' ? '' : parseFloat(e.target.value))}
-                    />
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button onClick={handleCreateProject} disabled={!newProjectName.trim()}>Create Project</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+            <CreateProjectDialog>
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Create Your First Project
+              </Button>
+            </CreateProjectDialog>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -278,8 +196,9 @@ export function DashboardClient() {
               </Link>
             ))}
           </div>
-        )}
-      </main>
-    </div>
+        )
+        }
+      </main >
+    </div >
   );
 }

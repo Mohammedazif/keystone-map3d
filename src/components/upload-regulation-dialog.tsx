@@ -7,24 +7,24 @@ import { Upload, FileText, Loader2, AlertCircle, CheckCircle } from 'lucide-reac
 import { toast } from '@/hooks/use-toast';
 import type { RegulationData } from '@/lib/types';
 import { Alert, AlertDescription } from './ui/alert';
+import { Badge } from './ui/badge';
 
 interface UploadRegulationDialogProps {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
-    onExtracted: (data: Partial<RegulationData>) => void;
+    onExtracted: (data: Partial<RegulationData>[]) => void;
 }
 
 export function UploadRegulationDialog({ isOpen, onOpenChange, onExtracted }: UploadRegulationDialogProps) {
     const [isUploading, setIsUploading] = useState(false);
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
-    const [extractedData, setExtractedData] = useState<any>(null);
-    const [confidence, setConfidence] = useState<number>(0);
+    const [extractedData, setExtractedData] = useState<any[]>([]);
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (file) {
             setSelectedFile(file);
-            setExtractedData(null);
+            setExtractedData([]);
         }
     };
 
@@ -47,9 +47,13 @@ export function UploadRegulationDialog({ isOpen, onOpenChange, onExtracted }: Up
                 throw new Error(result.error || 'Failed to extract regulation data');
             }
 
-            setExtractedData(result.data);
-            setConfidence(result.data.confidence || 0);
-            toast({ title: 'Success', description: 'Regulation data extracted successfully!' });
+            // Handle both array and single object responses
+            const regulations = Array.isArray(result.data) ? result.data : [result.data];
+            setExtractedData(regulations);
+            toast({
+                title: 'Success',
+                description: `Extracted ${regulations.length} regulation${regulations.length > 1 ? 's' : ''}!`
+            });
         } catch (error: any) {
             console.error('Upload error:', error);
             toast({ variant: 'destructive', title: 'Error', description: error.message });
@@ -59,33 +63,33 @@ export function UploadRegulationDialog({ isOpen, onOpenChange, onExtracted }: Up
     };
 
     const handleUseExtracted = () => {
-        if (extractedData) {
-            console.log('Sending extracted data to admin panel:', extractedData);
+        if (extractedData.length > 0) {
+            console.log('Sending extracted regulations to admin panel:', extractedData);
             onExtracted(extractedData);
             onOpenChange(false);
             setSelectedFile(null);
-            setExtractedData(null);
+            setExtractedData([]);
         }
     };
 
     const handleCancel = () => {
         setSelectedFile(null);
-        setExtractedData(null);
+        setExtractedData([]);
         onOpenChange(false);
     };
 
     return (
         <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle>Upload Regulation Document</DialogTitle>
                     <DialogDescription>
-                        Upload a PDF, DOCX, or TXT file containing regulation data. AI will automatically extract structured information.
+                        Upload a PDF, DOCX, or TXT file containing regulation data. AI will automatically extract structured information for all land use types.
                     </DialogDescription>
                 </DialogHeader>
 
                 <div className="space-y-4">
-                    {!extractedData ? (
+                    {extractedData.length === 0 ? (
                         <>
                             <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
                                 <Upload className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
@@ -128,31 +132,60 @@ export function UploadRegulationDialog({ isOpen, onOpenChange, onExtracted }: Up
                         </>
                     ) : (
                         <>
-                            <Alert variant={confidence > 0.7 ? 'default' : 'destructive'}>
-                                {confidence > 0.7 ? (
-                                    <CheckCircle className="h-4 w-4" />
-                                ) : (
-                                    <AlertCircle className="h-4 w-4" />
-                                )}
+                            <Alert>
+                                <CheckCircle className="h-4 w-4" />
                                 <AlertDescription>
-                                    Extraction confidence: {(confidence * 100).toFixed(0)}%
-                                    {confidence <= 0.7 && ' - Please review carefully'}
+                                    Successfully extracted {extractedData.length} regulation{extractedData.length > 1 ? 's' : ''} from {selectedFile?.name}
                                 </AlertDescription>
                             </Alert>
 
-                            <div className="bg-secondary p-4 rounded-lg space-y-2 max-h-96 overflow-y-auto">
-                                <h4 className="font-semibold">Extracted Data:</h4>
-                                <p><strong>Location:</strong> {extractedData.location}</p>
-                                <p><strong>Type:</strong> {extractedData.type}</p>
-                                <details className="mt-4">
-                                    <summary className="cursor-pointer text-sm font-medium">View Full JSON</summary>
-                                    <pre className="mt-2 text-xs bg-background p-2 rounded overflow-x-auto">
-                                        {JSON.stringify(extractedData, null, 2)}
-                                    </pre>
-                                </details>
-                                <p className="text-sm text-muted-foreground mt-2">
-                                    Full regulation details will be available for editing after import.
-                                </p>
+                            <div className="space-y-3">
+                                <h4 className="font-semibold text-sm">Extracted Regulations:</h4>
+                                {extractedData.map((regulation, index) => (
+                                    <div key={index} className="bg-secondary p-4 rounded-lg space-y-2 border border-border">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <Badge variant="default">{regulation.type}</Badge>
+                                                <span className="text-sm text-muted-foreground">{regulation.location}</span>
+                                            </div>
+                                            <Badge variant="outline">
+                                                {regulation.confidence ? `${(regulation.confidence * 100).toFixed(0)}% confidence` : 'N/A'}
+                                            </Badge>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-2 text-sm">
+                                            {regulation.geometry?.floor_area_ratio?.value && (
+                                                <div>
+                                                    <span className="text-muted-foreground">FAR:</span> {regulation.geometry.floor_area_ratio.value}
+                                                </div>
+                                            )}
+                                            {regulation.geometry?.max_height?.value && (
+                                                <div>
+                                                    <span className="text-muted-foreground">Max Height:</span> {regulation.geometry.max_height.value}m
+                                                </div>
+                                            )}
+                                            {regulation.geometry?.setback?.value && (
+                                                <div>
+                                                    <span className="text-muted-foreground">Setback:</span> {regulation.geometry.setback.value}m
+                                                </div>
+                                            )}
+                                            {regulation.geometry?.max_ground_coverage?.value && (
+                                                <div>
+                                                    <span className="text-muted-foreground">Coverage:</span> {regulation.geometry.max_ground_coverage.value}%
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <details className="mt-2">
+                                            <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+                                                View Full Data
+                                            </summary>
+                                            <pre className="mt-2 text-xs bg-background p-2 rounded overflow-x-auto max-h-40">
+                                                {JSON.stringify(regulation, null, 2)}
+                                            </pre>
+                                        </details>
+                                    </div>
+                                ))}
                             </div>
 
                             <div className="flex gap-2">
@@ -160,7 +193,7 @@ export function UploadRegulationDialog({ isOpen, onOpenChange, onExtracted }: Up
                                     Cancel
                                 </Button>
                                 <Button onClick={handleUseExtracted} className="flex-1">
-                                    Use This Data
+                                    Import All ({extractedData.length})
                                 </Button>
                             </div>
                         </>

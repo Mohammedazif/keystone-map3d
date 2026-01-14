@@ -40,8 +40,13 @@ export function DrawingToolbar() {
 
     const isPlotSelected = selectedObjectId?.type === 'Plot';
 
+
+    const isFeasibilityPanelOpen = useBuildingStore(state => state.uiState.isFeasibilityPanelOpen);
+
+    if (isFeasibilityPanelOpen) return null;
+
     return (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50">
             <div className="flex gap-2 bg-background/80 backdrop-blur-sm p-2 rounded-lg border border-border shadow-md">
                 <TooltipProvider>
                     {tools.map(tool => (
@@ -62,9 +67,9 @@ export function DrawingToolbar() {
                         </Tooltip>
                     ))}
                     <div className="h-10 border-l border-border mx-2"></div>
-                     <Tooltip>
+                    <Tooltip>
                         <TooltipTrigger asChild>
-                           <div><AiGeneratorModal /></div>
+                            <div><AiGeneratorModal /></div>
                         </TooltipTrigger>
                         <TooltipContent side="top">
                             <p>AI Site Layout Generator (2D)</p>
