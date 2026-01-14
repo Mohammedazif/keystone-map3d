@@ -8,6 +8,34 @@ const pdf = require('pdf-parse');
 
 import { createWorker } from 'tesseract.js';
 
+// async function performOCR(buffer: Buffer): Promise<string> {
+//     try {
+//         console.log('[GreenLogic] Starting OCR...');
+//         // Dynamic import for pdf-img-convert
+//         const pdf2img = await import('pdf-img-convert');
+
+//         // Convert PDF pages to images
+//         const images = await pdf2img.default.convert(buffer);
+//         console.log(`[GreenLogic] Converted PDF to ${images.length} images for OCR`);
+
+//         const worker = await createWorker('eng');
+//         let fullText = '';
+
+//         for (let i = 0; i < images.length; i++) {
+//             // pdf-img-convert returns Uint8Array or Buffer. worker.recognize takes Buffer/string/etc.
+//             const ret = await worker.recognize(Buffer.from(images[i]));
+//             fullText += ret.data.text + '\n\n';
+//             console.log(`[GreenLogic] OCR processed page ${i + 1}/${images.length}`);
+//         }
+
+//         await worker.terminate();
+//         return fullText;
+//     } catch (e) {
+//         console.error('[GreenLogic] OCR Extraction Failed:', e);
+//         return '';
+//     }
+// }
+
 async function extractTextFromFile(file: File): Promise<string> {
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileName = file.name.toLowerCase();

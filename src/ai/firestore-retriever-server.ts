@@ -13,6 +13,10 @@ if (!getApps().length) {
         if (process.env.FIREBASE_SERVICE_ACCOUNT) {
             console.log('[Firebase Admin] Initializing with Service Account environment variable');
             const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            // Fix for PEM private key newlines in environment variables
+            if (serviceAccount.private_key) {
+                serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+            }
             initializeApp({
                 credential: cert(serviceAccount),
                 projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'keystone-map3d',
