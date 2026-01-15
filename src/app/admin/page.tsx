@@ -9,7 +9,8 @@ import { Building2, ShieldAlert } from 'lucide-react';
 
 const ADMIN_EMAILS = [
     'screentechnicals@gmail.com',
-    'anon.skulll@gmail.com'
+    'anon.skulll@gmail.com',
+    'keystone.office02@gmail.com'
 ];
 
 export default function AdminPage() {
