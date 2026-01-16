@@ -169,42 +169,51 @@ const getOpacityForBuildingType = (buildingType: BuildingIntendedUse): number =>
 };
 
 // Helper to convert geometry for Firestore
+// Helper to convert geometry for Firestore
 const prepareForFirestore = (plots: Plot[]): any[] => {
-    return plots.map(plot => ({
-        ...plot,
-        geometry: JSON.stringify(plot.geometry),
-        centroid: JSON.stringify(plot.centroid),
-        buildings: plot.buildings.map(b => ({
-            ...b,
-            geometry: JSON.stringify(b.geometry),
-            centroid: JSON.stringify(b.centroid),
-        })),
-        greenAreas: plot.greenAreas.map(g => ({
-            ...g,
-            geometry: JSON.stringify(g.geometry),
-            centroid: JSON.stringify(g.centroid),
-        })),
-        parkingAreas: plot.parkingAreas.map(p => ({
-            ...p,
-            geometry: JSON.stringify(p.geometry),
-            centroid: JSON.stringify(p.centroid),
-        })),
-        buildableAreas: plot.buildableAreas.map(b => ({
-            ...b,
-            geometry: JSON.stringify(b.geometry),
-            centroid: JSON.stringify(b.centroid),
-        })),
-        utilityAreas: (plot.utilityAreas || []).map(u => ({
-            ...u,
-            geometry: JSON.stringify(u.geometry),
-            centroid: JSON.stringify(u.centroid),
-        })),
-    }));
+    console.log('[prepareForFirestore] Input plots:', plots.length);
+    return plots.map(plot => {
+        const prepared = {
+            ...plot,
+            geometry: plot.geometry ? JSON.stringify(plot.geometry) : null,
+            centroid: plot.centroid ? JSON.stringify(plot.centroid) : null,
+            buildings: (plot.buildings || []).map(b => ({
+                ...b,
+                geometry: JSON.stringify(b.geometry),
+                centroid: JSON.stringify(b.centroid),
+            })),
+            greenAreas: (plot.greenAreas || []).map(g => ({
+                ...g,
+                geometry: JSON.stringify(g.geometry),
+                centroid: JSON.stringify(g.centroid),
+            })),
+            parkingAreas: (plot.parkingAreas || []).map(p => ({
+                ...p,
+                geometry: JSON.stringify(p.geometry),
+                centroid: JSON.stringify(p.centroid),
+            })),
+            buildableAreas: (plot.buildableAreas || []).map(b => ({
+                ...b,
+                geometry: JSON.stringify(b.geometry),
+                centroid: JSON.stringify(b.centroid),
+            })),
+            utilityAreas: (plot.utilityAreas || []).map(u => ({
+                ...u,
+                geometry: JSON.stringify(u.geometry),
+                centroid: JSON.stringify(u.centroid),
+            })),
+        };
+        return prepared;
+    });
 };
 
 // Helper to parse geometry from Firestore
 const parseFromFirestore = (plots: any[]): Plot[] => {
-    if (!plots || !Array.isArray(plots)) return [];
+    if (!plots || !Array.isArray(plots)) {
+        console.warn('[parseFromFirestore] Invalid input:', plots);
+        return [];
+    }
+    console.log('[parseFromFirestore] Parsing plots:', plots.length);
     return plots.map(plot => {
         try {
             return {
@@ -242,7 +251,10 @@ const parseFromFirestore = (plots: any[]): Plot[] => {
             console.error("Failed to parse plot from firestore", plot, e);
             return { ...plot, geometry: null, centroid: null, buildings: [], greenAreas: [], parkingAreas: [], buildableAreas: [], utilityAreas: [] };
         }
-    }).filter(p => p.geometry); // Filter out plots that failed to parse
+    }).filter(p => {
+        if (!p.geometry) console.warn('[parseFromFirestore] Filtered out plot with missing geometry:', p.id);
+        return p.geometry;
+    }); // Filter out plots that failed to parse
 };
 
 async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>) {
@@ -393,11 +405,14 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     lastModified: new Date().toISOString(),
                 };
 
-                // Save to Firestore
-                await setDoc(doc(db, 'projects', newProject.id), {
+                // Save to Firestore (User Scoped)
+                // Sanitize undefined values (Firestore doesn't allow undefined)
+                const projectDataToSave = JSON.parse(JSON.stringify({
                     ...newProject,
                     plots: [] // Plots stored separately or empty initially
-                });
+                }));
+
+                await setDoc(doc(db, 'users', userId, 'projects', newProject.id), projectDataToSave);
 
                 set(state => ({
                     projects: [newProject, ...state.projects],
@@ -431,7 +446,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         loadProject: async (projectId) => {
             set({ isLoading: true });
             try {
-                const projectDoc = await getDoc(doc(db, 'projects', projectId));
+                const userId = useAuthStore.getState().user?.uid;
+                if (!userId) throw new Error("User not authenticated");
+
+                const projectDoc = await getDoc(doc(db, 'users', userId, 'projects', projectId));
                 if (projectDoc.exists()) {
                     const projectData = projectDoc.data() as Project;
 
@@ -463,36 +481,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ isLoading: false });
             }
         },
-        saveCurrentProject: async () => {
-            const { activeProjectId, plots, isSaving, projects } = get();
-            if (!activeProjectId || isSaving) return;
-
-            set({ isSaving: true });
-            try {
-                const projectRef = doc(db, 'projects', activeProjectId);
-                const project = projects.find(p => p.id === activeProjectId);
-
-                const plotsToSave = prepareForFirestore(plots);
-
-                await setDoc(projectRef, {
-                    ...project,
-                    plots: plotsToSave,
-                    lastModified: new Date().toISOString()
-                }, { merge: true });
-
-                set(state => ({
-                    isSaving: false,
-                    // Update last modified in local state too
-                    projects: state.projects.map(p => p.id === activeProjectId ? { ...p, lastModified: new Date().toISOString() } : p)
-                }));
-
-                toast({ title: 'Project Saved', description: 'Your changes have been saved.' });
-            } catch (error) {
-                console.error("Error saving project:", error);
-                toast({ variant: 'destructive', title: 'Save Failed', description: 'Could not save project data.' });
-                set({ isSaving: false });
-            }
-        },
+        // saveCurrentProject: Shadowed implementation removed
         saveDesignOption: (name, description) => {
             const { plots, generationParams, designOptions } = get();
             const newOption: DesignOption = {
@@ -1245,7 +1234,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }
 
             try {
-                const projectRef = doc(db, 'projects', projectId);
+                const projectRef = doc(db, 'users', userId, 'projects', projectId);
                 const docSnap = await getDoc(projectRef);
                 if (docSnap.exists()) {
                     const data = docSnap.data() as Project;
@@ -1330,7 +1319,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
             try {
                 const projectRef = doc(db, 'users', userId, 'projects', activeProjectId);
-                await setDoc(projectRef, updatedProject);
+                const projectDataToSave = JSON.parse(JSON.stringify(updatedProject));
+                await setDoc(projectRef, projectDataToSave);
                 set(produce((draft: BuildingState) => {
                     const projIndex = draft.projects.findIndex(p => p.id === activeProjectId);
                     if (projIndex !== -1) {

@@ -23,17 +23,17 @@ const useAuthStore = create<AuthState>((set) => ({
 let unsub: (() => void) | null = null;
 
 if (typeof window !== 'undefined' && !unsub) {
-    unsub = onAuthStateChanged(auth, (user) => {
-        useAuthStore.getState().actions.setUser(user);
-        useAuthStore.setState({ isLoading: false });
-    });
+  unsub = onAuthStateChanged(auth, (user) => {
+    useAuthStore.getState().actions.setUser(user);
+    useAuthStore.setState({ isLoading: false });
+  });
 }
 
 
 export const useAuth = () => {
-    const user = useAuthStore(state => state.user);
-    const isLoading = useAuthStore(state => state.isLoading);
-    return { user, isLoading };
+  const user = useAuthStore(state => state.user);
+  const isLoading = useAuthStore(state => state.isLoading);
+  return { user, isLoading };
 }
 
 export default useAuthStore;
