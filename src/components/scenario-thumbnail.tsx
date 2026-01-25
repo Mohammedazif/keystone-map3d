@@ -51,7 +51,7 @@ export function ScenarioThumbnail({ features, plotGeometry, setback = 0, classNa
         let setbackPath = null;
         if (plotGeometry?.geometry && setback > 0) {
             try {
-                const buffered = turf.buffer(plotGeometry, -setback / 1000, { units: 'kilometers' });
+                const buffered = turf.buffer(plotGeometry, -setback, { units: 'meters' });
                 if (buffered?.geometry) {
                     const coords = buffered.geometry.type === 'Polygon'
                         ? buffered.geometry.coordinates[0]

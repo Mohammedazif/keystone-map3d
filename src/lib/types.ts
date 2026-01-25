@@ -17,6 +17,19 @@ export enum BuildingIntendedUse {
 }
 
 
+export interface Core {
+  id: string;
+  type: 'Lift' | 'Stair' | 'Service' | 'Lobby';
+  geometry: Feature<Polygon>;
+}
+
+export interface Unit {
+  id: string;
+  type: string; // e.g. "2BHK", "Studio"
+  geometry: Feature<Polygon>;
+  color?: string; // e.g. "#ADD8E6"
+}
+
 export interface Floor {
   id: string;
   height: number;
@@ -40,6 +53,10 @@ export interface Building {
   soilData: SoilData | null;
   intendedUse: BuildingIntendedUse;
   floors: Floor[];
+  // Internal Layout
+  cores?: Core[];
+  units?: Unit[];
+  entrances?: EntryPoint[];
   area: number;
   numFloors: number;
   typicalFloorHeight: number;
@@ -115,6 +132,13 @@ export interface Label {
   position: [number, number];
 }
 
+export interface EntryPoint {
+  id: string;
+  type: 'Entry' | 'Exit' | 'Both';
+  position: [number, number]; // [lng, lat]
+  name?: string;
+}
+
 export interface Plot {
   id: string;
   name: string;
@@ -127,6 +151,7 @@ export interface Plot {
   parkingAreas: ParkingArea[];
   buildableAreas: BuildableArea[];
   utilityAreas: UtilityArea[];
+  entries: EntryPoint[];
   labels: Label[];
   visible: boolean;
   location: string | null;
@@ -138,6 +163,7 @@ export interface Plot {
   far?: number; // Floor Area Ratio (from regulations)
   maxCoverage?: number; // Maximum ground coverage percentage (from regulations)
   developmentStats?: DevelopmentStats;
+  roadAccessSides?: string[]; // Detected road directions (N, S, E, W)
 }
 
 
@@ -156,7 +182,7 @@ export interface Project {
   totalPlotArea?: number | null;
   designOptions?: string | DesignOption[]; // JSON string for Firestore storage, or parsed object in app
   intendedUse?: 'Residential' | 'Commercial' | 'Mixed Use' | 'Public' | 'Industrial';
-  location?: string; // e.g. "Delhi", "Maharashtra"
+  location?: string | { lat: number; lng: number }; // e.g. "Delhi", "Maharashtra" or geocoded coordinates
   regulationId?: string; // Specific regulation document ID (e.g. "Delhi-Residential Group Housing")
   greenCertification?: ('IGBC' | 'GRIHA' | 'LEED' | 'Green Building')[];
   vastuCompliant?: boolean;
@@ -399,7 +425,7 @@ export const GenerateZonesOutputSchema = z.object({
 export type GenerateZonesOutput = z.infer<typeof GenerateZonesOutputSchema>;
 
 
-export type DrawingObjectType = 'Plot' | 'Zone' | 'Building';
+export type DrawingObjectType = 'Plot' | 'Zone' | 'Building' | 'Road';
 
 export type SelectableObjectType = 'Plot' | 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea' | 'Label';
 

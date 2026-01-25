@@ -16,6 +16,7 @@ import { generateLayoutZones } from '@/ai/flows/ai-zone-generator';
 
 import { generateLamellas, generateTowers, generatePerimeter, AlgoParams, AlgoTypology } from '@/lib/generators/basic-generator';
 import { generateLShapes, generateUShapes, generateTShapes, generateHShapes } from '@/lib/generators/geometric-typologies';
+import { generateSiteUtilities, generateBuildingLayout } from '@/lib/generators/layout-generator';
 import { splitPolygon } from '@/lib/polygon-utils';
 import { db } from '@/lib/firebase';
 import { calculateVastuScore } from '@/lib/engines/vastu-engine';
@@ -49,7 +50,7 @@ interface BuildingState {
     zoneDefinition: ZoneDefinitionState;
     selectedObjectId: { type: SelectableObjectType; id: string } | null;
     hoveredObjectId: { type: SelectableObjectType; id: string } | null;
-    uiState: { showVastuCompass: boolean; isFeasibilityPanelOpen: boolean }; // New UI State
+    uiState: { showVastuCompass: boolean; isFeasibilityPanelOpen: boolean; ghostMode: boolean }; // New UI State
     aiScenarios: (AiScenario | AiMassingScenario)[] | null;
     isLoading: boolean;
     active: boolean;
@@ -99,6 +100,7 @@ interface BuildingState {
         runAlgoMassingGenerator: (plotId: string) => void;
         addParkingFloor: (buildingId: string, parkingType: ParkingType, level?: number) => void;
         setPlotRegulation: (plotId: string, regulationType: string) => void;
+        setPlotRegulationByIndex: (plotId: string, index: number) => void;
 
         saveDesignOption: (name: string, description?: string) => void;
         loadDesignOption: (id: string) => void;
@@ -108,6 +110,8 @@ interface BuildingState {
         applyScenario: (scenarioIndex: number) => void;
         clearTempScenarios: () => void;
         toggleVastuCompass: (show: boolean) => void;
+        toggleFeasibilityPanel: () => void;
+        toggleGhostMode: () => void;
         setFeasibilityPanelOpen: (isOpen: boolean) => void;
 
         undo: () => void;
@@ -181,6 +185,14 @@ const prepareForFirestore = (plots: Plot[]): any[] => {
                 ...b,
                 geometry: JSON.stringify(b.geometry),
                 centroid: JSON.stringify(b.centroid),
+                cores: (b.cores || []).map(c => ({
+                    ...c,
+                    geometry: JSON.stringify(c.geometry)
+                })),
+                units: (b.units || []).map(u => ({
+                    ...u,
+                    geometry: JSON.stringify(u.geometry)
+                })),
             })),
             greenAreas: (plot.greenAreas || []).map(g => ({
                 ...g,
@@ -207,6 +219,24 @@ const prepareForFirestore = (plots: Plot[]): any[] => {
     });
 };
 
+// Helper to safely parse geometry
+const safeParse = (data: any, label: string) => {
+    if (!data) return null;
+    if (typeof data === 'object') return data; // Already an object
+    try {
+        const parsed = JSON.parse(data);
+        // Handle double-serialization check
+        if (typeof parsed === 'string') {
+            try { return JSON.parse(parsed); }
+            catch { return parsed; }
+        }
+        return parsed;
+    } catch (e) {
+        console.warn(`[safeParse] Failed to parse ${label}:`, data);
+        return null;
+    }
+};
+
 // Helper to parse geometry from Firestore
 const parseFromFirestore = (plots: any[]): Plot[] => {
     if (!plots || !Array.isArray(plots)) {
@@ -214,39 +244,61 @@ const parseFromFirestore = (plots: any[]): Plot[] => {
         return [];
     }
     console.log('[parseFromFirestore] Parsing plots:', plots.length);
+
     return plots.map(plot => {
         try {
-            return {
+            // Check if this plot is already parsed (has geometry object)
+            // or if it needs parsing
+            const parsedPlot = {
                 ...plot,
                 isHeatAnalysisActive: plot.isHeatAnalysisActive ?? false,
-                geometry: plot.geometry ? JSON.parse(plot.geometry) : null,
-                centroid: plot.centroid ? JSON.parse(plot.centroid) : null,
+                geometry: safeParse(plot.geometry, `plot-${plot.id}-geometry`),
+                centroid: safeParse(plot.centroid, `plot-${plot.id}-centroid`),
                 buildings: (plot.buildings || []).map((b: any) => ({
                     ...b,
-                    geometry: b.geometry ? JSON.parse(b.geometry) : null,
-                    centroid: b.centroid ? JSON.parse(b.centroid) : null,
+                    geometry: safeParse(b.geometry, `bldg-${b.id}`),
+                    centroid: safeParse(b.centroid, `bldg-${b.id}-centroid`),
+                    cores: (b.cores || []).map((c: any) => ({
+                        ...c,
+                        geometry: safeParse(c.geometry, `core-${c.id}`)
+                    })),
+                    units: (b.units || []).map((u: any) => ({
+                        ...u,
+                        geometry: safeParse(u.geometry, `unit-${u.id}`)
+                    })),
                 })),
                 greenAreas: (plot.greenAreas || []).map((g: any) => ({
                     ...g,
-                    geometry: g.geometry ? JSON.parse(g.geometry) : null,
-                    centroid: g.centroid ? JSON.parse(g.centroid) : null,
+                    geometry: safeParse(g.geometry, `green-${g.id}`),
+                    centroid: safeParse(g.centroid, `green-${g.id}-centroid`),
                 })),
                 parkingAreas: (plot.parkingAreas || []).map((p: any) => ({
                     ...p,
-                    geometry: p.geometry ? JSON.parse(p.geometry) : null,
-                    centroid: p.centroid ? JSON.parse(p.centroid) : null,
+                    geometry: safeParse(p.geometry, `parking-${p.id}`),
+                    centroid: safeParse(p.centroid, `parking-${p.id}-centroid`),
                 })),
                 buildableAreas: (plot.buildableAreas || []).map((b: any) => ({
                     ...b,
-                    geometry: b.geometry ? JSON.parse(b.geometry) : null,
-                    centroid: b.centroid ? JSON.parse(b.centroid) : null,
+                    geometry: safeParse(b.geometry, `buildable-${b.id}`),
+                    centroid: safeParse(b.centroid, `buildable-${b.id}-centroid`),
                 })),
                 utilityAreas: (plot.utilityAreas || []).map((u: any) => ({
                     ...u,
-                    geometry: u.geometry ? JSON.parse(u.geometry) : null,
-                    centroid: u.centroid ? JSON.parse(u.centroid) : null,
+                    geometry: safeParse(u.geometry, `utility-${u.id}`),
+                    centroid: safeParse(u.centroid, `utility-${u.id}-centroid`),
                 })),
             };
+
+            // Debug log for first plot to verify structure
+            if (plot === plots[0]) {
+                console.log('[parseFromFirestore] Parsed First Plot Sample:', {
+                    id: parsedPlot.id,
+                    hasGeometry: !!parsedPlot.geometry,
+                    geometryType: parsedPlot.geometry?.type
+                });
+            }
+
+            return parsedPlot;
         } catch (e) {
             console.error("Failed to parse plot from firestore", plot, e);
             return { ...plot, geometry: null, centroid: null, buildings: [], greenAreas: [], parkingAreas: [], buildableAreas: [], utilityAreas: [] };
@@ -283,22 +335,30 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
         toast({ variant: 'destructive', title: 'Location Error', description: 'Could not determine plot location or fetch regulations.' });
     }
 
-    // Determine default regulation based on Project Intended Use
+    // Determine regulation based on Project settings
     const activeProject = useBuildingStore.getState().projects.find(p => p.id === useBuildingStore.getState().activeProjectId);
     const intendedUse = activeProject?.intendedUse || 'Residential';
+    const projectRegulationId = activeProject?.regulationId;
 
-    // Try to find a regulation matching the intended use
-    let defaultRegulation = fetchedRegulations.find(r => r.type.toLowerCase().includes(intendedUse.toLowerCase()));
+    let defaultRegulation: RegulationData | undefined;
 
-    // Fallback 1: Try Residential if not found (and indented use wasn't Residential)
+    // 1. Priority: Explicit Project Regulation ID
+    if (projectRegulationId) {
+        defaultRegulation = fetchedRegulations.find(r => r.id === projectRegulationId || r.type === projectRegulationId);
+    }
+
+    // 2. Fallback: Match Intended Use (Optimization)
     if (!defaultRegulation) {
-        defaultRegulation = fetchedRegulations.find(r => r.type.includes('Residential'));
+        // Only try to find a match, do NOT force random ones
+        defaultRegulation = fetchedRegulations.find(r => r.type && r.type.toLowerCase() === intendedUse.toLowerCase()); // Exact match preference
+
+        if (!defaultRegulation) {
+            defaultRegulation = fetchedRegulations.find(r => r.type && r.type.toLowerCase().includes(intendedUse.toLowerCase()));
+        }
     }
 
-    // Fallback 2: First available
-    if (!defaultRegulation && fetchedRegulations.length > 0) {
-        defaultRegulation = fetchedRegulations[0];
-    }
+    // Removed aggressive fallbacks (Residential / First Available) as per user request
+    // If no regulation matches, it will remain NULL, allowing the user to set it manually or see "No Regulation"
 
     useBuildingStore.setState(produce((draft: BuildingState) => {
         const plotToUpdate = draft.plots.find(p => p.id === plotId);
@@ -336,7 +396,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     },
     selectedObjectId: null,
     hoveredObjectId: null,
-    uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false },
+    uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false, ghostMode: false },
     aiScenarios: null,
     isLoading: true,
     active: false,
@@ -391,13 +451,36 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
             try {
                 const userId = useAuthStore.getState().user?.uid || 'guest';
+
+                // Geocode the location to get lat/lng coordinates
+                let locationCoords: { lat: number; lng: number } | undefined;
+                if (location) {
+                    try {
+                        const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
+                        const geocodeUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${mapboxToken}&limit=1&country=IN`;
+                        const response = await fetch(geocodeUrl);
+                        const data = await response.json();
+
+                        if (data.features && data.features.length > 0) {
+                            const [lng, lat] = data.features[0].center;
+                            locationCoords = { lat, lng };
+                            console.log(`📍 Geocoded "${location}" to:`, locationCoords);
+                        } else {
+                            console.warn(`Could not geocode location: ${location}`);
+                        }
+                    } catch (geocodeError) {
+                        console.error('Geocoding error:', geocodeError);
+                        // Continue without coordinates if geocoding fails
+                    }
+                }
+
                 const newProject: Project = {
                     id: crypto.randomUUID(),
                     userId,
                     name,
                     totalPlotArea,
                     intendedUse,
-                    location,
+                    location: locationCoords || location, // Store coords if available, otherwise store string
                     regulationId,
                     greenCertification,
                     vastuCompliant,
@@ -452,6 +535,18 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 const projectDoc = await getDoc(doc(db, 'users', userId, 'projects', projectId));
                 if (projectDoc.exists()) {
                     const projectData = projectDoc.data() as Project;
+                    console.log('📦 Loaded project data from Firestore:', projectData);
+                    console.log('📦 Loaded project data from Firestore:', projectData);
+                    console.log('📍 Project location:', projectData.location);
+                    // Debug Raw Plots Data
+                    if (projectData.plots && projectData.plots.length > 0) {
+                        const p0 = projectData.plots[0];
+                        console.log('🔍 Raw Plot[0] from DB:', {
+                            id: p0.id,
+                            geometryType: typeof p0.geometry,
+                            geometryPreview: typeof p0.geometry === 'string' ? (p0.geometry as string).substring(0, 50) : 'Object/Null'
+                        });
+                    }
 
                     // Parse plots if they are stored as JSON strings (simplified) or if we need to fetch subcollection
                     // Assuming plots are stored in the project document as sanitized JSON for now
@@ -464,13 +559,23 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         loadedPlots = parseFromFirestore(projectData.plots as any);
                     }
 
-                    set({
+                    // Create the full project object with the ID
+                    const fullProject: Project = {
+                        ...projectData,
+                        id: projectId
+                    };
+
+                    set(state => ({
                         activeProjectId: projectId,
                         plots: loadedPlots,
+                        // Add or update the project in the projects array
+                        projects: state.projects.some(p => p.id === projectId)
+                            ? state.projects.map(p => p.id === projectId ? fullProject : p)
+                            : [fullProject, ...state.projects],
                         isLoading: false,
                         active: true
-                    });
-                    console.log(`Project ${projectData.name} loaded with ${loadedPlots.length} plots.`);
+                    }));
+                    console.log(`✅ Project ${projectData.name} loaded with ${loadedPlots.length} plots.`);
                 } else {
                     toast({ variant: 'destructive', title: 'Error', description: 'Project not found.' });
                     set({ isLoading: false });
@@ -496,6 +601,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             };
             set({ designOptions: [...designOptions, newOption] });
+            get().actions.saveCurrentProject();
             toast({ title: "Scenario Saved", description: `${name} has been saved.` });
         },
         loadDesignOption: (id) => {
@@ -515,6 +621,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set(produce((draft: BuildingState) => {
                 draft.designOptions = draft.designOptions.filter(o => o.id !== id);
             }));
+            get().actions.saveCurrentProject();
             toast({ title: "Scenario Deleted" });
         },
         toggleVastuCompass: (show) => set(produce((state: BuildingState) => {
@@ -541,9 +648,19 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 else if (params.landUse === 'institutional') defaultWidth = 16;
                 else if (params.landUse === 'mixed') defaultWidth = 15;
 
+                if (params.landUse === 'commercial') defaultWidth = 20; // Deep office plates
+                else if (params.landUse === 'institutional') defaultWidth = 16;
+                else if (params.landUse === 'mixed') defaultWidth = 15;
+
                 const wingDepth = p.width || defaultWidth;
 
-                console.log('Generating Scenario:', { typologies: params.typologies, landUse: params.landUse, wingDepth, params });
+                console.log('Generating Scenario:', {
+                    name,
+                    typologies: params.typologies,
+                    landUse: params.landUse,
+                    setback: p.setback,
+                    RAW_SETBACK_PARAM: params.setback
+                });
 
                 // Support both old single typology and new array format
                 // ---------------------------------------------------------
@@ -649,15 +766,20 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                     let generated: Feature<Polygon>[] = [];
 
+                    // Get current project unit mix
+                    const project = get().projects.find(prj => prj.id === get().activeProjectId);
+                    const projectUnitMix = project?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
+
                     // Let generators calculate optimal dimensions based on plot
                     // Only pass wing depth hint if specified (otherwise generators use 10-14m)
-                    const genParams = {
+                    const genParams: AlgoParams = {
                         ...p,
                         wingDepth: wingDepth || undefined, // Let generator calculate if not set
                         width: wingDepth || 12, // Default 12m for Point/Slab
                         obstacles: builtObstacles,
                         targetPosition: targetPos,
                         vastuCompliant: !!p.vastuCompliant,
+                        unitMix: projectUnitMix, // Pass project unit mix
                         // Optional hints - generators will calculate optimal if not provided
                         wingLengthA: undefined,
                         wingLengthB: undefined
@@ -691,9 +813,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                     // Add to combined features (limit per typology to avoid overcrowding)
                     if (generated.length > 0) {
-                        // Limit big shapes to 1, towers can be multiple
-                        const safeLimit = (typology === 'point' || typology === 'slab') ? 4 : 1;
-                        const toAdd = generated.slice(0, safeLimit);
+                        // Limit based on GFA/Density, but do not hard cap count unless necessary for performance
+                        // const safeLimit = (typology === 'point' || typology === 'slab') ? 4 : 1;
+                        // Allow all generated buildings that fit
+                        const toAdd = generated; // .slice(0, safeLimit);
                         builtObstacles.push(...toAdd);
                         geomFeatures.push(...toAdd);
                     }
@@ -773,9 +896,25 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     } else if (params.landUse === 'mixed') {
                         intendedUse = BuildingIntendedUse.MixedUse;
                     }
-                    // else defaults to Residential
 
                     const id = `gen-${crypto.randomUUID()}`;
+
+                    // --- INTERNAL LAYOUT (CORES/UNITS) ---
+                    // Some generators (like L/U/T/H) already calculate layout.
+                    // Others (like Tower/Lamella) need it calculated here.
+                    let layout = { cores: f.properties?.cores || [], units: f.properties?.units || [] };
+
+                    if (layout.units.length === 0) {
+                        const activeProject = get().projects.find(prj => prj.id === get().activeProjectId);
+                        const projectUnitMix = activeProject?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
+
+                        console.log(`[use-building-store] Generating internal layout for building ${i} using unitMix`, projectUnitMix);
+                        const layoutResult = generateBuildingLayout(f, {
+                            subtype: f.properties?.subtype || params.typology,
+                            unitMix: projectUnitMix
+                        });
+                        layout = { cores: layoutResult.cores, units: layoutResult.units };
+                    }
 
                     return {
                         id: id,
@@ -793,6 +932,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             height: floorHeight,
                             color: generateFloorColors(floors, intendedUse)[j] || '#cccccc'
                         })),
+                        cores: layout.cores,
+                        units: layout.units,
                         area: turf.area(f),
                         numFloors: floors,
                         typicalFloorHeight: floorHeight,
@@ -997,81 +1138,18 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                             if (innerSetback) {
                                 // Get all coordinates to find corners of the actual polygon (better than bbox for irregular plots)
-                                const coords = turf.coordAll(innerSetback);
-                                if (coords.length > 0) {
-                                    // Find corners based on coordinate sums/diffs
-                                    // SW: Min (x+y), NE: Max (x+y), NW: Min (x-y), SE: Max (x-y)
-                                    // Note: coords are [lng, lat]
+                                // Vastu/Smart Utility Generation
+                                try {
+                                    // Use the new generator which handles Vastu rules
+                                    const smartUtils = generateSiteUtilities(
+                                        innerSetback as Feature<Polygon>,
+                                        plotClone.buildings,
+                                        params.vastuCompliant
+                                    );
 
-                                    const sw = coords.reduce((prev, curr) => (curr[0] + curr[1] < prev[0] + prev[1] ? curr : prev), coords[0]);
-                                    const ne = coords.reduce((prev, curr) => (curr[0] + curr[1] > prev[0] + prev[1] ? curr : prev), coords[0]);
-                                    const nw = coords.reduce((prev, curr) => (curr[1] - curr[0] > prev[1] - prev[0] ? curr : prev), coords[0]); // Max lat - lng
-                                    const se = coords.reduce((prev, curr) => (curr[0] - curr[1] > prev[0] - prev[1] ? curr : prev), coords[0]); // Max lng - lat
-
-                                    const utilityConfig: Record<string, { size: number, position: 'sw' | 'se' | 'nw' | 'ne' | 'n' }> = {
-                                        'STP': { size: 15, position: 'sw' }, // South West
-                                        'WTP': { size: 15, position: 'se' }, // South East
-                                        'Water': { size: 10, position: 'nw' }, // North West
-                                        'Fire': { size: 10, position: 'ne' }, // North East
-                                        'Gas': { size: 8, position: 'n' }   // North (Midpoint of NW and NE)
-                                    };
-
-                                    const lat = sw[1]; // Reference lat for scaling
-
-                                    externalUtils.forEach((utilName: string) => {
-                                        const config = utilityConfig[utilName];
-                                        if (!config) return;
-
-                                        const size = config.size;
-                                        const sizeLat = size / 111132;
-                                        const sizeLng = size / (111132 * Math.cos(lat * (Math.PI / 180)));
-
-                                        let originX, originY;
-                                        let anchorX, anchorY;
-
-                                        switch (config.position) {
-                                            case 'sw':
-                                                anchorX = sw[0]; anchorY = sw[1];
-                                                // Grow North-East from SW anchor
-                                                originX = anchorX; originY = anchorY;
-                                                break;
-                                            case 'se':
-                                                anchorX = se[0]; anchorY = se[1];
-                                                // Grow North-West from SE anchor
-                                                originX = anchorX - sizeLng; originY = anchorY;
-                                                break;
-                                            case 'nw':
-                                                anchorX = nw[0]; anchorY = nw[1];
-                                                // Grow South-East from NW anchor
-                                                originX = anchorX; originY = anchorY - sizeLat;
-                                                break;
-                                            case 'ne':
-                                                anchorX = ne[0]; anchorY = ne[1];
-                                                // Grow South-West from NE anchor
-                                                originX = anchorX - sizeLng; originY = anchorY - sizeLat;
-                                                break;
-                                            case 'n':
-                                                // Midpoint between NW and NE
-                                                anchorX = (nw[0] + ne[0]) / 2;
-                                                anchorY = (nw[1] + ne[1]) / 2;
-                                                originX = anchorX - sizeLng / 2;
-                                                originY = anchorY - sizeLat;
-                                                break;
-                                            default: originX = sw[0]; originY = sw[1];
-                                        }
-
-                                        const poly = turf.bboxPolygon([originX, originY, originX + sizeLng, originY + sizeLat]);
-
-                                        plotClone.utilityAreas.push({
-                                            id: `util-${crypto.randomUUID()}`,
-                                            name: `${utilName} ${utilName === 'STP' || utilName === 'WTP' ? 'Plant' : utilName === 'Gas' ? 'Facility' : 'Tank'}`,
-                                            type: utilName as UtilityType,
-                                            geometry: poly.geometry as Feature<Polygon>,
-                                            centroid: turf.centroid(poly),
-                                            area: size * size,
-                                            visible: true
-                                        });
-                                    });
+                                    plotClone.utilityAreas.push(...smartUtils);
+                                } catch (err) {
+                                    console.warn("Smart utility generation failed, falling back or skipping", err);
                                 }
                             }
                         } catch (e) {
@@ -1079,7 +1157,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         }
                     }
                 }
-
 
                 return { plots: [plotClone] };
             };
@@ -1096,28 +1173,44 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // Revert to generating active regulation scenarios
                 // Use plotStub's current constraints (derived from active regulation) for all these variations
 
-                // Option 1: Standard
-                generatedScenarios.push(createScenario("Option 1", {
+                // Dynamic Scenario Generation Strategies
+                // 1. Determine base strategy based on constraints
+                const isVastu = params.vastuCompliant === true; // or check project settings
+
+                // Helper to get random int
+                const rnd = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+                // Scenario 1: Optimized / Vastu (The "Best" fit)
+                // If Vastu, stricter orientation (0/90). If not, align to road (0 usually default).
+                generatedScenarios.push(createScenario("Scenario 1: Optimized", {
                     typology: baseTypo as AlgoTypology,
                     spacing: 15,
-                    orientation: 0,
-                    setback: plotStub.setback || 4
+                    orientation: isVastu ? 0 : 0, // Vastu prefers N/E alignment (0/90)
+                    setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
+                    vastuCompliant: isVastu
                 }));
 
-                // Option 2: Variation (Rotated/Dense)
-                generatedScenarios.push(createScenario("Option 2", {
-                    typology: baseTypo as AlgoTypology,
-                    spacing: 20,
-                    orientation: 45,
-                    setback: plotStub.setback || 4
+                // Scenario 2: High Density / Maximized
+                // Tighter spacing, potentially different orientation to fit more
+                generatedScenarios.push(createScenario("Scenario 2: Max Density", {
+                    typology: baseTypo as AlgoTypology, // Could vary typology here if supported
+                    spacing: 12,
+                    orientation: isVastu ? 0 : (plotStub.roadAccessSides?.includes('E') ? 90 : 0),
+                    setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
+                    vastuCompliant: isVastu // Still respect Vastu if requested, but maximize area
                 }));
 
-                // Option 3: Variation (Loose/Large)
-                generatedScenarios.push(createScenario("Option 3", {
-                    typology: baseTypo as AlgoTypology,
-                    spacing: 10,
-                    orientation: 15,
-                    setback: plotStub.setback || 4
+                // Scenario 3: Creative / Alternative
+                // Try a different angle or configuration
+                const altAngle = isVastu ? 0 : 15; // Vastu dislikes 15 deg skew usually, keep 0
+                const altTypo = baseTypo; // Could switch L -> U?
+
+                generatedScenarios.push(createScenario("Scenario 3: Alternative", {
+                    typology: altTypo as AlgoTypology,
+                    spacing: 18,
+                    orientation: altAngle,
+                    setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
+                    vastuCompliant: isVastu
                 }));
 
                 set({
@@ -1160,13 +1253,24 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set(produce((draft: BuildingState) => {
                 const plot = draft.plots.find(p => p.id === plotId);
                 if (plot && plot.availableRegulations) {
+                    // CRITICAL FIX: If the plot already has this regulation type, DO NOT reset it.
+                    // This prevents overwriting a specific variant (e.g. 3m setback) with the default variant (e.g. 5m setback)
+                    // when a generic component calls this action with just the type string.
+                    if (plot.selectedRegulationType === regulationType && plot.regulation) {
+                        return;
+                    }
+
                     const selectedReg = plot.availableRegulations.find(r => r.type === regulationType);
                     if (selectedReg) {
                         plot.selectedRegulationType = selectedReg.type;
                         plot.regulation = selectedReg;
 
                         // Update constraints
-                        plot.setback = selectedReg.geometry?.setback?.value ?? 4;
+                        plot.setback = selectedReg.geometry?.setback?.value
+                            || selectedReg.geometry?.min_setback?.value
+                            || selectedReg.geometry?.front_setback?.value
+                            || 4; // Improved setback fetching
+
                         plot.maxBuildingHeight = selectedReg.geometry?.max_height?.value;
                         plot.far = selectedReg.geometry?.floor_area_ratio?.value;
                         plot.maxCoverage = selectedReg.geometry?.max_ground_coverage?.value;
@@ -1176,6 +1280,44 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
+        setPlotRegulationByIndex: (plotId: string, index: number) => {
+            set(produce((draft: BuildingState) => {
+                const plot = draft.plots.find(p => p.id === plotId);
+                if (plot && plot.availableRegulations && plot.availableRegulations[index]) {
+                    const selectedReg = plot.availableRegulations[index];
+                    plot.selectedRegulationType = selectedReg.type;
+                    plot.regulation = selectedReg;
+
+                    // Update constraints
+                    plot.setback = selectedReg.geometry?.setback?.value
+                        || selectedReg.geometry?.min_setback?.value
+                        || selectedReg.geometry?.front_setback?.value
+                        || 4; // Improved fallback logic here too
+
+                    plot.maxBuildingHeight = selectedReg.geometry?.max_height?.value;
+                    plot.far = selectedReg.geometry?.floor_area_ratio?.value;
+                    plot.maxCoverage = selectedReg.geometry?.max_ground_coverage?.value;
+
+                    console.log('[Store] Set Regulation By Index:', {
+                        index,
+                        type: selectedReg.type,
+                        setback: plot.setback,
+                        allRegulations: plot.availableRegulations.map((r, i) => `[${i}] ${r.type} (${r.geometry?.setback?.value || '?'}m)`)
+                    });
+
+                    toast({ title: "Regulation Updated", description: `Applied constraints for ${selectedReg.type}` });
+                }
+            }));
+        },
+
+
+        toggleGhostMode: () => {
+            set(produce((draft: BuildingState) => {
+                draft.uiState.ghostMode = !draft.uiState.ghostMode;
+                toast({ title: draft.uiState.ghostMode ? "Ghost Mode Enabled" : "Ghost Mode Disabled", description: "Internal structures are now " + (draft.uiState.ghostMode ? "visible" : "hidden") });
+            }));
+        },
+
         setMapLocation: (location) => set({ mapLocation: location }),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
@@ -1392,7 +1534,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     const newPlot: Plot = {
                         id, name: `Plot ${get().plots.length + 1}`, geometry: polygonGeometry, centroid, area: newObjArea,
                         setback: 4,
-                        buildings: [], greenAreas: [], parkingAreas: [], buildableAreas: [], utilityAreas: [], labels: [],
+                        buildings: [], greenAreas: [], parkingAreas: [], buildableAreas: [], utilityAreas: [], entries: [], labels: [],
                         visible: true,
                         location: 'Loading...',
                         availableRegulations: [],
@@ -1477,6 +1619,42 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             draft.selectedObjectId = { type: 'Building', id: id };
                         }
                     }));
+                } else if (drawingState.objectType === 'Road') {
+                    let currentPlotId = drawingState.activePlotId;
+                    if (!currentPlotId) {
+                        const parentPlot = plots.find((p: Plot) => turf.booleanContains(p.geometry, polygonGeometry));
+                        if (parentPlot) currentPlotId = parentPlot.id;
+                    }
+                    if (currentPlotId) {
+                        set(produce((draft: BuildingState) => {
+                            const plot = draft.plots.find(p => p.id === currentPlotId);
+                            if (plot) {
+                                const id = `road-${Date.now()}`;
+                                const roadArea: UtilityArea = {
+                                    id,
+                                    name: `Road ${plot.utilityAreas.filter(u => u.type === 'Roads').length + 1}`,
+                                    type: UtilityType.Roads,
+                                    geometry: polygonGeometry,
+                                    centroid: turf.centroid(polygonGeometry),
+                                    area: turf.area(polygonGeometry),
+                                    visible: true
+                                };
+                                plot.utilityAreas.push(roadArea);
+                                draft.selectedObjectId = { type: 'UtilityArea', id };
+                            }
+                        }));
+                    } else {
+                        // Allow road outside plot? For now, yes, but maybe warn?
+                        // Actually, utilities are usually inside plots in this data model.
+                        // If no plot found, we can't attach it.
+                        toast({
+                            variant: 'destructive',
+                            title: 'Drawing Error',
+                            description: 'Roads must be drawn inside a plot boundary.',
+                        });
+                        actions.resetDrawing();
+                        return false;
+                    }
                 }
 
 
@@ -1831,14 +2009,14 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 // Select generator
                 switch (params.typology as any) {
-                    case 'point': generatedBuildings = generateTowers(plot.geometry, { ...params, width: wingDepth } as any); break;
-                    case 'slab': generatedBuildings = generateLamellas(plot.geometry, { ...params, width: wingDepth } as any); break;
-                    case 'lshaped': generatedBuildings = generateLShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: 5, wingLengthA: 30, wingLengthB: 30 }); break;
-                    case 'ushaped': generatedBuildings = generateUShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: 5, wingLengthA: 40, wingLengthB: 30 }); break;
-                    case 'tshaped': generatedBuildings = generateTShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: 5, wingLengthA: 30, wingLengthB: 40 }); break;
-                    case 'hshaped': generatedBuildings = generateHShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: 5, wingLengthA: 30, wingLengthB: 20 }); break;
-                    case 'oshaped': generatedBuildings = generatePerimeter(plot.geometry, { ...params, width: wingDepth } as any); break;
-                    default: generatedBuildings = generateLamellas(plot.geometry, params as any);
+                    case 'point': generatedBuildings = generateTowers(plot.geometry, { ...params, width: wingDepth, setback: effectiveSetback } as any); break;
+                    case 'slab': generatedBuildings = generateLamellas(plot.geometry, { ...params, width: wingDepth, setback: effectiveSetback } as any); break;
+                    case 'lshaped': generatedBuildings = generateLShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 30, wingLengthB: 30 }); break;
+                    case 'ushaped': generatedBuildings = generateUShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 40, wingLengthB: 30 }); break;
+                    case 'tshaped': generatedBuildings = generateTShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 30, wingLengthB: 40 }); break;
+                    case 'hshaped': generatedBuildings = generateHShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 30, wingLengthB: 20 }); break;
+                    case 'oshaped': generatedBuildings = generatePerimeter(plot.geometry, { ...params, width: wingDepth, setback: effectiveSetback } as any); break;
+                    default: generatedBuildings = generateLamellas(plot.geometry, { ...params, setback: effectiveSetback } as any);
                 }
 
                 // Convert Features to Buildings
@@ -1941,8 +2119,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     const selected = params.selectedUtilities;
 
                     // Classification: Internal (building-attached) vs External (plot zones)
-                    const internalUtils = selected.filter((u: string) => ['HVAC', 'Electrical'].includes(u));
-                    const externalUtils = selected.filter((u: string) => ['STP', 'WTP', 'Water', 'Fire', 'Gas', 'Roads'].includes(u));
+                    // Utility generation disabled based on user feedback (utilities already exist or manual placement preferred)
+                    const internalUtils: string[] = []; // selected.filter((u: string) => ['HVAC', 'Electrical'].includes(u));
+                    const externalUtils: string[] = []; // selected.filter((u: string) => ['STP', 'WTP', 'Water', 'Fire', 'Gas', 'Roads'].includes(u));
 
                     // 1. Internal Utilities (Modify Buildings)
                     if (internalUtils.length > 0 && newBuildings.length > 0) {

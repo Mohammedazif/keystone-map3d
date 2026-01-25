@@ -1,7 +1,8 @@
 import { useBuildingStore, UTILITY_COLORS } from '@/hooks/use-building-store';
 import { BUILDING_MATERIALS, hslToRgb } from '@/lib/color-utils';
 import { useToast } from '@/hooks/use-toast';
-import { BuildingIntendedUse, GreenRegulationData } from '@/lib/types';
+import { BuildingIntendedUse, GreenRegulationData, UtilityType } from '@/lib/types';
+import { Feature, Polygon, Point } from 'geojson';
 import * as turf from '@turf/turf';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
@@ -63,11 +64,27 @@ export function MapEditor({
   const [buildingsReady, setBuildingsReady] = useState(false); // Track when buildings are ready for analysis
 
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  const [styleLoaded, setStyleLoaded] = useState(false);
   const [isThreeboxLoaded, setIsThreeboxLoaded] = useState(false);
+  const [isTerrainEnabled, setIsTerrainEnabled] = useState(false); // Terrain OFF by default
   const markers = useRef<Marker[]>([]);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); // Default primary color
+  const hasNavigatedRef = useRef(false); // Track if we've navigated in this component instance
+  const threeboxObjects = useRef<any[]>([]); // Track active Threebox objects for cleanup
 
-  const { actions, drawingPoints, drawingState, selectedObjectId, isLoading, plots, uiState, activeProjectId, projects } = useBuildingStore();
+
+
+  // Optimized Selectors
+  const actions = useBuildingStore(s => s.actions);
+  const drawingPoints = useBuildingStore(s => s.drawingPoints);
+  const drawingState = useBuildingStore(s => s.drawingState);
+  const selectedObjectId = useBuildingStore(s => s.selectedObjectId);
+  const isLoading = useBuildingStore(s => s.isLoading);
+  const plots = useBuildingStore(s => s.plots);
+  const uiState = useBuildingStore(s => s.uiState);
+  const activeProjectId = useBuildingStore(s => s.activeProjectId);
+  const projects = useBuildingStore(s => s.projects);
 
 
   const activeProject = projects.find(p => p.id === activeProjectId);
@@ -75,21 +92,7 @@ export function MapEditor({
 
 
 
-  // Sync uploaded regulations to store so Sidebar/Charts use them too
-  useEffect(() => {
-    if (activeProject && regulations) {
-      plots.forEach(plot => {
-        // If plot doesn't have regulation or it doesn't match the active fetched one
-        const currentId = plot.regulation ? `${plot.regulation.location}-${plot.regulation.type}` : '';
-        const newId = `${regulations.location}-${regulations.type}`;
 
-        if (currentId !== newId) {
-          console.log(`Syncing regulation ${newId} to plot ${plot.id}`);
-          actions.updatePlot(plot.id, { regulation: regulations });
-        }
-      });
-    }
-  }, [activeProject, plots, regulations, actions]);
 
   const { toast } = useToast();
 
@@ -352,10 +355,49 @@ export function MapEditor({
       onMapReady?.();
       mapInstance.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
+      // Terrain & Atmosphere Configuration
+      mapInstance.setMaxPitch(85); // Allow looking up easier in mountains
+
+      // NOTE: Terrain disabled per user request for "flat" plot
+      /*
+      // Add terrain source
+      mapInstance.addSource('mapbox-dem', {
+        'type': 'raster-dem',
+        'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        'tileSize': 512,
+        'maxzoom': 14
+      });
+
+      // add the DEM source as a terrain layer (OFF by default, user can toggle)
+      mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
+      */
+
+      // Add Sky Layer for better horizon context in 3D
+      mapInstance.addLayer({
+        'id': 'sky',
+        'type': 'sky',
+        'paint': {
+          'sky-type': 'atmosphere',
+          'sky-atmosphere-sun': [0.0, 0.0],
+          'sky-atmosphere-sun-intensity': 15
+        }
+      });
+
       // Enable 3D buildings in Mapbox Standard Style
-      mapInstance.setConfigProperty('basemap', 'show3dObjects', true);
+      try {
+        mapInstance.setConfigProperty('basemap', 'show3dObjects', true);
+      } catch (e) {
+        console.warn("Could not set show3dObjects config", e);
+      }
 
       setIsMapLoaded(true);
+    });
+
+    // Listen for style data changes to ensure we render when style is ready
+    mapInstance.on('styledata', () => {
+      if (mapInstance.isStyleLoaded()) {
+        setStyleLoaded(true);
+      }
     });
 
     mapInstance.on('click', handleMapClick);
@@ -369,6 +411,167 @@ export function MapEditor({
 
   }, []);
 
+
+
+  // Auto-navigate to project location or first plot on load
+  useEffect(() => {
+    if (!map.current || !isMapLoaded) return;
+
+    // Check if we've already navigated in this component instance
+    if (hasNavigatedRef.current) return;
+
+    // Priority 1: Use first plot's centroid if available
+    if (plots.length > 0) {
+      const firstPlot = plots[0];
+      if (firstPlot?.geometry?.geometry) {
+        try {
+          const centroid = turf.centroid(firstPlot.geometry);
+          const [lng, lat] = centroid.geometry.coordinates;
+
+          console.log('✈️ Flying to plot centroid:', { lat, lng });
+          map.current.flyTo({
+            center: [lng, lat],
+            zoom: 17,
+            essential: true,
+            duration: 1500
+          });
+
+          // Trigger map update after navigation completes
+          map.current.once('moveend', () => {
+            if (map.current) {
+              hasNavigatedRef.current = true;
+              console.log('✅ Marked as navigated (session)');
+
+              // Trigger single repaint
+              map.current.triggerRepaint();
+
+              // Auto-select immediately
+              actions.selectObject(firstPlot.id, 'Plot');
+              console.log('🎯 Auto-selected plot for visibility');
+            }
+          });
+          return;
+        } catch (error) {
+          console.warn('Failed to calculate plot centroid:', error);
+        }
+      }
+    }
+
+    // Priority 2: Use project location if no plots exist
+    if (activeProject?.location && typeof activeProject.location === 'object') {
+      const { lat, lng } = activeProject.location as { lat: number, lng: number };
+      if (lat && lng) {
+        console.log('✈️ Flying to project location:', { lat, lng });
+        map.current.flyTo({
+          center: [lng, lat],
+          zoom: 16,
+          essential: true,
+          duration: 1500
+        });
+
+        map.current.once('moveend', () => {
+          if (map.current) {
+            hasNavigatedRef.current = true;
+            map.current.triggerRepaint();
+          }
+        });
+      }
+    }
+  }, [isMapLoaded, plots, activeProject, activeProjectId, actions]);
+
+  // Automatic Road Detection
+  useEffect(() => {
+    if (!map.current || !isMapLoaded || plots.length === 0) return;
+
+    const detectRoads = () => {
+      // Small debounce to prevent thrashing during pan/zoom
+      if (map.current?.isMoving()) return;
+
+      plots.forEach(plot => {
+        // Skip if already detected to save performance (optional, or re-detect on move?)
+        // For now, let's re-detect to be robust 
+        if (!plot.geometry || !plot.visible) return;
+
+        // Get plot bbox in pixels
+        const bbox = turf.bbox(plot.geometry);
+        const [minX, minY, maxX, maxY] = bbox;
+
+        // Convert real coords to screen pixels
+        const sw = map.current!.project([minX, minY]);
+        const ne = map.current!.project([maxX, maxY]);
+
+        // Add 30px buffer to look for roads around the plot
+        const buffer = 30;
+        const queryBox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
+          [Math.min(sw.x, ne.x) - buffer, Math.min(sw.y, ne.y) - buffer],
+          [Math.max(sw.x, ne.x) + buffer, Math.max(sw.y, ne.y) + buffer]
+        ];
+
+        // Query map features
+        const features = map.current!.queryRenderedFeatures(queryBox, {
+          // Filter by known Mapbox road layers (standard style)
+          filter: ['any',
+            ['in', 'class', 'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'street', 'minor', 'road'],
+            ['in', 'highway', 'residential', 'service', 'track', 'footway']
+          ]
+        });
+
+        // Filter results specifically for road-like layers
+        // Mapbox Standard/Streets use 'road-label', 'road-primary', etc.
+        const roadFeatures = features.filter(f => {
+          const id = f.layer?.id.toLowerCase();
+          return id && (id.includes('road') || id.includes('street') || id.includes('way')) && !id.includes('label');
+        });
+
+        if (roadFeatures.length > 0) {
+          // Determine Direction
+          // Simple heuristic: Where is the road relative to plot centroid?
+          const center = turf.centroid(plot.geometry);
+          const [cx, cy] = center.geometry.coordinates;
+
+          const accessSides = new Set<string>();
+
+          roadFeatures.forEach(rf => {
+            // Get nearest point on road using turf (expensive loop?)
+            // Cheaper: Look at feature bounding box or vertices
+            // Even cheaper: Check if road bbox intersects with N/S/E/W quadrants relative to center
+            const rBbox = turf.bbox(rf);
+
+            // If road overlaps or is close to North side (y > cy)
+            if (rBbox[3] > cy + (maxY - minY) * 0.4) accessSides.add('N');
+            // South (y < cy)
+            if (rBbox[1] < cy - (maxY - minY) * 0.4) accessSides.add('S');
+            // East (x > cx)
+            if (rBbox[2] > cx + (maxX - minX) * 0.4) accessSides.add('E');
+            // West (x < cx)
+            if (rBbox[0] < cx - (maxX - minX) * 0.4) accessSides.add('W');
+          });
+
+          // Update Plot if changed
+          const newSides = Array.from(accessSides);
+          const oldSides = plot.roadAccessSides || [];
+
+          // Shallow compare
+          const hasChanged = newSides.length !== oldSides.length || !newSides.every(s => oldSides.includes(s));
+
+          if (hasChanged && newSides.length > 0) {
+            console.log(`🛣️ Detected Road Access for ${plot.name}:`, newSides);
+            actions.updatePlot(plot.id, { roadAccessSides: newSides });
+            toast({
+              title: "Road Access Detected",
+              description: `Identified roads on: ${newSides.join(', ')} side(s).`
+            });
+          }
+        }
+      });
+    };
+
+    map.current.on('idle', detectRoads);
+    // return () => map.current?.off('idle', detectRoads); // Cleanup?
+    // Note: React effects run often, we likely need to debounce this or only run once per plot load.
+    // For now, 'idle' is good as it runs after tiles load.
+
+  }, [isMapLoaded, plots, actions]);
 
 
   // Effect: Run Visual Analysis when mode/date changes or buildings change
@@ -405,7 +608,16 @@ export function MapEditor({
     // IMMEDIATE: Reset colors synchronously when switching to 'none'
     if (analysisMode === 'none') {
       console.log('[Analysis Effect] Resetting colors immediately');
-      runVisualAnalysis(buildings, context, 'none', solarDate, activeGreenRegulations);
+
+      // Strict cleanup: Remove ALL heatmap overlays from world
+      if (window.tb && window.tb.world) {
+        window.tb.world.traverse((obj: any) => {
+          if (obj.name && obj.name.startsWith('heatmap-overlay-')) {
+            obj.parent?.remove(obj);
+          }
+        });
+        window.tb.repaint();
+      }
       return; // Don't run debounced analysis
     }
 
@@ -727,40 +939,49 @@ export function MapEditor({
       if (!THREE) return;
 
       plots.forEach(plot => {
-        // Calculate true center by averaging polygon vertices
-        let center: [number, number] | undefined;
+        // Calculate bbox center for accurate positioning
+        const bbox = turf.bbox(plot.geometry);
+        const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
 
-        const geom = plot.geometry?.geometry;
-        if (geom && geom.type === 'Polygon' && geom.coordinates && geom.coordinates[0]) {
-          const coords = geom.coordinates[0];
-          let sumLng = 0, sumLat = 0;
-          const numPoints = coords.length - 1; // Exclude duplicate closing point
-
-          for (let i = 0; i < numPoints; i++) {
-            sumLng += coords[i][0];
-            sumLat += coords[i][1];
-          }
-
-          center = [sumLng / numPoints, sumLat / numPoints];
-          console.log('📍 Vastu Compass Center:', center, 'Plot:', plot.id);
-        }
-
-        if (!center) {
-          console.warn('⚠️ Could not calculate center for plot:', plot.id);
-          return;
-        }
+        console.log('📍 Vastu Compass Center (bbox center):', center, 'Plot:', plot.id);
+        console.log('🔍 DETAILED DEBUG:', {
+          plotId: plot.id,
+          bboxCenterUsed: center,
+          bbox: bbox,
+          plotCentroid: plot.centroid?.geometry?.coordinates,
+          geometryType: plot.geometry?.type,
+          area: plot.area
+        });
 
         // Radius: Make it smaller to fit within plot (0.5x the calculated radius)
         const r = Math.sqrt(plot.area / Math.PI) * 0.5;
+        console.log('🎯 Compass Radius:', r, 'meters');
 
         const compassGroup = createShaktiChakraGroup(THREE, r);
         const compassName = 'vastu-compass-group';
         compassGroup.name = `${compassName}-${plot.id}`;
 
-        // Create Threebox Object
+        // Get elevation at centroid
+        let elevation = 0;
+        if (map.current?.queryTerrainElevation) {
+          elevation = map.current.queryTerrainElevation({ lng: center[0], lat: center[1] }) || 0;
+        }
+
+        // Create Threebox Object with explicit anchor
         // @ts-ignore
-        const tbObj = window.tb.Object3D({ obj: compassGroup, units: 'meters' })
-          .setCoords(center);
+        const tbObj = window.tb.Object3D({
+          obj: compassGroup,
+          units: 'meters',
+          anchor: 'center'  // Explicitly set anchor to center
+        }).setCoords([center[0], center[1], elevation + 0.5]);  // Add small elevation offset
+
+        console.log('✅ Threebox Object Created:', {
+          name: `${compassName}-${plot.id}`,
+          coordinates: center,
+          elevation: elevation,
+          radius: r,
+          tbObjName: tbObj.name
+        });
 
         // Set name for debugging
         tbObj.name = compassGroup.name;
@@ -1481,6 +1702,38 @@ export function MapEditor({
             // NOTE: Water, Fire, STP, WTP, Gas are now rendered as plot-level zones (see utilityAreas rendering below)
 
 
+
+            // 3. Entrance Visualization (Green Arrow)
+            if (building.entrances && building.entrances.length > 0) {
+              building.entrances.forEach((entrance, idx) => {
+                const entColor = 0x00FF00; // Bright Green
+                const entSize = 1.0;
+                const entHeight = 2.0;
+
+                // Position: Convert from Lat/Lng to Local 3D
+                const [lng, lat] = entrance.position;
+                const entX = -1 * (lng - center[0]) * 111320 * Math.cos(center[1] * Math.PI / 180);
+                const entY = -1 * (lat - center[1]) * 110540;
+
+                // Create Cone pointing down
+                const coneGeo = new THREE.ConeGeometry(entSize * 0.6, entHeight, 16);
+                const coneMat = new THREE.MeshStandardMaterial({
+                  color: entColor,
+                  emissive: 0x004400,
+                  roughness: 0.2,
+                  metalness: 0.3
+                });
+                configureMaterial(coneMat, isFullyOpaque, 1.0);
+
+                const cone = new THREE.Mesh(coneGeo, coneMat);
+                cone.position.set(entX, entY, 3.0); // Float at 3m height
+                cone.rotation.x = Math.PI; // Point Down
+                cone.renderOrder = getRenderOrder(true, 5); // Render on top
+
+                buildingGroup.add(cone);
+              });
+            }
+
             if (false && building.numFloors) {
               const floorHeight = building.height / building.numFloors;
               for (let floor = 1; floor <= building.numFloors; floor++) {
@@ -1653,6 +1906,7 @@ export function MapEditor({
                 frame.rotation.z = facadeAngle;
                 frame.castShadow = true;
                 frame.receiveShadow = true;
+                frame.frustumCulled = false; // Prevent culling
                 frame.renderOrder = getRenderOrder(isFullyOpaque, 3);
                 buildingGroup.add(frame);
 
@@ -1855,35 +2109,76 @@ export function MapEditor({
             buildingGroup.add(roof);
 
             // ADD HVAC / MECHANICAL UNITS
-            /*
-            if (building.area > 150) { // Only for large enough roofs
-              // Calculate centroid
-              let cx = 0, cy = 0;
-              insetCoords.forEach(p => { cx += p[0]; cy += p[1]; });
-              cx /= insetCoords.length;
-              cy /= insetCoords.length;
-  
-              const numUnits = Math.floor(Math.random() * 2) + 1; // 1-2 units
-              const unitMat = new THREE.MeshStandardMaterial({ color: 0xDDDDDD, roughness: 0.7 });
-              configureMaterial(unitMat, isFullyOpaque, opacityVal);
-  
-              for (let u = 0; u < numUnits; u++) {
-                const w = 2.0 + Math.random() * 2;
-                const d = 2.0 + Math.random() * 2;
-                const h = 1.2 + Math.random() * 1.0;
-                const unitGeo = new THREE.BoxGeometry(w, d, h);
-                const unit = new THREE.Mesh(unitGeo, unitMat);
-  
-                // Small random offset from center
-                const offsetX = (Math.random() - 0.5) * 3;
-                const offsetY = (Math.random() - 0.5) * 3;
-  
-                unit.position.set(cx + offsetX, cy + offsetY, building.height + h / 2);
-                unit.renderOrder = getRenderOrder(isFullyOpaque, 2);
-                buildingGroup.add(unit);
-              }
-            }
-            */
+
+            // Extract properties for visualization logic
+            const buildProps = building.geometry.properties || {};
+            const subtype = buildProps.subtype || 'general';
+
+            // Calculate approximate dimensions from BBox for Core sizing
+            const bbox = turf.bbox(building.geometry);
+            const width = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
+            const depth = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
+
+            // CREATE CORE (Concrete Shaft) - DISABLED: Using Mapbox fill-extrusion cores instead
+            // This was creating a grey box at the building centroid which appeared in the courtyard for U-shapes
+            // const coreWidth = Math.max(3, width * 0.2);
+            // const coreDepth = Math.max(3, depth * 0.2);
+            // const coreGeo = new THREE.BoxGeometry(coreWidth, coreDepth, building.height + 1.5);
+            // const coreMat = new THREE.MeshStandardMaterial({
+            //   color: 0x707070,
+            //   roughness: 0.9,
+            //   metalness: 0.1
+            // });
+            // configureMaterial(coreMat, isFullyOpaque, opacityVal);
+            // const core = new THREE.Mesh(coreGeo, coreMat);
+            // core.position.set(0, 0, (building.height + 1.5) / 2);
+            // core.renderOrder = getRenderOrder(isFullyOpaque, 3);
+            // buildingGroup.add(core);
+
+            // CREATE UNITS (Conceptual Volume Blocks) - DISABLED based on user feedback
+            // if (subtype !== 'park' && (subtype === 'slab' || subtype === 'tower' || subtype === 'generated' || building.intendedUse === 'Residential')) {
+            //   const numFloors = Math.floor(building.height / 3.5); // Approx 3.5m floor to floor
+            //   // Limit to avoid performance hit on huge buildings
+            //   const floorsToShow = Math.min(numFloors, 50);
+
+            //   // Use InstancedMesh for performance if we were doing thousands, but for now simple loop is okay for < 50 items
+            //   // Actually, let's just do a few floors to show the concept
+            //   const startFloor = 1;
+
+            //   for (let f = startFloor; f < floorsToShow; f++) {
+            //     const z = f * 3.5;
+
+            //     // Create 4 'units' per floor for visual breakup
+            //     const unitSize = 2.5;
+            //     // Place in corners relative to core
+            //     const offsets = [
+            //       { x: coreWidth / 1.5 + 1, y: coreDepth / 1.5 + 1 },
+            //       { x: -(coreWidth / 1.5 + 1), y: coreDepth / 1.5 + 1 },
+            //       { x: coreWidth / 1.5 + 1, y: -(coreDepth / 1.5 + 1) },
+            //       { x: -(coreWidth / 1.5 + 1), y: -(coreDepth / 1.5 + 1) }
+            //     ];
+
+            //     offsets.forEach(off => {
+            //       // Random variation to look like occupied units
+            //       if (Math.random() > 0.3) {
+            //         const uW = 3 + Math.random();
+            //         const uD = 3 + Math.random();
+            //         const uH = 2.8;
+            //         const uGeo = new THREE.BoxGeometry(uW, uD, uH);
+            //         const uMat = new THREE.MeshStandardMaterial({
+            //           color: 0xFFF8E7, // Warm interior light
+            //           emissive: 0xFFF0D0,
+            //           emissiveIntensity: 0.2
+            //         });
+            //         configureMaterial(uMat, isFullyOpaque, opacityVal);
+            //         const unit = new THREE.Mesh(uGeo, uMat);
+            //         unit.position.set(off.x, off.y, z + uH / 2);
+            //         unit.renderOrder = getRenderOrder(isFullyOpaque, 2);
+            //         buildingGroup.add(unit);
+            //       }
+            //     });
+            //   }
+            // }
 
             // CREATE PARAPET WALLS
             for (let i = 0; i < insetCoords.length; i++) {
@@ -1976,21 +2271,200 @@ export function MapEditor({
           buildingGroup.position.z = building.baseHeight || 0;
 
           // Add to Threebox
+          // Add to Threebox
+          // Get terrain elevation: Anchor at the LOWEST point of the footprint to avoid floating corners
+          let elevation = 0;
+          if (map.current && map.current.queryTerrainElevation) {
+            // Check all corners to find minimum elevation
+            let minElev = Infinity;
+
+            // Check centroid first
+            const centerLngLat = { lng: center[0], lat: center[1] } as mapboxgl.LngLatLike;
+            const centerElev = map.current.queryTerrainElevation(centerLngLat) || 0;
+            minElev = centerElev;
+
+            // Check polygon vertices
+            if (buildingCoords && buildingCoords.length > 0) {
+              buildingCoords.forEach((coord: any) => {
+                const pt = { lng: coord[0], lat: coord[1] } as mapboxgl.LngLatLike;
+                const elev = map.current!.queryTerrainElevation(pt) ?? 0;
+                if (elev !== null && elev < minElev) {
+                  minElev = elev;
+                }
+              });
+            }
+
+            // If we found a valid min elevation (and it's not still Infinity for some reason)
+            if (minElev !== Infinity && minElev !== null && minElev !== undefined) {
+              elevation = minElev;
+            } else {
+              elevation = 0; // Default to 0 if strictly invalid
+            }
+          }
+
           // @ts-ignore
           const tbObject = window.tb.Object3D({
             obj: buildingGroup,
             units: 'meters',
-            anchor: 'center'
-          }).setCoords([center[0], center[1]]);
+            anchor: 'auto'
+          }).setCoords([center[0], center[1], elevation]);
 
           // IMPORTANT: Tag the wrapper object so our Analysis Engine can find it
           tbObject.userData.isBuildingGroup = true;
           tbObject.name = `building-wrapper-${building.id}`;
 
+          // DEEP CULLING FIX: Disable frustum culling on the wrapper and all children
+          tbObject.frustumCulled = false;
+          tbObject.traverse((child: any) => {
+            child.frustumCulled = false;
+            // Force bounding sphere update if possible
+            if (child.geometry) {
+              child.geometry.computeBoundingSphere();
+            }
+          });
+
           window.tb.add(tbObject);
+          threeboxObjects.current.push(tbObject);
         } catch (error) {
           console.error(`Error rendering building ${building.id}:`, error);
           console.warn(`Skipping building ${building.id} due to rendering error`);
+        }
+      });
+    });
+
+    // RENDER ENTRY / EXIT POINTS
+    plots.forEach(plot => {
+      if (!plot.visible) return;
+
+      // If no entries defined, generate default one based on Vastu or Geometry
+      let entries = plot.entries || [];
+      if (entries.length === 0 && plot.geometry) {
+        // Auto-generate logic (Visual only, ephemeral)
+        const bbox = turf.bbox(plot.geometry); // [minX, minY, maxX, maxY]
+
+        let entryPos: [number, number] | null = null;
+
+        if (activeProject?.vastuCompliant) {
+          // Vastu: Preferred North-East, East, North
+          // Simple logic: Find vertex closest to North-East corner of bbox
+          const neCorner = [bbox[2], bbox[3]]; // MaxX, MaxY
+          // @ts-ignore
+          const vertices = turf.explode(plot.geometry).features;
+          let closest = vertices[0];
+          let minDist = Infinity;
+
+          vertices.forEach((v: any) => {
+            // @ts-ignore
+            const dist = turf.distance(v, turf.point(neCorner));
+            if (dist < minDist) {
+              minDist = dist;
+              closest = v;
+            }
+          });
+          // @ts-ignore
+          entryPos = closest.geometry.coordinates as [number, number];
+        } else {
+          // Default: South or arbitrary road facing side (Bottom edge)
+          const sCorner = [(bbox[0] + bbox[2]) / 2, bbox[1]]; // Mid-South
+          entryPos = sCorner as [number, number];
+        }
+
+        if (entryPos) {
+          entries = [{
+            id: `auto-entry-${plot.id}`,
+            type: 'Entry',
+            position: entryPos,
+            name: 'Main Gate'
+          }];
+        }
+      }
+
+      entries.forEach(entry => {
+        const color = entry.type === 'Entry' ? 0x00FF00 : (entry.type === 'Exit' ? 0xFF0000 : 0xFFAA00);
+
+        // Create 3D Marker (Cone pointing down)
+        const geometry = new THREE.ConeGeometry(2, 6, 8);
+        geometry.rotateX(Math.PI); // Point down
+        const material = new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5 });
+        const marker = new THREE.Mesh(geometry, material);
+
+        // Get elevation
+        // @ts-ignore
+        let elev = 0;
+        if (map.current?.queryTerrainElevation) {
+          elev = map.current.queryTerrainElevation({ lng: entry.position[0], lat: entry.position[1] }) || 0;
+        }
+
+        // @ts-ignore
+        const tbObj = window.tb.Object3D({
+          obj: marker,
+          units: 'meters',
+          anchor: 'center'
+        }).setCoords([entry.position[0], entry.position[1], elev + 4]); // Float 4m above ground
+
+        window.tb.add(tbObj);
+        threeboxObjects.current.push(tbObj);
+      });
+    });
+
+
+    // RENDER TREES IN GREEN AREAS
+    // Optimization: create geometries once.
+    const rectTrunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 1.5, 5);
+    const rectLeafGeo = new THREE.ConeGeometry(1.5, 3, 6);
+
+    plots.forEach(plot => {
+      if (!plot.visible) return;
+      plot.greenAreas.forEach(ga => {
+        if (!ga.geometry || ga.geometry.geometry.type !== 'Polygon') return;
+        const areaSqM = ga.area || turf.area(ga.geometry);
+        const numTrees = Math.min(15, Math.floor(areaSqM / 50));
+        if (numTrees <= 0) return;
+
+        const bbox = turf.bbox(ga.geometry);
+        let treesAdded = 0;
+        let attempts = 0;
+
+        while (treesAdded < numTrees && attempts < 50) {
+          attempts++;
+          const lng = bbox[0] + Math.random() * (bbox[2] - bbox[0]);
+          const lat = bbox[1] + Math.random() * (bbox[3] - bbox[1]);
+          if (turf.booleanPointInPolygon(turf.point([lng, lat]), ga.geometry as any)) {
+            treesAdded++;
+            const scale = 0.5 + Math.random() * 0.8;
+
+            const trunk = new THREE.Mesh(rectTrunkGeo, new THREE.MeshStandardMaterial({ color: 0x5D4037 }));
+            const leaves = new THREE.Mesh(rectLeafGeo, new THREE.MeshStandardMaterial({ color: 0x2E7D32 }));
+
+            trunk.scale.set(scale, scale, scale);
+            leaves.scale.set(scale, scale, scale);
+
+            trunk.position.z = (1.5 * scale) / 2;
+            trunk.rotation.x = Math.PI / 2; // Upright in Threebox (Z is up)
+
+            leaves.position.z = (1.5 * scale) + (1.5 * scale) / 2; // Stacked
+            leaves.rotation.x = Math.PI / 2;
+
+            const treeGrp = new THREE.Group();
+            treeGrp.add(trunk);
+            treeGrp.add(leaves);
+
+            // Elevation
+            let elev = 0;
+            if (map.current?.queryTerrainElevation) {
+              elev = map.current.queryTerrainElevation({ lng, lat }) || 0;
+            }
+
+            // @ts-ignore
+            const tbTree = window.tb.Object3D({
+              obj: treeGrp,
+              units: 'meters',
+              anchor: 'center'
+            }).setCoords([lng, lat, elev]);
+
+            window.tb.add(tbTree);
+            threeboxObjects.current.push(tbTree);
+          }
         }
       });
     });
@@ -1999,7 +2473,6 @@ export function MapEditor({
     map.current?.triggerRepaint();
 
   }, [isMapLoaded, isThreeboxLoaded, buildingProps, selectedObjectId]);
-
   // Effect to handle drawing state
   useEffect(() => {
     if (!isMapLoaded || !map.current) return;
@@ -2044,12 +2517,64 @@ export function MapEditor({
   }, [drawingState.isDrawing, drawingPoints, isMapLoaded, primaryColor]);
 
 
+  // Debug Effect: Trace Plots Data
+  useEffect(() => {
+    if (plots.length > 0) {
+      console.log(`[MapEditor] 🕵️ Plots Data Updated. Count: ${plots.length}`);
+      const p0 = plots[0];
+      console.log(`[MapEditor] Plot[0] Preview:`, {
+        id: p0.id,
+        geometryType: p0.geometry?.type,
+        coordsSample: (p0.geometry as any)?.coordinates ? 'Present' : 'Missing',
+        isGeometryObject: typeof p0.geometry === 'object',
+        geometryKeys: p0.geometry ? Object.keys(p0.geometry) : []
+      });
+    } else {
+      console.log(`[MapEditor] Plots array is empty.`);
+    }
+  }, [plots, uiState.ghostMode]);
+
   // Effect to render all plots and their contents
   useEffect(() => {
-    if (!isMapLoaded || !map.current || !map.current.isStyleLoaded()) return;
+    console.log(`[MapEditor] Render Effect Triggered. isMapLoaded: ${isMapLoaded}, styleLoaded: ${styleLoaded}, mapRef: ${!!map.current}`);
+
+    if (!isMapLoaded || !styleLoaded || !map.current) {
+      if (map.current && map.current.isStyleLoaded() && !styleLoaded) {
+        // Fallback: If map says style is loaded but state lags, force update
+        console.log("[MapEditor] Style check passed despite state lag. Updating state...");
+        setStyleLoaded(true);
+      } else {
+        console.warn("[MapEditor] Render Effect SKIPPED due to map state.");
+        return;
+      }
+    }
     const mapInstance = map.current;
 
+    // FIX: Hide standard Mapbox 3D buildings to prevent overlap glitch
+    if (mapInstance.getLayer('building')) {
+      mapInstance.setLayoutProperty('building', 'visibility', 'none');
+    }
+    if (mapInstance.getLayer('3d-buildings')) {
+      mapInstance.setLayoutProperty('3d-buildings', 'visibility', 'none');
+    }
+
     const renderedIds = new Set<string>();
+
+    // PRE-CLEANUP: Remove ALL old core/unit layers before rendering new ones
+    // This prevents ghost layers from persisting across renders
+    const existingLayers = mapInstance.getStyle()?.layers || [];
+    existingLayers.forEach(layer => {
+      const layerId = layer.id;
+      if (layerId.startsWith('core-') || layerId.startsWith('unit-')) {
+        if (mapInstance.getLayer(layerId)) {
+          try {
+            mapInstance.removeLayer(layerId);
+          } catch (e) {
+            console.warn('[PRE-CLEANUP] Failed to remove layer:', layerId, e);
+          }
+        }
+      }
+    });
 
     const allLabels: turf.Feature<turf.Point, { label: string; id: string }>[] = [];
 
@@ -2078,8 +2603,23 @@ export function MapEditor({
           'text-color': '#ffffff',
           'text-halo-color': '#000000',
           'text-halo-width': 1.5,
+          'text-opacity': ['case',
+            ['boolean', ['feature-state', 'hover'], false], 1,
+            ['==', ['get', 'linkedId'], 'SELECTED_ID_PLACEHOLDER'], 1, // We'll update this via setPaintProperty
+            0
+          ]
         },
       });
+    }
+
+    // Effect to update label visibility based on selection/hover
+    // We do this separately to avoid full re-render
+    if (mapInstance.getLayer(LABELS_LAYER_ID)) {
+      mapInstance.setPaintProperty(LABELS_LAYER_ID, 'text-opacity', [
+        'case',
+        ['==', ['get', 'linkedId'], hoveredId || ''], 1,
+        0
+      ]);
     }
 
 
@@ -2090,6 +2630,7 @@ export function MapEditor({
           turf.point(plot.centroid.geometry.coordinates, {
             label: `${plot.area.toFixed(0)} m²`,
             id: `plot-label-${plot.id}`,
+            linkedId: plot.id // Link to plot ID for selection highlight
           })
         );
       }
@@ -2103,8 +2644,90 @@ export function MapEditor({
             turf.point(building.centroid.geometry.coordinates, {
               label: labelText,
               id: `building-label-${building.id}`,
+              linkedId: building.id // Link to building ID for hover
             })
           );
+        }
+
+        // --- RENDER INTERNAL LAYOUT (CORES & UNITS) ---
+        // Cores
+        if (building.cores) {
+          building.cores.forEach(core => {
+            const layerId = `core-${building.id}-${core.id}`;
+            renderedIds.add(layerId);
+
+            // Add props for rendering
+            const geometry = {
+              ...core.geometry,
+              properties: {
+                ...core.geometry.properties,
+                height: building.numFloors * (building.typicalFloorHeight || 3),
+                base_height: 0,
+                color: '#FF00FF' // Magenta for Core visibility
+              }
+            };
+
+            let source = mapInstance.getSource(layerId) as GeoJSONSource;
+            if (source) source.setData(geometry);
+            else mapInstance.addSource(layerId, { type: 'geojson', data: geometry });
+
+            if (!mapInstance.getLayer(layerId)) {
+              mapInstance.addLayer({
+                id: layerId,
+                type: 'fill-extrusion',
+                source: layerId,
+                minzoom: 15,
+                paint: {
+                  'fill-extrusion-color': ['get', 'color'],
+                  'fill-extrusion-height': ['get', 'height'],
+                  'fill-extrusion-base': ['get', 'base_height'],
+                  'fill-extrusion-opacity': uiState.ghostMode ? 0.95 : 0
+                }
+              }, LABELS_LAYER_ID);
+            } else {
+              mapInstance.setPaintProperty(layerId, 'fill-extrusion-opacity', uiState.ghostMode ? 0.95 : 0);
+            }
+          });
+        }
+
+        // Units
+        if (building.units) {
+          building.units.forEach(unit => {
+            const layerId = `unit-${building.id}-${unit.id}`;
+            renderedIds.add(layerId);
+
+            // Add props for rendering
+            const geometry = {
+              ...unit.geometry,
+              properties: {
+                ...unit.geometry.properties,
+                height: building.numFloors * (building.typicalFloorHeight || 3),
+                base_height: 0, // In future, this could be stacked per floor
+                color: unit.color || '#ADD8E6'
+              }
+            };
+
+            let source = mapInstance.getSource(layerId) as GeoJSONSource;
+            if (source) source.setData(geometry);
+            else mapInstance.addSource(layerId, { type: 'geojson', data: geometry });
+
+            if (!mapInstance.getLayer(layerId)) {
+              mapInstance.addLayer({
+                id: layerId,
+                type: 'fill-extrusion',
+                source: layerId,
+                minzoom: 15,
+                paint: {
+                  'fill-extrusion-color': ['get', 'color'],
+                  'fill-extrusion-height': ['get', 'height'],
+                  'fill-extrusion-base': ['get', 'base_height'],
+                  'fill-extrusion-opacity': uiState.ghostMode ? 0.8 : 0
+                }
+              }, LABELS_LAYER_ID);
+            } else {
+              mapInstance.setPaintProperty(layerId, 'fill-extrusion-opacity', uiState.ghostMode ? 0.8 : 0);
+            }
+          });
         }
       });
 
@@ -2158,21 +2781,25 @@ export function MapEditor({
       labelsSource.setData(labelCollection);
     }
 
+    // Consolidate footprints
+    const allBuildingFootprints: Feature<Polygon>[] = [];
+
     plots.forEach(plot => {
       const plotId = plot.id;
+      // Debug Rendering
+      if (plots.length > 0 && plot === plots[0]) {
+        console.log(`[MapEditor] Rendering Plot ${plotId}`, {
+          geometryType: plot.geometry?.type,
+          hasCoordinates: !!(plot.geometry as any)?.coordinates,
+          isSelected: plotId === selectedObjectId?.id
+        });
+      }
 
       renderedIds.add(`plot-base-${plotId}`);
       renderedIds.add(`plot-setback-${plotId}`);
       renderedIds.add(`plot-label-${plotId}`);
 
-      plot.buildings.forEach(b => {
-        renderedIds.add(`building-source-${b.id}`);
-        renderedIds.add(`building-label-${b.id}`);
-        b.floors.forEach(f => {
-          renderedIds.add(`building-floor-fill-${f.id}-${b.id}`);
-          renderedIds.add(`building-floor-border-${f.id}-${b.id}`);
-        })
-      });
+
       plot.greenAreas.forEach(g => {
         renderedIds.add(`green-area-${g.id}`);
         renderedIds.add(`green-area-label-${g.id}`);
@@ -2196,54 +2823,171 @@ export function MapEditor({
       const plotBaseLayerId = `plot-base-${plotId}`;
       const plotSetbackLayerId = `plot-setback-${plotId}`;
 
+      let geometryToRender = plot.geometry;
+      let geometryType = geometryToRender?.type;
+
+      // Normalize Feature to Geometry
+      if (geometryType === 'Feature' && (geometryToRender as any).geometry) {
+        console.log(`[MapEditor] Normalizing Feature to Geometry for Plot ${plotId}`);
+        geometryToRender = (geometryToRender as any).geometry;
+        geometryType = geometryToRender.type;
+      } else {
+        console.log(`[MapEditor] No normalization needed for Plot ${plotId}. Type: ${geometryType}`);
+      }
+
       let setbackPolygon = null;
       try {
-        if (plot.geometry.geometry.type === 'Polygon' && plot.setback > 0) {
-          setbackPolygon = turf.buffer(plot.geometry, -plot.setback, { units: 'meters' } as any);
+        if (((geometryType as string) === 'Polygon' || (geometryType as string) === 'MultiPolygon') && plot.setback > 0) {
+          // turf.buffer works with Features too, but passing raw geometry is safer contextually
+          setbackPolygon = turf.buffer(plot.geometry as any, -plot.setback, { units: 'meters' });
         }
       } catch (e) {
-        console.warn("Could not create setback buffer, likely invalid geometry. A common cause is self-intersecting polygons.", e);
+        console.warn("[Setback Debug] Buffer FAILED for plot", plot.id, e);
         setbackPolygon = plot.geometry;
       }
 
       let sourceBase = mapInstance.getSource(plotBaseSourceId) as GeoJSONSource;
-      if (sourceBase) sourceBase.setData(plot.geometry);
-      else mapInstance.addSource(plotBaseSourceId, { type: 'geojson', data: plot.geometry });
+
+      // Strict Validation on the Normalized Geometry
+      let validNormalizedGeometry = geometryToRender;
+      if (!validNormalizedGeometry || typeof validNormalizedGeometry !== 'object' || !validNormalizedGeometry.type || !(validNormalizedGeometry as any).coordinates) {
+        console.warn(`[MapEditor] ❌ Invalid Geometry Object for Plot ${plotId}`, validNormalizedGeometry);
+      }
+
+      const dataToRender = validNormalizedGeometry || plot.geometry; // Fallback to raw if normalization fails but maybe it's still renderable?
+
+
+      if (sourceBase) {
+        if (dataToRender) sourceBase.setData(dataToRender);
+      } else {
+        if (dataToRender) mapInstance.addSource(plotBaseSourceId, { type: 'geojson', data: dataToRender });
+      }
 
       if (!mapInstance.getLayer(plotBaseLayerId)) {
-        mapInstance.addLayer({
-          id: plotBaseLayerId,
-          type: 'fill',
-          source: plotBaseSourceId,
-          paint: { 'fill-color': '#4a5568', 'fill-opacity': 0.1 }
-        }, LABELS_LAYER_ID);
+        if (dataToRender) { // Only add layer if source valid
+          mapInstance.addLayer({
+            id: plotBaseLayerId,
+            type: 'fill',
+            source: plotBaseSourceId,
+            paint: {
+              'fill-color': [
+                'case',
+                ['==', plotId, selectedObjectId?.id || ''],
+                '#48bb78',
+                '#4a5568'
+              ],
+              'fill-opacity': [
+                'case',
+                ['==', plotId, selectedObjectId?.id || ''],
+                uiState.ghostMode ? 0.2 : 0.6, // Low opacity in Ghost Mode
+                uiState.ghostMode ? 0.05 : 0.1
+              ]
+            }
+          }, LABELS_LAYER_ID);
+        }
+      } else {
+        // Update selection highlight if layer exists
+        mapInstance.setPaintProperty(plotBaseLayerId, 'fill-color', '#4a5568'); // Always use base color, no green highlight
+        mapInstance.setPaintProperty(plotBaseLayerId, 'fill-opacity', [
+          'case',
+          ['==', plotId, selectedObjectId?.id || ''],
+          0.1, // Keep opacity low even when selected
+          0.1
+        ]);
       }
 
       let sourceSetback = mapInstance.getSource(plotSetbackSourceId) as GeoJSONSource;
-      if (sourceSetback) sourceSetback.setData(setbackPolygon || plot.geometry);
-      else mapInstance.addSource(plotSetbackSourceId, { type: 'geojson', data: setbackPolygon || plot.geometry });
+      if (sourceSetback) sourceSetback.setData(setbackPolygon || dataToRender);
+      else if (dataToRender) mapInstance.addSource(plotSetbackSourceId, { type: 'geojson', data: setbackPolygon || dataToRender });
 
       if (!mapInstance.getLayer(plotSetbackLayerId)) {
         mapInstance.addLayer({
           id: plotSetbackLayerId,
           type: 'line',
           source: plotSetbackSourceId,
-          paint: { 'line-color': '#f6ad55', 'line-width': 2, 'line-dasharray': [2, 2] }
+          paint: {
+            'line-color': [
+              'case',
+              ['==', plotId, selectedObjectId?.id || ''],
+              '#ed8936',
+              '#f6ad55'
+            ],
+            'line-width': [
+              'case',
+              ['==', plotId, selectedObjectId?.id || ''],
+              3,
+              2
+            ],
+            'line-dasharray': [2, 2]
+          }
         }, LABELS_LAYER_ID);
+      } else {
+        mapInstance.setPaintProperty(plotSetbackLayerId, 'line-color', [
+          'case',
+          ['==', plotId, selectedObjectId?.id || ''],
+          '#ed8936',
+          '#f6ad55'
+        ]);
+        mapInstance.setPaintProperty(plotSetbackLayerId, 'line-width', [
+          'case',
+          ['==', plotId, selectedObjectId?.id || ''],
+          3,
+          2
+        ]);
+      }
+
+      // Plot Label Layer
+      const labelSourceId = `plot-label-${plotId}`;
+      const labelLayerId = `plot-label-${plotId}`;
+      const labelData = {
+        type: 'Feature',
+        geometry: plot.centroid.geometry,
+        properties: {
+          label: `${plot.name}\n${Math.round(plot.area)} m²`,
+        }
+      };
+
+      let sourceLabel = mapInstance.getSource(labelSourceId) as GeoJSONSource;
+      if (sourceLabel) sourceLabel.setData(labelData as any);
+      else mapInstance.addSource(labelSourceId, { type: 'geojson', data: labelData as any });
+
+      if (!mapInstance.getLayer(labelLayerId)) {
+        mapInstance.addLayer({
+          id: labelLayerId,
+          type: 'symbol',
+          source: labelSourceId,
+          layout: {
+            'text-field': ['get', 'label'],
+            'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+            'text-size': 12,
+            'text-offset': [0, 0], // Center
+            'text-anchor': 'center'
+          },
+          paint: {
+            'text-color': '#ffffff',
+            'text-halo-color': '#000000',
+            'text-halo-width': 2
+          }
+        });
       }
 
       plot.buildings.forEach(building => {
-        const buildingSourceId = `building-source-${building.id}`;
-        const isSelected = selectedObjectId?.id === building.id;
-
-        // Legacy rendering removed in favor of Threebox
-        // We keep the source creation if needed for other things, but for now we can skip it if unused.
-        // Actually, let's keep the source creation just in case we want to add a 2D footprint later.
-        let buildingSource = mapInstance.getSource(buildingSourceId) as GeoJSONSource;
-        if (buildingSource) buildingSource.setData(building.geometry);
-        else mapInstance.addSource(buildingSourceId, { type: 'geojson', data: building.geometry });
+        // Accumulate footprints for single-layer rendering
+        // @ts-ignore
+        const feat = turf.feature(building.geometry.geometry, {
+          id: building.id,
+          linkedId: building.id,
+          name: building.name || 'Building',
+          use: building.intendedUse || 'General',
+          height: building.height || 0,
+          floors: building.numFloors || 0
+        });
+        // @ts-ignore
+        allBuildingFootprints.push(feat);
       });
 
+      /*
+      // Green Areas disabled per user request
       plot.greenAreas.forEach(area => {
         const areaId = `green-area-${area.id}`;
         let source = mapInstance.getSource(areaId) as GeoJSONSource;
@@ -2254,6 +2998,7 @@ export function MapEditor({
           mapInstance.addLayer({ id: areaId, type: 'fill', source: areaId, paint: { 'fill-color': '#48bb78', 'fill-opacity': 0.7 } }, LABELS_LAYER_ID);
         }
       });
+      */
 
       plot.parkingAreas.forEach(area => {
         const areaId = `parking-area-${area.id}`;
@@ -2262,63 +3007,213 @@ export function MapEditor({
         else mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
 
         if (!mapInstance.getLayer(areaId)) {
-          mapInstance.addLayer({ id: areaId, type: 'fill', source: areaId, paint: { 'fill-color': '#374151', 'fill-opacity': 0.7 } }, LABELS_LAYER_ID);
-        }
-      });
-
-      plot.buildableAreas.forEach(area => {
-        const areaId = `buildable-area-${area.id}`;
-        const borderId = `buildable-area-border-${area.id}`;
-        let source = mapInstance.getSource(areaId) as GeoJSONSource;
-        if (source) source.setData(area.geometry);
-        else mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
-
-        if (!mapInstance.getLayer(areaId)) {
-          mapInstance.addLayer({ id: areaId, type: 'fill', source: areaId, paint: { 'fill-color': '#a78bfa', 'fill-opacity': selectedObjectId?.id === area.id ? 0.3 : 0.1 } }, LABELS_LAYER_ID);
-          mapInstance.addLayer({ id: borderId, type: 'line', source: areaId, paint: { 'line-color': '#8b5cf6', 'line-width': 2, 'line-dasharray': [2, 1] } }, LABELS_LAYER_ID);
+          // ... logic to add layer ...
         } else {
-          mapInstance.setPaintProperty(areaId, 'fill-opacity', selectedObjectId?.id === area.id ? 0.4 : 0.1);
-          mapInstance.setPaintProperty(borderId, 'line-color', selectedObjectId?.id === area.id ? '#c4b5fd' : '#8b5cf6');
+          // Check if existing layer matches correct type (line), otherwise remove it to re-create
+          const existingRef = mapInstance.getLayer(areaId);
+          if (existingRef && existingRef.type !== 'line') {
+            mapInstance.removeLayer(areaId);
+          }
+        }
+
+        // Re-check after potential removal
+        if (!mapInstance.getLayer(areaId)) {
+          const isBasement = (area.type === 'Basement');
+
+          if (isBasement) {
+            // Render Basement as outlined only (dashed) to imply underground
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'line',
+              source: areaId,
+              paint: {
+                'line-color': '#1a202c',
+                'line-width': 2,
+                'line-dasharray': [2, 2],
+                'line-opacity': 0.7
+              }
+            }, LABELS_LAYER_ID);
+          } else {
+            // Render Surface/Podium as Fill - Make it subtle/invisible by default to avoid conflicts
+            // The user complained about "grey thing outside" which is this layer.
+            // We'll make it transparent with a dashed outline, effectively hiding the mass.
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'line',
+              source: areaId,
+              paint: {
+                'line-color': '#4a5568',
+                'line-width': 1,
+                'line-dasharray': [2, 4],
+                'line-opacity': 0.3
+              }
+            }, LABELS_LAYER_ID);
+          }
         }
       });
 
-      // Debug logging for utility zones
-      console.log('[Utility Render Debug] Plot has', plot.utilityAreas?.length || 0, 'utility areas');
+      // Combine existing utilities with ephemeral roads if needed
+      const utilitiesToRender = [...(plot.utilityAreas || [])];
+      const hasRoads = utilitiesToRender.some(u => u.type === 'Roads' || u.type === 'AppRoads' as any);
 
-      plot.utilityAreas.forEach(area => {
-        const areaId = `utility-area-${area.id}`;
-        console.log('[Utility Render Debug] Rendering', area.name, 'type:', area.type, 'id:', areaId);
+      if (!hasRoads && plot.geometry) {
+        // Ephemeral Road Generation - DISABLED by user request
+        // Vastu: Roads from North or East
+        // Standard: Road from South
+
+        /* 
+        const bbox = turf.bbox(plot.geometry);
+        const center = turf.center(plot.geometry);
+        const fromDir = (activeProject?.vastuCompliant) ? 'East' : 'South';
+        let startPt: any;
+
+        if (fromDir === 'East') {
+          // Midpoint of right edge
+          startPt = turf.point([bbox[2], (bbox[1] + bbox[3]) / 2]) as Feature<Point>;
+        } else {
+          // Midpoint of bottom edge
+          startPt = turf.point([(bbox[0] + bbox[2]) / 2, bbox[1]]) as Feature<Point>;
+        }
+
+        if (startPt && center && (startPt as any).geometry && (center as any).geometry) {
+          // Create simple driveway to building/center
+          const roadLine = turf.lineString([
+            (startPt as any).geometry.coordinates,
+            (center as any).geometry.coordinates
+          ]);
+
+          // Buffer it to make a Polygon road (width 6m)
+          const roadPoly = turf.buffer(roadLine, 0.003, { units: 'kilometers' }); // 3m radius = 6m width
+
+          if (roadPoly) {
+            utilitiesToRender.push({
+              id: `ephemeral-road-${plot.id}`,
+              name: 'Access Road',
+              type: 'Roads' as UtilityType,
+              geometry: roadPoly as Feature<Polygon>,
+              centroid: center as Feature<Point>,
+              area: 0,
+              visible: true
+            });
+          }
+        }
+        */
+      }
+
+      utilitiesToRender.forEach(u => {
+        const areaId = `utility-area-${u.id}`;
+        // Add to rendered IDs to prevent removal
+        renderedIds.add(areaId);
+        renderedIds.add(`utility-area-label-${u.id}`);
+
+        const featureData = {
+          type: 'Feature',
+          geometry: (u.geometry as any).type === 'Feature' ? (u.geometry as any).geometry : u.geometry,
+          properties: {
+            id: u.id,
+            name: u.name,
+            type: u.type,
+            area: u.area
+          }
+        };
 
         let source = mapInstance.getSource(areaId) as GeoJSONSource;
-        if (source) source.setData(area.geometry);
-        else mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
+        if (source) source.setData(featureData as any);
+        else mapInstance.addSource(areaId, { type: 'geojson', data: featureData as any });
 
-        const color = UTILITY_COLORS[area.type] || '#cccccc';
+        // Determine Color based on Type (using includes for partial matches)
+        let color = '#718096'; // Default Gray
+        const typeStr = (u.type || '').toLowerCase();
+
+        if (typeStr.includes('stp')) color = '#9C27B0'; // Purple
+        else if (typeStr.includes('wtp') || typeStr.includes('water')) color = '#2196F3'; // Blue
+        else if (typeStr.includes('electrical') || typeStr.includes('electric')) color = '#F44336'; // Red
+        else if (typeStr.includes('fire')) color = '#E91E63'; // Pink
+        else if (typeStr.includes('hvac')) color = '#FF9800'; // Orange
+        else if (typeStr.includes('gas')) color = '#795548'; // Brown
+        else if (typeStr.includes('road')) color = '#546E7A'; // Blue Grey
+
+        const isRoad = u.type === 'Roads' || u.type === 'AppRoads' as any; // Handle potential variants
 
         if (!mapInstance.getLayer(areaId)) {
-          mapInstance.addLayer({
-            id: areaId,
-            type: 'fill-extrusion',
-            source: areaId,
-            paint: {
-              'fill-extrusion-color': color,
-              'fill-extrusion-height': 2, // Extrude them slightly to make them visible
-              'fill-extrusion-opacity': 0.9
+          if (isRoad) {
+            // 2D Flat Rendering for Roads
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'fill',
+              source: areaId,
+              paint: {
+                'fill-color': color,
+                'fill-opacity': 0.9,
+                'fill-outline-color': '#455A64'
+              }
+            }, LABELS_LAYER_ID);
+          } else {
+            // 3D Extrusion for other utilities to ensure visibility
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'fill-extrusion',
+              source: areaId,
+              paint: {
+                'fill-extrusion-color': color,
+                'fill-extrusion-height': 2.5, // 2.5m height
+                'fill-extrusion-opacity': 0.7,
+                'fill-extrusion-base': 0
+              }
+            }, LABELS_LAYER_ID);
+          }
+        } else {
+          // Update paint properties if layer exists
+          const existingLayer = mapInstance.getLayer(areaId);
+          if (existingLayer) {
+            if (isRoad) {
+              if (existingLayer.type === 'fill') {
+                mapInstance.setPaintProperty(areaId, 'fill-color', color);
+              }
+            } else {
+              if (existingLayer.type === 'fill-extrusion') {
+                mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', color);
+              }
             }
-          }, LABELS_LAYER_ID);
-          console.log('[Utility Render Debug] Created layer for', area.name, 'with color', color);
-        } else {
-          // Update color if type changes (dynamic color update)
-          mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', color);
+          }
         }
       });
     });
+
+    const allBuildingsSourceId = 'all-buildings-footprints';
+    const allBuildingsLayerId = 'all-buildings-hit-layer';
+    renderedIds.add(allBuildingsSourceId);
+    renderedIds.add(allBuildingsLayerId);
+
+    let buildingSource = mapInstance.getSource(allBuildingsSourceId) as GeoJSONSource;
+    // @ts-ignore
+    const buildingCollection = turf.featureCollection(allBuildingFootprints);
+    if (buildingSource) buildingSource.setData(buildingCollection);
+    else mapInstance.addSource(allBuildingsSourceId, { type: 'geojson', data: buildingCollection });
+
+    if (!mapInstance.getLayer(allBuildingsLayerId)) {
+      mapInstance.addLayer({
+        id: allBuildingsLayerId,
+        type: 'fill',
+        source: allBuildingsSourceId,
+        paint: { 'fill-color': '#000', 'fill-opacity': 0 } // Invisible, hits only
+      }, LABELS_LAYER_ID); // Ensure it is below labels
+
+      mapInstance.on('mousemove', allBuildingsLayerId, (e) => {
+        if (e.features && e.features.length > 0) {
+          mapInstance.getCanvas().style.cursor = 'pointer';
+        }
+      });
+      mapInstance.on('mouseleave', allBuildingsLayerId, () => {
+        mapInstance.getCanvas().style.cursor = '';
+      });
+    }
 
     const currentStyle = mapInstance.getStyle();
     if (currentStyle && currentStyle.layers) {
       currentStyle.layers.forEach(layer => {
         const layerId = layer.id;
-        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('utility-');
+        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('utility-') || layerId.startsWith('core-') || layerId.startsWith('unit-');
 
         if (isManagedByPlots && !renderedIds.has(layerId) && layerId !== LABELS_LAYER_ID) {
           if (mapInstance.getLayer(layerId)) mapInstance.removeLayer(layerId);
@@ -2328,10 +3223,11 @@ export function MapEditor({
 
     if (currentStyle && currentStyle.sources) {
       Object.keys(currentStyle.sources).forEach(sourceId => {
-        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('utility-');
+        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('utility-') || sourceId.startsWith('core-') || sourceId.startsWith('unit-');
 
         if (isManagedByPlots && !renderedIds.has(sourceId) && sourceId !== LABELS_SOURCE_ID) {
-          const isSourceInUse = mapInstance.getStyle().layers.some(layer => (layer as any).source === sourceId);
+          const style = mapInstance.getStyle();
+          const isSourceInUse = style?.layers?.some(layer => (layer as any).source === sourceId);
           if (!isSourceInUse && mapInstance.getSource(sourceId)) {
             mapInstance.removeSource(sourceId);
           }
@@ -2339,7 +3235,67 @@ export function MapEditor({
       });
     }
 
-  }, [plots, isMapLoaded, selectedObjectId, primaryColor, isLoading]);
+  }, [plots, isMapLoaded, selectedObjectId, primaryColor, isLoading, activeProject, styleLoaded, uiState.ghostMode]);
+
+  // HOVER TOOLTIP EFFECT
+  useEffect(() => {
+    if (!map.current || !isMapLoaded) return;
+    const m = map.current;
+
+    const popup = new mapboxgl.Popup({
+      closeButton: false,
+      closeOnClick: false,
+      className: 'editor-tooltip'
+    });
+
+    const onMouseMove = (e: mapboxgl.MapMouseEvent) => {
+      // Query specific interactive layers
+      // We check for: Buildings (hit layer), Utilities (prefix), Roads
+      const features = m.queryRenderedFeatures(e.point).filter(f => {
+        return f.layer && f.layer.id && (f.layer.id === 'all-buildings-hit-layer' || f.layer.id.startsWith('utility-area-'));
+      });
+
+      if (features.length > 0) {
+        const f = features[0];
+        m.getCanvas().style.cursor = 'pointer';
+
+        let html = '';
+        const props = f.properties || {};
+
+        if (f.layer.id === 'all-buildings-hit-layer') {
+          html = `
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || 'Building'}</div>
+            <div class="text-xs text-muted-foreground" style="color: #525252;">${props.use || ''}</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${props.floors || 0} Fl • ${Math.round(props.height || 0)}m</div>
+          `;
+        } else if (f.layer.id.startsWith('utility-area-')) {
+          const typeLabel = props.type || 'Utility';
+          const areaLabel = props.area ? `${Math.round(props.area)} m²` : '';
+
+          html = `
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || typeLabel}</div>
+            <div class="text-xs text-muted-foreground" style="color: #525252;">${typeLabel}</div>
+            ${areaLabel ? `<div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${areaLabel}</div>` : ''}
+          `;
+        }
+
+        if (html) {
+          popup.setLngLat(e.lngLat).setHTML(html).addTo(m);
+        }
+      } else {
+        m.getCanvas().style.cursor = '';
+        popup.remove();
+      }
+    };
+
+    m.on('mousemove', onMouseMove);
+    m.on('mouseleave', () => popup.remove());
+
+    return () => {
+      m.off('mousemove', onMouseMove);
+      popup.remove();
+    };
+  }, [isMapLoaded]);
 
 
   return (
@@ -2354,9 +3310,32 @@ export function MapEditor({
       />
       <div ref={mapContainer} className="w-full h-full" />
 
-      {/* Sidebar Overlay */}
+      {/* Terrain Toggle Button */}
+      <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-1">
+        <button
+          onClick={() => {
+            const newStatus = !isTerrainEnabled;
+            setIsTerrainEnabled(newStatus);
+            if (map.current) {
+              // Toggle Terrain
+              map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': newStatus ? 1.0 : 0.0 });
+              // Trigger repaint to update building elevations
+              window.tb.repaint();
+              // Force React re-render or effect re-run if needed for building height updates? 
+              // Actually the building effect depends on 'isTerrainEnabled' if we add it to dependency
+            }
+          }}
+          className={`p-2 rounded-sm text-xs font-medium transition-colors ${isTerrainEnabled ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
+          title="Toggle 3D Terrain"
+        >
+          {isTerrainEnabled ? '⛰️ Terrain ON' : 'Analytic Flat'}
+        </button>
+      </div>
 
-
-    </div>
+    </div >
   );
 }
+
+
+
+

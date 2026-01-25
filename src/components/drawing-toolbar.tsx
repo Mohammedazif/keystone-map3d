@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { useBuildingStore, type DrawingObjectType } from '@/hooks/use-building-store';
 import { useToast } from '@/hooks/use-toast';
-import { Building2, LandPlot, Map, WandSparkles, Cuboid } from 'lucide-react';
+import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route } from 'lucide-react';
 import React from 'react';
 import { AiGeneratorModal } from './ai-generator-modal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
@@ -36,6 +36,7 @@ export function DrawingToolbar() {
         { name: 'Plot', icon: Map, tooltip: 'Draw Plot Boundary' },
         { name: 'Zone', icon: LandPlot, tooltip: 'Draw Custom Zone' },
         { name: 'Building', icon: Building2, tooltip: 'Draw Building' },
+        { name: 'Road', icon: Route, tooltip: 'Draw Road (Polygon)' },
     ];
 
     const isPlotSelected = selectedObjectId?.type === 'Plot';

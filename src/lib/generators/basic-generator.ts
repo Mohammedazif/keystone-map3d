@@ -1,5 +1,6 @@
 import * as turf from '@turf/turf';
-import type { Feature, Polygon, MultiPolygon } from 'geojson';
+import type { Feature, Polygon, MultiPolygon, Point } from 'geojson';
+import { UnitTypology } from '../types';
 
 export type AlgoTypology = 'lamella' | 'tower' | 'perimeter' | 'point' | 'slab' | 'lshaped' | 'ushaped' | 'tshaped' | 'hshaped' | 'oshaped';
 
@@ -7,8 +8,9 @@ export interface AlgoParams {
     typology: AlgoTypology;
     spacing: number;       // Gap between blocks (meters) or Grid Spacing
     width: number;         // Width of the block (meters) or Building Depth
-    orientation: number;   // Rotation in degrees (0-180)
     setback: number;       // Boundary setback (meters)
+    orientation: number;   // Rotation in degrees (0-180)
+    wingDepth?: number;    // Building wing depth (for L/T/U/H shapes)
     minLength?: number;    // Minimum viable block length
 
     // Extended Params (for UI binding)
@@ -39,6 +41,14 @@ export interface AlgoParams {
 
     // Advanced Placement
     obstacles?: Feature<Polygon>[];
+    targetPosition?: Feature<Point>;
+
+    // Optional Hints
+    wingLengthA?: number;
+    wingLengthB?: number;
+
+    // Unit Mix Configuration
+    unitMix?: UnitTypology[];
 }
 
 export type LamellaParams = AlgoParams;
@@ -55,7 +65,7 @@ export function generateTowers(
 
     // 1. Apply Setback
     // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback / 1000, { units: 'kilometers' as const });
+    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' as const });
     if (!bufferedPlot) return [];
 
     // @ts-ignore
@@ -126,6 +136,18 @@ export function generateTowers(
                     // If at least 50% of the building is inside the setback line, we allow it (clipping handled dynamically)
                     // We use the INTERSECT geometry to ensure it doesn't visually protrude out of the setback line
                     if (area > (width * width) * 0.5) {
+
+                        // Check GFA Constraints
+                        if (params.targetGFA && params.maxFloors) {
+                            const currentGFA = buildings.reduce((sum, b) => sum + (turf.area(b) * params.maxFloors!), 0);
+                            const potentialGFA = area * params.maxFloors;
+
+                            // Strict Cap: If adding this building exceeds target by > 10%, skip it or stop
+                            if (currentGFA + potentialGFA > params.targetGFA * 1.1) {
+                                continue; // Skip this block
+                            }
+                        }
+
                         // Use the clipped geometry
                         const clippedPoly = intersect as Feature<Polygon>;
 
@@ -177,7 +199,7 @@ export function generatePerimeter(
 
     // 1. Apply Setback (Outer boundary)
     // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback / 1000, { units: 'kilometers' as const });
+    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' as const });
     if (!bufferedPlot) return [];
 
     // @ts-ignore
@@ -204,11 +226,24 @@ export function generatePerimeter(
             : [block as Feature<Polygon>];
 
         geoms.forEach(geom => {
+            const area = turf.area(geom);
+
+            // Check GFA Constraints
+            if (params.targetGFA && params.maxFloors) {
+                const currentGFA = buildings.reduce((sum, b) => sum + (turf.area(b) * params.maxFloors!), 0);
+                const potentialGFA = area * params.maxFloors;
+
+                // Strict Cap
+                if (currentGFA + potentialGFA > params.targetGFA * 1.1) {
+                    return;
+                }
+            }
+
             geom.properties = {
                 type: 'generated',
                 subtype: 'perimeter',
                 width,
-                area: turf.area(geom)
+                area: area
             };
             buildings.push(geom as Feature<Polygon>);
         });
@@ -229,7 +264,7 @@ export function generateLamellas(
 
     // 1. Apply Setback
     // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback / 1000, { units: 'kilometers' as const });
+    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' as const });
 
     if (!bufferedPlot) return [];
 
@@ -299,38 +334,29 @@ export function generateLamellas(
                 polys = coords.map(c => turf.polygon(c) as Feature<Polygon>);
             }
 
-            polys.forEach(geom => {
-                const area = turf.area(geom);
-                if (area < (width * minLength)) return;
+            polys.forEach(poly => {
+                const area = turf.area(poly);
 
-                // Check Collision with Obstacles
-                let collision = false;
-                if (params.obstacles && params.obstacles.length > 0) {
-                    for (const obs of params.obstacles) {
-                        // @ts-ignore
-                        if (turf.booleanOverlap(geom, obs) || turf.booleanContains(obs, geom) || turf.booleanContains(geom, obs)) {
-                            collision = true;
-                            break;
-                        }
-                        // @ts-ignore
-                        const obsIntersect = turf.intersect(geom, obs);
-                        if (obsIntersect) {
-                            collision = true;
-                            break;
+                // Check if segment is long enough
+                if (area > (width * minLength)) {
+                    // Check GFA Constraints
+                    if (params.targetGFA && params.maxFloors) {
+                        const currentGFA = buildings.reduce((sum, b) => sum + (turf.area(b) * params.maxFloors!), 0);
+                        const potentialGFA = area * params.maxFloors;
+
+                        // Strict Cap: If adding this building exceeds target by > 10%, skip it or stop
+                        if (currentGFA + potentialGFA > params.targetGFA * 1.1) {
+                            return; // Skip this block
                         }
                     }
-                }
 
-                if (!collision) {
-                    // Add properties
-                    geom.properties = {
+                    poly.properties = {
                         type: 'generated',
                         subtype: 'lamella',
                         width,
-                        area,
-                        ...geom.properties
+                        area
                     };
-                    buildings.push(geom);
+                    buildings.push(poly);
                 }
             });
         }

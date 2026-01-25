@@ -330,8 +330,8 @@ function PlotProperties() {
     };
 
     return (
-        <ScrollArea className="h-[calc(100vh-200px)] -mx-6 px-6">
-            <div className='space-y-6 pb-10'>
+        <ScrollArea className="max-h-[calc(100vh-200px)] -mx-6 px-6">
+            <div className='space-y-6 pb-6'>
                 <div className='space-y-4'>
                     <div>
                         <Label htmlFor="plot-name" className="text-sm font-medium text-muted-foreground">Plot Name</Label>
@@ -363,8 +363,8 @@ function PlotProperties() {
 
                 <Separator />
 
-                <FeasibilitySection stats={stats} parkingCount={parkingCount} />
-                <UnitMixConfig params={feasibilityParams} onChange={handleParamsChange} />
+                {/* UnitMixConfig moved? User requested hiding configuration */}
+                {/* <UnitMixConfig params={feasibilityParams} onChange={handleParamsChange} /> */}
 
             </div>
         </ScrollArea>

@@ -36,7 +36,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const isMobile = useIsMobile();
   const [isClient, setIsClient] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [isExplorerOpen, setIsExplorerOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState("design");
   const [isMapReady, setIsMapReady] = useState(false);
   const [isRegulationViewerOpen, setIsRegulationViewerOpen] = useState(false);
 
@@ -49,18 +49,19 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   });
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('none');
 
-  const { selectedObjectId, actions, project, drawingState, zoneDefinition, aiScenarios, isLoading, isSaving, plots, uiState } = useBuildingStore(s => ({
-    selectedObjectId: s.selectedObjectId,
-    actions: s.actions,
-    project: s.projects.find(p => p.id === projectId),
-    drawingState: s.drawingState,
-    zoneDefinition: s.zoneDefinition,
-    aiScenarios: s.aiScenarios,
-    isLoading: s.isLoading,
-    isSaving: s.isSaving,
-    plots: s.plots,
-    uiState: s.uiState,
-  }));
+  const selectedObjectId = useBuildingStore(s => s.selectedObjectId);
+  const actions = useBuildingStore(s => s.actions);
+  const projects = useBuildingStore(s => s.projects);
+  const activeProjectId = useBuildingStore(s => s.activeProjectId);
+  const drawingState = useBuildingStore(s => s.drawingState);
+  const zoneDefinition = useBuildingStore(s => s.zoneDefinition);
+  const aiScenarios = useBuildingStore(s => s.aiScenarios);
+  const isLoading = useBuildingStore(s => s.isLoading);
+  const isSaving = useBuildingStore(s => s.isSaving);
+  const plots = useBuildingStore(s => s.plots);
+  const uiState = useBuildingStore(s => s.uiState);
+
+  const project = projects.find(p => p.id === projectId);
 
   const selectedPlot = useSelectedPlot();
 
@@ -148,7 +149,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
         <MapSearch />
       </div>
       <div className='flex items-center gap-2 flex-1 justify-end'>
-        <Button variant="outline" onClick={() => setIsExplorerOpen(!isExplorerOpen)}>
+        <Button variant={activeTab === 'explorer' ? 'secondary' : 'outline'} onClick={() => setActiveTab('explorer')}>
           <Layers className="mr-2 h-4 w-4" />
           Explorer
         </Button>
@@ -249,7 +250,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
               <ProjectInfoPanel />
             </div>
             <div className="pointer-events-auto min-h-0 w-96 flex flex-row bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-xl border shadow-xl overflow-hidden text-clip shrink max-h-full">
-              <Tabs defaultValue="design" orientation="vertical" className="flex flex-row h-auto max-h-full w-full min-h-0">
+              <Tabs value={activeTab} onValueChange={setActiveTab} orientation="vertical" className="flex flex-row h-auto max-h-full w-full min-h-0">
                 <div className="w-14 bg-muted/30 border-r flex flex-col items-center py-4 gap-4 shrink-0">
                   <TabsList className="bg-transparent flex flex-col h-auto p-0 gap-4 w-full items-center">
                     <TabsTrigger value="design" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">

@@ -70,20 +70,20 @@ export function ScenarioContent() {
         // 1. Create Tower Option
         actions.setGenerationParams({ typology: 'tower', spacing: 20, width: 18 });
         actions.runAlgoMassingGenerator(plots[0]?.id || '');
-        actions.saveDesignOption("Auto: Tower Plan");
+        // actions.saveDesignOption("Auto: Tower Plan"); // Disabled: User should manually save scenarios
 
         // 2. Create Perimeter Option
         setTimeout(() => {
             actions.setGenerationParams({ typology: 'perimeter', width: 12 });
             actions.runAlgoMassingGenerator(plots[0]?.id || '');
-            actions.saveDesignOption("Auto: Courtyard");
+            // actions.saveDesignOption("Auto: Courtyard"); // Disabled: User should manually save scenarios
         }, 500);
 
         // 3. Create High Density Option
         setTimeout(() => {
             actions.setGenerationParams({ typology: 'lamella', spacing: 10, width: 14, orientation: 45 });
             actions.runAlgoMassingGenerator(plots[0]?.id || '');
-            actions.saveDesignOption("Auto: High Density");
+            // actions.saveDesignOption("Auto: High Density"); // Disabled: User should manually save scenarios
         }, 1000);
     };
 

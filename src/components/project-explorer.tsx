@@ -12,7 +12,12 @@ import {
     Zap,
     Fan,
     ArrowDownToLine,
-    Layers
+    Layers,
+    Box,
+    Grid,
+    Ghost,
+    Eye,
+    EyeOff
 } from 'lucide-react';
 import { useBuildingStore } from '@/hooks/use-building-store';
 import { Button } from '@/components/ui/button';
@@ -23,9 +28,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collap
 
 
 function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
-    const { actions, selectedObjectId } = useBuildingStore(s => ({
+    const { actions, selectedObjectId, uiState } = useBuildingStore(s => ({
         actions: s.actions,
-        selectedObjectId: s.selectedObjectId
+        selectedObjectId: s.selectedObjectId,
+        uiState: s.uiState
     }));
     const [isOpen, setIsOpen] = React.useState(true);
 
@@ -132,6 +138,40 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                     ))}
                                 </div>
                             )}
+
+                            {/* Render Internal Layout Items */}
+                            {b.cores && b.cores.length > 0 && (
+                                <div className="pl-8 space-y-1 pb-2">
+                                    <div
+                                        className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            actions.toggleGhostMode();
+                                        }}
+                                        title={uiState.ghostMode ? "Hide Internal Structure" : "Show Internal Structure"}
+                                    >
+                                        <Box className="h-3 w-3 mr-2 text-zinc-500" />
+                                        <span className="flex-1">Cores ({b.cores.length})</span>
+                                        {uiState.ghostMode ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-50" />}
+                                    </div>
+                                </div>
+                            )}
+                            {b.units && b.units.length > 0 && (
+                                <div className="pl-8 space-y-1 pb-2">
+                                    <div
+                                        className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            actions.toggleGhostMode();
+                                        }}
+                                        title={uiState.ghostMode ? "Hide Internal Structure" : "Show Internal Structure"}
+                                    >
+                                        <Grid className="h-3 w-3 mr-2 text-blue-400" />
+                                        <span className="flex-1">Units ({b.units.length})</span>
+                                        {uiState.ghostMode ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-50" />}
+                                    </div>
+                                </div>
+                            )}
                         </React.Fragment>
                     ))}
                     {plot.greenAreas.map(g => renderObject(g, 'GreenArea'))}
@@ -148,8 +188,10 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
 }
 
 export function ProjectExplorer({ className, embedded = false }: { className?: string; embedded?: boolean }) {
-    const { plots } = useBuildingStore(s => ({
-        plots: s.plots
+    const { plots, uiState, actions } = useBuildingStore(s => ({
+        plots: s.plots,
+        uiState: s.uiState,
+        actions: s.actions
     }));
 
     // Always render structure even if empty to keep layout stable, or return null if preferred.
@@ -161,8 +203,17 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
         <div className={cn('w-full flex-1 min-h-0 flex flex-col', className)}>
             <Container className={cn("flex flex-col h-full", embedded ? "" : "bg-background/80 backdrop-blur-sm border-t-0 rounded-t-none rounded-b-xl shadow-none")}>
                 {!embedded && (
-                    <CardHeader className="py-2 px-4 border-b">
+                    <CardHeader className="py-2 px-4 border-b flex flex-row items-center justify-between">
                         <CardTitle className="text-sm">Project Explorer</CardTitle>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn("h-6 w-6", uiState.ghostMode && "text-primary bg-primary/10")}
+                            onClick={actions.toggleGhostMode}
+                            title="Toggle Ghost Mode (View Internals)"
+                        >
+                            <Ghost className="h-4 w-4" />
+                        </Button>
                     </CardHeader>
                 )}
                 <div className={cn("flex-1 overflow-hidden", embedded ? "" : "p-0")}>
