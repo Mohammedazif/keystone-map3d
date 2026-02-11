@@ -1917,10 +1917,35 @@ export function MapEditor({
         const props = f.properties || {};
 
         if (f.layer?.id === 'all-buildings-hit-layer') {
+          let dims = '';
+          try {
+            // @ts-ignore
+            const area = props.area || turf.area(f);
+            // @ts-ignore
+            const line = turf.polygonToLine(f.geometry);
+            // @ts-ignore
+            const perimeter = turf.length(line, { units: 'meters' });
+
+            if (area && perimeter) {
+              const s = perimeter / 2;
+              const disc = (s * s) - (4 * area);
+              let l = 0, w = 0;
+              if (disc >= 0) {
+                l = (s + Math.sqrt(disc)) / 2;
+                w = (s - Math.sqrt(disc)) / 2;
+              } else {
+                l = Math.sqrt(area);
+                w = l;
+              }
+              dims = `${Math.round(Math.max(l, w))}m x ${Math.round(Math.min(l, w))}m`;
+            }
+          } catch (e) { }
+
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || 'Building'}</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">${props.use || ''}</div>
-            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${props.floors || 0} Fl â€¢ ${Math.round(props.height || 0)}m</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${props.floors || 0} Fl • ${Math.round(props.height || 0)}m</div>
+            ${dims ? `<div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Size: ${dims}</div>` : ''}
           `;
         } else if (f.layer?.id.startsWith('utility-area-')) {
           const typeLabel = props.type || 'Utility';

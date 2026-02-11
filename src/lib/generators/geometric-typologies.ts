@@ -659,30 +659,63 @@ export function generateHShapes(
                                     const cross = turf.intersect(rawCross, validArea);
 
                                     if (cross) {
-                                        // Combine All
+                                        // SPLIT LOGIC: Create 3 distinct parts
+                                        // Part 1: Left Wing (Full)
+                                        // Part 2: Right Wing (Full)
+                                        // Part 3: Crossbar MINUS Wings (Trimmed)
+
                                         // @ts-ignore
-                                        const shape = turf.union(turf.union(wing1, wing2), cross);
+                                        const wingsUnion = turf.union(wing1, wing2);
+                                        // @ts-ignore
+                                        const crossTrimmed = turf.difference(cross, wingsUnion);
 
-                                        if (shape && turf.area(shape) > 400 && !checkCollision(shape, obstacles)) {
-                                            let score = 100 + (turf.area(shape) / 100);
-                                            if (v.name === 'Standard') score += 10; // Prefer standard symmetry
+                                        if (wing1 && wing2 && crossTrimmed) {
 
-                                            const layout = generateBuildingLayout(shape, {
-                                                subtype: 'hshaped',
-                                                unitMix: params.unitMix,
-                                                alignmentRotation: 0
-                                            });
+                                            // Collect ALL polygon coordinates
+                                            const multiCoords: any[] = [];
 
-                                            shape.properties = {
-                                                type: 'generated', subtype: 'hshaped', area: turf.area(shape),
-                                                cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
-                                                scenarioId: `H-Pair-${i}-${j}-${v.name}`,
-                                                // Add metadata to help with diversity selection
-                                                pairId: `${i}-${j}`,
-                                                variant: v.name,
-                                                score
+                                            // Helper to push coords
+                                            const addCoords = (f: Feature<Polygon | MultiPolygon>) => {
+                                                if (f.geometry.type === 'Polygon') {
+                                                    multiCoords.push(f.geometry.coordinates);
+                                                } else if (f.geometry.type === 'MultiPolygon') {
+                                                    f.geometry.coordinates.forEach(c => multiCoords.push(c));
+                                                }
                                             };
-                                            candidates.push({ feature: shape, score, pairId: `${i}-${j}` });
+
+                                            addCoords(wing1 as Feature<Polygon | MultiPolygon>);
+                                            addCoords(crossTrimmed as Feature<Polygon | MultiPolygon>);
+                                            addCoords(wing2 as Feature<Polygon | MultiPolygon>);
+
+                                            const shape = turf.multiPolygon(multiCoords);
+
+                                            if (shape && turf.area(shape) > 400 && !checkCollision(shape as unknown as Feature<Polygon>, obstacles)) {
+                                                let score = 100 + (turf.area(shape) / 100);
+                                                if (v.name === 'Standard') score += 10; // Prefer standard symmetry
+
+                                                // Create a temporary UNION polygon for layout generation (avoid crash)
+                                                // @ts-ignore
+                                                const unionForLayout = turf.union(wingsUnion, crossTrimmed);
+
+                                                const layout = generateBuildingLayout(unionForLayout as unknown as Feature<Polygon>, {
+                                                    subtype: 'hshaped',
+                                                    unitMix: params.unitMix,
+                                                    alignmentRotation: 0
+                                                });
+
+                                                shape.properties = {
+                                                    type: 'generated', subtype: 'hshaped', area: turf.area(shape),
+                                                    cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
+                                                    scenarioId: `H-Pair-${i}-${j}-${v.name}`,
+                                                    // Add metadata to help with diversity selection
+                                                    pairId: `${i}-${j}`,
+                                                    variant: v.name,
+                                                    isSplit: true,
+                                                    score
+                                                };
+                                                // @ts-ignore
+                                                candidates.push({ feature: shape, score, pairId: `${i}-${j}` });
+                                            }
                                         }
                                     }
                                 }

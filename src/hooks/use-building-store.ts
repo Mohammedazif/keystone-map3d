@@ -855,8 +855,32 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     }
                 });
 
+                // SPLIT LOGIC: Explode MultiPolygons into distinct Building parts
+                const explodedFeatures: Feature<Polygon>[] = [];
+                geomFeatures.forEach((f, idx) => {
+                    // @ts-ignore
+                    if (f.geometry && (f.geometry.type === 'MultiPolygon' || (f.properties && f.properties.isSplit))) {
+                        // @ts-ignore
+                        const collection = turf.flatten(f);
+                        // @ts-ignore
+                        collection.features.forEach((subF: Feature<Polygon>, subIdx: number) => {
+                            // Inherit properties but clear layout to force regeneration per part
+                            subF.properties = { ...f.properties, ...subF.properties, splitIndex: subIdx };
+                            if (f.properties?.subtype) subF.properties.subtype = f.properties.subtype;
+
+                            // Important: Clear layout so generateBuildingLayout runs for this specific part
+                            delete subF.properties.cores;
+                            delete subF.properties.units;
+
+                            explodedFeatures.push(subF);
+                        });
+                    } else {
+                        explodedFeatures.push(f as Feature<Polygon>);
+                    }
+                });
+
                 // Convert to Buildings
-                const newBuildings = geomFeatures.map((f, i) => {
+                const newBuildings = explodedFeatures.map((f, i) => {
                     // Calculate height based on floor count range AND regulation limits
                     const floorHeight = params.floorHeight || 3.5;
 
