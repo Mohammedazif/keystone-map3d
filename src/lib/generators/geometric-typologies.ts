@@ -1,879 +1,1033 @@
 import * as turf from '@turf/turf';
 import { generateBuildingLayout } from './layout-generator';
-
-import { Feature, Polygon, MultiPolygon, Point } from 'geojson';
+import { Feature, Polygon, MultiPolygon, Point, LineString } from 'geojson';
 import { UnitTypology } from '../types';
 
 export interface GeometricTypologyParams {
-    wingDepth?: number;       // Building wing depth (10-14m typically) - auto-calculated if not set
-    orientation: number;      // Rotation angle in degrees
-    setback: number;          // Boundary setback (meters)
-    minFootprint?: number;    // Minimum footprint for generated buildings
-
-    // L-shape specific
-    wingLengthA?: number;     // Length of first wing
-    wingLengthB?: number;     // Length of second wing
-
-    // U/H-shape specific
-    openingSide?: 'N' | 'S' | 'E' | 'W';  // Which side is open (for U)
-    bridgePosition?: number;  // Position of bridge (0-1) for H-shape
-
-    // Advanced Placement
-    obstacles?: Feature<Polygon>[]; // Existing buildings to avoid
-    targetPosition?: Feature<Point>; // Preferred center point for placement
-    vastuCompliant?: boolean; // If true, avoid center placement
-
-    // Unit Mix Configuration
-    unitMix?: UnitTypology[]; // Admin panel unit mix configuration
+    wingDepth?: number;
+    orientation: number;
+    setback: number;
+    minFootprint?: number;
+    obstacles?: Feature<Polygon>[];
+    targetPosition?: Feature<Point>;
+    vastuCompliant?: boolean;
+    unitMix?: UnitTypology[];
 }
 
-// Helper: Check collision with obstacles
 function checkCollision(poly: Feature<Polygon>, obstacles?: Feature<Polygon>[]): boolean {
     if (!obstacles || obstacles.length === 0) return false;
     for (const obs of obstacles) {
-        // @ts-ignore
-        if (turf.booleanOverlap(poly, obs) || turf.booleanContains(obs, poly) || turf.booleanContains(poly, obs)) return true;
-        // @ts-ignore
-        const intersect = turf.intersect(poly, obs);
-        if (intersect) return true;
+        try {
+            // @ts-ignore
+            const intersect = turf.intersect(poly, obs);
+            if (intersect && turf.area(intersect) > 1) return true;
+        } catch (e) {
+            // Ignore intersection errors
+        }
     }
     return false;
 }
 
-// Helper: Get Vastu Score for a point (0-100)
-// Higher is better for heavy buildings (SW > S > W)
-function getVastuScore(point: Feature<Point>, bbox: number[]): number {
-    const [minX, minY, maxX, maxY] = bbox;
-    const [x, y] = point.geometry.coordinates;
-    const midX = (minX + maxX) / 2;
-    const midY = (minY + maxY) / 2;
+/**
+ * Creates an offset polygon (buffer) for a LineString.
+ * Used to create "Wings" along plot edges.
+ */
+function createWingFromEdge(
+    edge: Feature<LineString>,
+    depth: number,
+    plotPoly: Feature<Polygon | MultiPolygon>
+): Feature<Polygon> | null {
+    try {
+        // Buffer the edge by depth/2 (since buffer is radius)
+        // But turf buffer is round. better to maximize and cut.
+        // Actually, for building wings, we want a one-sided offset ideally.
+        // But intersection with plot handles the outside part.
 
-    // Normalize 0-1 (0,0 is usually SW in local calc, but let's check bbox)
-    // Mapbox/Turf: Latitude increases NORTH (up), Longitude increases EAST (right)
-    // SW = (minX, minY), NE = (maxX, maxY)
+        // Use a large buffer then intersect with plot?
+        // No, that fills the whole plot if depth is large.
 
-    const isWest = x < midX;
-    const isSouth = y < midY;
-    const isEast = x >= midX;
-    const isNorth = y >= midY;
+        // Better: Create a rectangle along the edge.
+        const coords = edge.geometry.coordinates;
+        const p1 = coords[0];
+        const p2 = coords[1];
+        const bearing = turf.bearing(p1, p2);
+        const dist = turf.distance(p1, p2, { units: 'meters' });
 
-    // Center (Brahmasthan) - STRICT AVOID
-    const xRange = maxX - minX;
-    const yRange = maxY - minY;
-    // Check if within middle 20%
-    if (x > minX + xRange * 0.4 && x < minX + xRange * 0.6 &&
-        y > minY + yRange * 0.4 && y < minY + yRange * 0.6) {
-        return 0; // Absolute lowest score for center
-    }
+        // Create a box centered on the edge
+        // Width = dist, Height = 2 * depth (to be safe on both sides)
+        const center = turf.midpoint(p1, p2);
+        const poly = turf.transformRotate(
+            turf.bboxPolygon([
+                center.geometry.coordinates[0] - dist / 200000, // tiny width initially? No.
+                center.geometry.coordinates[1] - depth / 111000,
+                center.geometry.coordinates[0] + dist / 200000,
+                center.geometry.coordinates[1] + depth / 111000
+            ]),
+            bearing,
+            { pivot: center }
+        );
 
-    if (isSouth && isWest) return 100; // SW - Best for Master
-    if (isSouth && isEast) return 60;  // SE - Acceptable (Fire)
-    if (isNorth && isWest) return 70;  // NW - Good (Air)
-    if (isNorth && isEast) return 20;  // NE - Avoid heavy structures (Water/Light)
-
-    return 50; // Fallback
-}
-
-// Helper: Generate Smart Candidates (Inner Corners) to avoid clipping and respect Vastu
-function getSmartCandidates(
-    validArea: Feature<Polygon | MultiPolygon>,
-    bbox: number[],
-    width: number, // Building Width
-    length: number, // Building Length
-    vastuCompliant: boolean,
-    targetPosition?: Feature<Point>
-): { point: Feature<Point>, score: number }[] {
-    let candidates: { point: Feature<Point>, score: number }[] = [];
-    const [minX, minY, maxX, maxY] = bbox;
-
-    // Calculate margins to place building fully inside
-    // Use slightly less than half to be safe but close to edge
-    const marginX = width * 0.55;
-    const marginY = length * 0.55;
-
-    const pts = [
-        turf.point([minX + marginX, minY + marginY]), // SW Inner
-        turf.point([maxX - marginX, minY + marginY]), // SE Inner
-        turf.point([maxX - marginX, maxY - marginY]), // NE Inner
-        turf.point([minX + marginX, maxY - marginY])  // NW Inner
-    ];
-
-    // Also add midpoints for large plots
-    const midX = (minX + maxX) / 2;
-    const midY = (minY + maxY) / 2;
-    pts.push(turf.point([midX, minY + marginY])); // South Mid
-    pts.push(turf.point([midX, maxY - marginY])); // North Mid
-    pts.push(turf.point([minX + marginX, midY])); // West Mid
-    pts.push(turf.point([maxX - marginX, midY])); // East Mid
-
-    pts.forEach(pt => {
+        // Wait, scratch that. 
+        // Just Buffer the LineString. 
         // @ts-ignore
-        if (turf.booleanPointInPolygon(pt, validArea)) {
-            candidates.push({ point: pt, score: getVastuScore(pt, bbox) });
-        }
-    });
+        const bufferedEdge = turf.buffer(edge, depth, { units: 'meters', steps: 1 }); // Square edges?
 
-    // Target Override
-    if (targetPosition) {
+        // Intersect with Plot to keep only the functional part 'inside'
         // @ts-ignore
-        if (turf.booleanPointInPolygon(targetPosition, validArea)) {
-            candidates.push({ point: targetPosition, score: 999 });
-        }
-    }
-
-    if (vastuCompliant) {
-        candidates = candidates.filter(c => c.score > 25); // Strict Vastu: Reject NE (20) and Center (0)
-        candidates.sort((a, b) => b.score - a.score);
-    } else {
-        // Standard: Add Centroid
-        const centroid = turf.centroid(validArea);
-        // @ts-ignore
-        if (turf.booleanPointInPolygon(centroid, validArea)) {
-            candidates.push({ point: centroid, score: 50 });
-        }
-        // Shuffle for variety
-        candidates.sort(() => Math.random() - 0.5);
-    }
-
-    return candidates;
+        const wing = turf.intersect(bufferedEdge, plotPoly);
+        return wing as Feature<Polygon>;
+    } catch (e) { return null; }
 }
 
 /**
- * Generates L-shaped buildings within a plot
+ * Robust "Perimeter-Aligned" L-Shape Generator
+ * 1. Identify Simplied Plot Corners.
+ * 2. Generate Wings along adjacent edges.
+ * 3. Union them.
+ * 4. This guarantees the shape visually 'hugs' the plot corner, whatever the angle.
  */
 export function generateLShapes(
     plotGeometry: Feature<Polygon | MultiPolygon>,
     params: GeometricTypologyParams
 ): Feature<Polygon>[] {
-    const buildings: Feature<Polygon>[] = [];
-    const { wingDepth, orientation, setback, obstacles } = params;
+    const { wingDepth, setback, obstacles } = params;
 
-    // 1. Apply Setback
+    // 1. Get Valid Area (Buffer)
     // @ts-ignore
     const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
     if (!bufferedPlot) return [];
-
     // @ts-ignore
     const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+
+    // 2. Simplify Plot to finding main structural edges
+    // @ts-ignore
+    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
+
+    // Get Coordinates (assuming Polygon)
+    const coords = (simplified.geometry.type === 'Polygon')
+        ? simplified.geometry.coordinates[0]
+        : (simplified.geometry as MultiPolygon).coordinates[0][0];
+
+    // Determine Depth
     const bbox = turf.bbox(validArea);
-    const [minX, minY, maxX, maxY] = bbox;
+    const widthM = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
+    const heightM = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
+    const minDim = Math.min(widthM, heightM);
+    const targetDepth = wingDepth || 14;
+    const safeDepth = Math.min(targetDepth, minDim * 0.35);
 
-    // Calculate plot dimensions in meters
-    const plotWidth = turf.distance(turf.point([minX, minY]), turf.point([maxX, minY])) * 1000;
-    const plotHeight = turf.distance(turf.point([minX, minY]), turf.point([minX, maxY])) * 1000;
-    const plotArea = plotWidth * plotHeight;
+    const candidates: { feature: Feature<Polygon>, score: number, variantId?: string }[] = [];
 
-    // REALISTIC SIZING: Scale to 30-35% to allow multiple shapes on plot
-    const scaleFactor = plotArea < 2000 ? 0.38 : (plotArea < 4000 ? 0.35 : 0.30);
+    // Loop through corners to generate L-shapes
+    // An L-shape is formed by a Vertex and its two connected Edges.
+    for (let i = 0; i < coords.length - 1; i++) {
+        try {
+            const pCurrent = coords[i];
+            const pPrev = (i === 0) ? coords[coords.length - 2] : coords[i - 1];
+            const pNext = coords[i + 1];
 
-    // Calculate optimal wing depth: 10-14m for residential
-    const optimalDepth = Math.min(14, Math.max(10, Math.min(plotWidth, plotHeight) * 0.12));
-    const effectiveDepth = wingDepth || optimalDepth;
+            // Filter out reflex angles (> 180)? 
+            // We want convex corners typically for an L-shape main corner.
+            const bearingPrev = turf.bearing(pCurrent, pPrev);
+            const bearingNext = turf.bearing(pCurrent, pNext);
+            const angle = (bearingNext - bearingPrev + 360) % 360;
 
-    let wingLengthA = Math.min(
-        Math.max(params.wingLengthA || plotHeight * scaleFactor, effectiveDepth * 2.2),
-        Math.min(plotHeight * 0.60, 150) // Increased max to 150m and 60% of plot
-    );
-    let wingLengthB = Math.min(
-        Math.max(params.wingLengthB || plotWidth * scaleFactor, effectiveDepth * 2.2),
-        Math.min(plotWidth * 0.60, 150)
-    );
+            const edge1 = turf.lineString([pPrev, pCurrent]);
+            const edge2 = turf.lineString([pCurrent, pNext]);
 
-    console.log('L-shape dimensions:', { plotWidth, plotHeight, plotArea, wingLengthA, wingLengthB, effectiveDepth });
+            // Variations
+            const variations = [
+                { name: 'Standard', depthFactor: 1.0 },
+                { name: 'Thick', depthFactor: 1.5 }, // Request: "Building width 24m" -> 14 * 1.5 = 21m (close enough)
+                { name: 'Thin', depthFactor: 0.75 }  // Request: "Shrink"
+            ];
 
-    // Helper: Generate Smart Candidates (Inner Corners) to avoid clipping and respect Vastu
-    function getSmartCandidates(
-        validArea: Feature<Polygon | MultiPolygon>,
-        bbox: number[],
-        width: number, // Building Width
-        length: number, // Building Length
-        vastuCompliant: boolean,
-        targetPosition?: Feature<Point>
-    ): { point: Feature<Point>, score: number }[] {
-        let candidates: { point: Feature<Point>, score: number }[] = [];
-        const [minX, minY, maxX, maxY] = bbox;
+            variations.forEach(v => {
+                try {
+                    const currentDepth = safeDepth * v.depthFactor;
 
-        // Calculate margins to place building fully inside
-        // Use slightly less than half to be safe but close to edge
-        const marginX = width * 0.55;
-        const marginY = length * 0.55;
+                    // Create Buffers (Wings)
+                    // @ts-ignore
+                    const rawWing1 = turf.buffer(edge1, currentDepth, { units: 'meters', steps: 1 });
+                    // @ts-ignore
+                    const rawWing2 = turf.buffer(edge2, currentDepth, { units: 'meters', steps: 1 });
 
-        const pts = [
-            turf.point([minX + marginX, minY + marginY]), // SW Inner
-            turf.point([maxX - marginX, minY + marginY]), // SE Inner
-            turf.point([maxX - marginX, maxY - marginY]), // NE Inner
-            turf.point([minX + marginX, maxY - marginY])  // NW Inner
-        ];
+                    // Intersect with Plot to trim
+                    // @ts-ignore
+                    const wing1 = turf.intersect(rawWing1, validArea);
+                    // @ts-ignore
+                    const wing2 = turf.intersect(rawWing2, validArea);
 
-        // Also add midpoints for large plots
-        const midX = (minX + maxX) / 2;
-        const midY = (minY + maxY) / 2;
-        pts.push(turf.point([midX, minY + marginY])); // South Mid
-        pts.push(turf.point([midX, maxY - marginY])); // North Mid
-        pts.push(turf.point([minX + marginX, midY])); // West Mid
-        pts.push(turf.point([maxX - marginX, midY])); // East Mid
-
-        pts.forEach(pt => {
-            // @ts-ignore
-            if (turf.booleanPointInPolygon(pt, validArea)) {
-                candidates.push({ point: pt, score: getVastuScore(pt, bbox) });
-            }
-        });
-
-        // Target Override
-        if (targetPosition) {
-            // @ts-ignore
-            if (turf.booleanPointInPolygon(targetPosition, validArea)) {
-                candidates.push({ point: targetPosition, score: 999 });
-            }
-        }
-
-        if (vastuCompliant) {
-            candidates = candidates.filter(c => c.score > 25); // Strict Vastu: Reject NE (20) and Center (0)
-            // Add slight randomness to score to allow variety in equal-goodness spots
-            candidates.forEach(c => c.score += Math.random() * 5);
-            candidates.sort((a, b) => b.score - a.score);
-        } else {
-            // Standard: Add Centroid
-            const centroid = turf.centroid(validArea);
-            // @ts-ignore
-            if (turf.booleanPointInPolygon(centroid, validArea)) {
-                candidates.push({ point: centroid, score: 50 });
-            }
-            // Shuffle for variety
-            candidates.sort(() => Math.random() - 0.5);
-        }
-
-        return candidates;
-    }
-
-    // SMART PLACEMENT: Use inner candidates
-    const candidates = getSmartCandidates(
-        validArea, bbox, wingLengthB, wingLengthA, params.vastuCompliant || false, params.targetPosition
-    );
-    const candidatePoints = candidates.map(c => c.point);
-
-    // Attempt placement
-    for (const candidate of candidatePoints) {
-        if (buildings.length > 0) break; // Only place one main shape per generator call for now
-
-        const lShape = createLShape(candidate, wingLengthA, wingLengthB, effectiveDepth, orientation);
-
-        if (lShape) {
-            try {
-                // @ts-ignore
-                // @ts-ignore
-                const intersected = turf.intersect(lShape, validArea);
-                if (intersected) {
-                    const clippedPoly = intersected as Feature<Polygon>;
-                    const originalArea = turf.area(lShape);
-                    const newArea = turf.area(clippedPoly);
-
-                    // STRICTER VALIDATION: 85% area retention to avoid broken shapes
-                    if (newArea > originalArea * 0.85 && !checkCollision(clippedPoly, obstacles)) {
-                        const layout = generateBuildingLayout(clippedPoly, { subtype: 'lshaped', unitMix: params.unitMix });
-                        clippedPoly.properties = {
-                            type: 'generated',
-                            subtype: 'lshaped',
-                            wingDepth: effectiveDepth,
-                            area: newArea,
-                            cores: layout.cores,
-                            units: layout.units,
-                            entrances: layout.entrances
-                        };
-                        console.log('[L-Shape] Placed successfully');
-                        buildings.push(clippedPoly);
-                        break;
-                    }
-                }
-
-                // If primary size failed, try smaller
-                if (buildings.length === 0) {
-                    let smallerLShape = createLShape(candidate, wingLengthA * 0.7, wingLengthB * 0.7, effectiveDepth, orientation);
-
-                    if (smallerLShape) {
+                    if (wing1 && wing2) {
+                        // SPLIT LOGIC: Create 2 distinct parts
+                        // Part 1: Full Wing 1
+                        // Part 2: Wing 2 MINUS Wing 1 (to avoid overlap)
                         // @ts-ignore
-                        const smallIntersect = turf.intersect(smallerLShape, validArea);
-                        if (smallIntersect) {
-                            const smallClipped = smallIntersect as Feature<Polygon>;
-                            if (turf.area(smallClipped) > turf.area(smallerLShape) * 0.6 && !checkCollision(smallClipped, obstacles)) {
-                                const layout = generateBuildingLayout(smallClipped, { subtype: 'lshaped', unitMix: params.unitMix });
-                                smallClipped.properties = {
-                                    type: 'generated',
-                                    subtype: 'lshaped',
-                                    wingDepth: effectiveDepth,
-                                    area: turf.area(smallClipped),
-                                    cores: layout.cores,
-                                    units: layout.units,
-                                    entrances: layout.entrances
+                        const part2 = turf.difference(wing2, wing1);
+
+                        // Valid parts?
+                        // @ts-ignore
+                        if (part2 && turf.area(wing1) > 50 && turf.area(part2) > 50) {
+
+                            // Create MultiPolygon containing both parts
+                            const coords1 = wing1.geometry.coordinates;
+                            const coords2 = part2.geometry.coordinates;
+
+                            // MultiPolygon coordinates structure: [PolygonCoords, PolygonCoords]
+                            // PolygonCoords: [Ring1, Ring2...]
+                            const multiCoords = [coords1, coords2];
+                            const shape = turf.multiPolygon(multiCoords);
+
+                            if (shape && turf.area(shape) > 400 && !checkCollision(shape as unknown as Feature<Polygon>, obstacles)) {
+                                let score = 100 + (turf.area(shape) / 100);
+                                if (v.name === 'Standard') score += 10;
+
+                                // Note: Layout will be generated per-part in the store
+                                // We store a placeholder layout here or just basic props
+
+                                shape.properties = {
+                                    type: 'generated', subtype: 'lshaped', area: turf.area(shape),
+                                    // Store parts info if needed
+                                    isSplit: true,
+                                    scenarioId: `L-Corner-${i}-${v.name}`, score
                                 };
-                                buildings.push(smallClipped);
-                                break;
+                                // @ts-ignore
+                                candidates.push({ feature: shape, score, variantId: `Corner-${i}` });
                             }
                         }
                     }
-                }
-            } catch (e) {
-                console.warn('L-shape validation failed:', e);
-            }
-        }
+                } catch (e) { }
+            });
+
+        } catch (e) { }
     }
 
-    return buildings;
+    // Diversity Selection (Ensure we pick from different corners if possible)
+    const groups: { [key: string]: typeof candidates } = {};
+    candidates.forEach(c => {
+        const vid = c.variantId || 'default';
+        if (!groups[vid]) groups[vid] = [];
+        groups[vid].push(c);
+    });
+
+    const finalSelection: Feature<Polygon>[] = [];
+    const groupKeys = Object.keys(groups);
+    // Sort groups internally
+    groupKeys.forEach(k => groups[k].sort((a, b) => b.score - a.score));
+
+    // Round Robin
+    let added = 0;
+    groupKeys.forEach(k => {
+        if (groups[k].length > 0) {
+            finalSelection.push(groups[k][0].feature);
+            groups[k].shift();
+            added++;
+        }
+    });
+    // Fill rest
+    const remaining: typeof candidates = [];
+    groupKeys.forEach(k => remaining.push(...groups[k]));
+    remaining.sort((a, b) => b.score - a.score);
+    while (finalSelection.length < 5 && remaining.length > 0) {
+        finalSelection.push(remaining[0].feature);
+        remaining.shift();
+    }
+
+    return finalSelection;
 }
 
 /**
- * Generates U-shaped buildings within a plot
- */
-/**
- * Generates U-shaped buildings within a plot
+ * Robust "Perimeter-Aligned" U-Shape Generator
+ * 1. Identify 3 Consecutive Edges (forming a U base).
+ * 2. Generate Wings.
+ * 3. Union.
  */
 export function generateUShapes(
     plotGeometry: Feature<Polygon | MultiPolygon>,
     params: GeometricTypologyParams
 ): Feature<Polygon>[] {
-    const buildings: Feature<Polygon>[] = [];
-    const { wingDepth, orientation, setback, obstacles } = params;
-    const length = params.wingLengthA || 40;
-    const width = params.wingLengthB || 30;
+    const { wingDepth, setback, obstacles } = params;
 
-    // 1. Apply Setback
+    // 1. Get Valid Area
     // @ts-ignore
     const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
     if (!bufferedPlot) return [];
-
     // @ts-ignore
     const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    // @ts-ignore
+    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
-    // Calculate plot dimensions
+    const coords = (simplified.geometry.type === 'Polygon')
+        ? simplified.geometry.coordinates[0]
+        : (simplified.geometry as MultiPolygon).coordinates[0][0];
+
+    // Determine Depth
     const bbox = turf.bbox(validArea);
-    const [minX, minY, maxX, maxY] = bbox;
-    const plotWidth = turf.distance(turf.point([minX, minY]), turf.point([maxX, minY])) * 1000;
-    const plotHeight = turf.distance(turf.point([minX, minY]), turf.point([minX, maxY])) * 1000;
-    const plotArea = plotWidth * plotHeight;
+    const widthM = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
+    const heightM = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
+    const minDim = Math.min(widthM, heightM);
+    const targetDepth = wingDepth || 14;
+    const safeDepth = Math.min(targetDepth, minDim * 0.35);
 
-    // REALISTIC SIZING: Scale to 30-35% for multi-shape layouts
-    const scaleFactor = plotArea < 2500 ? 0.38 : (plotArea < 5000 ? 0.35 : 0.30);
+    const candidates: { feature: Feature<Polygon>, score: number, variantId?: string }[] = [];
 
-    // Optimal wing depth: 10-14m
-    const optimalDepth = Math.min(14, Math.max(10, Math.min(plotWidth, plotHeight) * 0.12));
-    const effectiveDepth = wingDepth || optimalDepth;
+    // Loop through sequences of 3 edges (4 vertices)
+    for (let i = 0; i < coords.length - 2; i++) {
+        try {
+            const p1 = coords[i];
+            const p2 = coords[i + 1];
+            const p3 = coords[i + 2];
+            const p4 = (i + 3 < coords.length) ? coords[i + 3] : coords[0]; // Wrap?
 
-    // U-Shape: Adjusted for better generation success
-    // CRITICAL: U-shape needs width > 2*depth and length > depth for valid geometry
-    const minLength = effectiveDepth * 2.5; // At least 2.5x depth for usable wing
-    const minWidth = effectiveDepth * 3.0;  // At least 3x depth (2 wings + courtyard)
+            // Edges: p1-p2, p2-p3, p3-p4
+            const edges = [
+                turf.lineString([p1, p2]),
+                turf.lineString([p2, p3]),
+                turf.lineString([p3, p4])
+            ];
 
-    let scaledLength = Math.max(
-        minLength,
-        Math.min(
-            Math.max(length, plotWidth * scaleFactor),
-            Math.min(plotWidth * 0.60, 150)
-        )
-    );
-    let scaledWidth = Math.max(
-        minWidth,
-        Math.min(
-            Math.max(width, plotHeight * scaleFactor),
-            Math.min(plotHeight * 0.60, 150)
-        )
-    );
+            // Variations
+            const variations = [
+                { name: 'Standard', depthFactor: 1.0 },
+                { name: 'Thick', depthFactor: 1.5 },
+                { name: 'Thin', depthFactor: 0.75 }
+            ];
 
-    console.log('U-shape dimensions:', { plotWidth, plotHeight, plotArea, scaledLength, scaledWidth, effectiveDepth, minLength, minWidth });
+            variations.forEach(v => {
+                try {
+                    const currentDepth = safeDepth * v.depthFactor;
 
-    // SMART PLACEMENT: Use inner candidates
-    const candidates = getSmartCandidates(
-        validArea, bbox, scaledWidth, scaledLength, params.vastuCompliant || false, params.targetPosition
-    );
-    const candidatePoints = candidates.map(c => c.point);
-
-    for (const candidate of candidatePoints) {
-        if (buildings.length > 0) break;
-
-        const uShape = createUShape(candidate, scaledLength, scaledWidth, effectiveDepth, orientation);
-
-        if (uShape) {
-            try {
-                // @ts-ignore
-                // @ts-ignore
-                const intersected = turf.intersect(uShape, validArea);
-                if (intersected) {
-                    const clippedPoly = intersected as Feature<Polygon>;
-                    const originalArea = turf.area(uShape);
-                    const newArea = turf.area(clippedPoly);
-
-                    // STRICTER VALIDATION: 85% area retention
-                    if (newArea > originalArea * 0.85 && !checkCollision(clippedPoly, obstacles)) {
-                        const layout = generateBuildingLayout(clippedPoly, { subtype: 'ushaped', unitMix: params.unitMix });
-                        clippedPoly.properties = {
-                            type: 'generated',
-                            subtype: 'ushaped',
-                            wingDepth: effectiveDepth,
-                            area: newArea,
-                            cores: layout.cores,
-                            units: layout.units,
-                            entrances: layout.entrances // Save entrances
-                        };
-                        buildings.push(clippedPoly);
-                        break;
-                    }
-                }
-
-                if (buildings.length === 0) {
-                    // Fallback: Try smaller U-shape
-                    let smallerUShape = createUShape(candidate, scaledLength * 0.7, scaledWidth * 0.7, effectiveDepth, orientation);
-
-                    if (smallerUShape) {
+                    let wings: Feature<Polygon>[] = [];
+                    for (const edge of edges) {
                         // @ts-ignore
-                        const smallIntersect = turf.intersect(smallerUShape, validArea);
-                        if (smallIntersect) {
-                            const smallClipped = smallIntersect as Feature<Polygon>;
-                            if (turf.area(smallClipped) > turf.area(smallerUShape) * 0.6 && !checkCollision(smallClipped, obstacles)) {
-                                const layout = generateBuildingLayout(smallClipped, { subtype: 'ushaped', unitMix: params.unitMix });
-                                smallClipped.properties = {
-                                    type: 'generated',
-                                    subtype: 'ushaped',
-                                    wingDepth: effectiveDepth,
-                                    area: turf.area(smallClipped),
-                                    cores: layout.cores,
-                                    units: layout.units,
-                                    entrances: layout.entrances,
+                        const raw = turf.buffer(edge, currentDepth, { units: 'meters', steps: 1 });
+                        // @ts-ignore
+                        const trimmed = turf.intersect(raw, validArea);
+                        if (trimmed) wings.push(trimmed as Feature<Polygon>);
+                    }
+
+                    if (wings.length === 3) {
+                        // SPLIT LOGIC: Create 3 distinct parts
+                        // Keep Wing 1 and Wing 3 full (sides)
+                        // Cut Wing 2 (base) to fit between them
+                        const side1 = wings[0];
+                        const side2 = wings[2];
+                        const baseRaw = wings[1];
+
+                        // @ts-ignore
+                        const sidesUnion = turf.union(side1, side2);
+                        // @ts-ignore
+                        const baseTrimmed = turf.difference(baseRaw, sidesUnion);
+
+                        if (side1 && side2 && baseTrimmed) {
+                            // Create MultiPolygon
+                            const multiCoords = [
+                                side1.geometry.coordinates,
+                                baseTrimmed.geometry.coordinates,
+                                side2.geometry.coordinates
+                            ];
+                            const shape = turf.multiPolygon(multiCoords);
+
+                            if (shape && turf.area(shape) > 400 && !checkCollision(shape as unknown as Feature<Polygon>, obstacles)) {
+                                let score = 100 + (turf.area(shape) / 100);
+                                if (v.name === 'Standard') score += 10;
+
+                                shape.properties = {
+                                    type: 'generated', subtype: 'ushaped', area: turf.area(shape),
+                                    isSplit: true,
+                                    scenarioId: `U-Seq-${i}-${v.name}`, score
                                 };
-                                buildings.push(smallClipped);
-                                break;
+                                // @ts-ignore
+                                candidates.push({ feature: shape, score, variantId: `Seq-${i}` });
                             }
                         }
                     }
-                }
-            } catch (e) {
-                console.warn('U-shape validation failed:', e);
-            }
-        }
+                } catch (e) { }
+            });
+        } catch (e) { }
     }
 
-    return buildings;
+    // Diversity Selection
+    const groups: { [key: string]: typeof candidates } = {};
+    candidates.forEach(c => {
+        const vid = c.variantId || 'default';
+        if (!groups[vid]) groups[vid] = [];
+        groups[vid].push(c);
+    });
+
+    const finalSelection: Feature<Polygon>[] = [];
+    const groupKeys = Object.keys(groups);
+    groupKeys.forEach(k => groups[k].sort((a, b) => b.score - a.score));
+
+    // Round Robin
+    let added = 0;
+    groupKeys.forEach(k => {
+        if (groups[k].length > 0) {
+            finalSelection.push(groups[k][0].feature);
+            groups[k].shift();
+            added++;
+        }
+    });
+    // Fill rest
+    const remaining: typeof candidates = [];
+    groupKeys.forEach(k => remaining.push(...groups[k]));
+    remaining.sort((a, b) => b.score - a.score);
+    while (finalSelection.length < 5 && remaining.length > 0) {
+        finalSelection.push(remaining[0].feature);
+        remaining.shift();
+    }
+
+    return finalSelection;
+}
+
+// Helper to get midpoint of a LineString or coords
+function getMidpoint(coords: number[][]): number[] {
+    const len = coords.length;
+    if (len < 2) return coords[0];
+    const p1 = coords[0];
+    const p2 = coords[coords.length - 1]; // Use ends for simplified logic
+    return [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
 }
 
 /**
- * Generates T-shaped buildings within a plot
+ * Robust "Perimeter-Aligned" T-Shape Generator
+ * 1. Identify "Long Edges" of the plot.
+ * 2. Create "Cap" by buffering the edge.
+ * 3. Create "Stem" by extending inward from the edge midpoint (towards centroid).
  */
 export function generateTShapes(
     plotGeometry: Feature<Polygon | MultiPolygon>,
     params: GeometricTypologyParams
 ): Feature<Polygon>[] {
-    const buildings: Feature<Polygon>[] = [];
-    const { wingDepth, orientation, setback, obstacles } = params;
-    const stemLength = params.wingLengthA || 30;
-    const capLength = params.wingLengthB || 40;
+    const { wingDepth, setback, obstacles } = params;
 
-    // 1. Apply Setback
+    // 1. Get Valid Area
     // @ts-ignore
     const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
     if (!bufferedPlot) return [];
-
     // @ts-ignore
     const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    // @ts-ignore
+    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
-    // Calculate plot dimensions
+    // Get Coordinates
+    const coords = (simplified.geometry.type === 'Polygon')
+        ? simplified.geometry.coordinates[0]
+        : (simplified.geometry as MultiPolygon).coordinates[0][0];
+
+    // Determine Depth
     const bbox = turf.bbox(validArea);
-    const [minX, minY, maxX, maxY] = bbox;
-    const plotWidth = turf.distance(turf.point([minX, minY]), turf.point([maxX, minY])) * 1000;
-    const plotHeight = turf.distance(turf.point([minX, minY]), turf.point([minX, maxY])) * 1000;
-    const plotArea = plotWidth * plotHeight;
+    const widthM = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
+    const heightM = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
+    const minDim = Math.min(widthM, heightM);
+    const targetDepth = wingDepth || 14;
+    const safeDepth = Math.min(targetDepth, minDim * 0.35);
 
-    // REALISTIC SIZING: Scale to 30-35% for multi-shape layouts
-    const scaleFactor = plotArea < 2000 ? 0.38 : (plotArea < 4000 ? 0.35 : 0.30);
+    const candidates: { feature: Feature<Polygon>, score: number, variantId?: string }[] = [];
+    const centroid = turf.centroid(validArea);
 
-    // Optimal wing depth: 10-14m
-    const optimalDepth = Math.min(14, Math.max(10, Math.min(plotWidth, plotHeight) * 0.12));
-    const effectiveDepth = wingDepth || optimalDepth;
+    // Loop through edges
+    for (let i = 0; i < coords.length - 1; i++) {
+        try {
+            const p1 = coords[i];
+            const p2 = coords[i + 1];
+            const dist = turf.distance(p1, p2, { units: 'meters' });
 
-    // T-Shape: Adjusted for better generation
-    // CRITICAL: Cap needs to be at least 3x depth to look like a T (center stem + wings)
-    const minCap = effectiveDepth * 3.0;
-    const minStem = effectiveDepth * 2.5;
+            // Only consider reasonably long edges (> 20m?) as "Cap" candidates
+            if (dist > 20) {
+                const edge = turf.lineString([p1, p2]);
+                const mid = turf.midpoint(p1, p2);
 
-    let scaledStem = Math.max(
-        minStem,
-        Math.min(
-            Math.max(stemLength, plotHeight * scaleFactor),
-            Math.min(plotHeight * 0.60, 140)
-        )
-    );
-    let scaledCap = Math.max(
-        minCap,
-        Math.min(
-            Math.max(capLength, plotWidth * scaleFactor),
-            Math.min(plotWidth * 0.60, 150)
-        )
-    );
+                // Variations
+                const variations = [
+                    { name: 'Standard', depthFactor: 1.0 },
+                    { name: 'Thick', depthFactor: 1.5 },
+                    { name: 'Thin', depthFactor: 0.75 }
+                ];
 
-    console.log('T-shape dimensions:', { plotWidth, plotHeight, plotArea, scaledStem, scaledCap, effectiveDepth, minCap, minStem });
+                variations.forEach(v => {
+                    try {
+                        const currentDepth = safeDepth * v.depthFactor;
 
-    // SMART PLACEMENT: Use inner candidates
-    const candidates = getSmartCandidates(
-        validArea, bbox, scaledCap, scaledStem, params.vastuCompliant || false, params.targetPosition
-    );
-    const candidatePoints = candidates.map(c => c.point);
-
-    for (const candidate of candidatePoints) {
-        if (buildings.length > 0) break;
-
-        const tShape = createTShape(candidate, scaledStem, scaledCap, effectiveDepth, orientation);
-
-        if (tShape) {
-            try {
-                // @ts-ignore
-                // @ts-ignore
-                const intersected = turf.intersect(tShape, validArea);
-                if (intersected) {
-                    const clippedPoly = intersected as Feature<Polygon>;
-                    const originalArea = turf.area(tShape);
-                    const newArea = turf.area(clippedPoly);
-
-                    // STRICTER VALIDATION: 85% area retention
-                    if (newArea > originalArea * 0.85 && !checkCollision(clippedPoly, obstacles)) {
-                        const layout = generateBuildingLayout(clippedPoly, { subtype: 'tshaped', unitMix: params.unitMix });
-                        clippedPoly.properties = {
-                            type: 'generated',
-                            subtype: 'tshaped',
-                            wingDepth: effectiveDepth,
-                            area: newArea,
-                            cores: layout.cores,
-                            units: layout.units,
-                            entrances: layout.entrances,
-                        };
-                        buildings.push(clippedPoly);
-                        break;
-                    }
-                }
-
-                if (buildings.length === 0) {
-                    // Fallback: Try smaller T-shape
-                    let smallerTShape = createTShape(candidate, scaledStem * 0.7, scaledCap * 0.7, effectiveDepth, orientation);
-
-                    if (smallerTShape) {
+                        // Construct "Cap" Wing (Perimeter Edge: Buffer by full depth)
                         // @ts-ignore
-                        const smallIntersect = turf.intersect(smallerTShape, validArea);
-                        if (smallIntersect) {
-                            const smallClipped = smallIntersect as Feature<Polygon>;
-                            if (turf.area(smallClipped) > turf.area(smallerTShape) * 0.6 && !checkCollision(smallClipped, obstacles)) {
-                                const layout = generateBuildingLayout(smallClipped, { subtype: 'tshaped', unitMix: params.unitMix });
-                                smallClipped.properties = {
-                                    type: 'generated',
-                                    subtype: 'tshaped',
-                                    wingDepth: effectiveDepth,
-                                    area: turf.area(smallClipped),
-                                    cores: layout.cores,
-                                    units: layout.units,
-                                    entrances: layout.entrances,
-                                };
-                                buildings.push(smallClipped);
-                                break;
+                        const rawCap = turf.buffer(edge, currentDepth, { units: 'meters', steps: 1 });
+                        // @ts-ignore
+                        const cap = turf.intersect(rawCap, validArea);
+
+                        if (cap) {
+                            // Construct "Stem" Wing (Internal Line: Buffer by HALF depth)
+                            const stemLine = turf.lineString([mid.geometry.coordinates, centroid.geometry.coordinates]);
+                            const bearing = turf.bearing(mid, centroid);
+                            const longDim = Math.max(widthM, heightM);
+                            const stemEnd = turf.destination(mid, longDim * 1.5, bearing, { units: 'meters' });
+                            const longStem = turf.lineString([mid.geometry.coordinates, stemEnd.geometry.coordinates]);
+
+                            // @ts-ignore
+                            // FIX: Divide depth by 2 for internal line buffer
+                            const rawStem = turf.buffer(longStem, currentDepth / 2, { units: 'meters', steps: 1 });
+                            // @ts-ignore
+                            const stem = turf.intersect(rawStem, validArea);
+
+                            // Combine
+                            // Combine
+                            if (stem) {
+                                // SPLIT LOGIC: Create 2 distinct parts
+                                // Keep Cap (Perimeter) full
+                                // Cut Stem (Internal) to abut the Cap
+                                // @ts-ignore
+                                const stemTrimmed = turf.difference(stem, cap);
+
+                                if (stemTrimmed && turf.area(cap) > 50 && turf.area(stemTrimmed) > 50) {
+                                    // Create MultiPolygon
+                                    const multiCoords = [
+                                        cap.geometry.coordinates,
+                                        stemTrimmed.geometry.coordinates
+                                    ];
+                                    const shape = turf.multiPolygon(multiCoords);
+
+                                    if (shape && turf.area(shape) > 400 && !checkCollision(shape as unknown as Feature<Polygon>, obstacles)) {
+                                        let score = 100 + (turf.area(shape) / 100);
+                                        if (v.name === 'Standard') score += 10;
+
+                                        shape.properties = {
+                                            type: 'generated', subtype: 'tshaped', area: turf.area(shape),
+                                            isSplit: true, // Marker for store to explode
+                                            scenarioId: `T-Edge-${i}-${v.name}`, score
+                                        };
+                                        // @ts-ignore
+                                        candidates.push({ feature: shape, score, variantId: `Edge-${i}` });
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-            } catch (e) {
-                console.warn('T-shape validation failed:', e);
+                    } catch (e) { }
+                });
             }
-        }
+        } catch (e) { }
     }
 
-    return buildings;
+    // Diversity Selection
+    const groups: { [key: string]: typeof candidates } = {};
+    candidates.forEach(c => {
+        const vid = c.variantId || 'default';
+        if (!groups[vid]) groups[vid] = [];
+        groups[vid].push(c);
+    });
+
+    const finalSelection: Feature<Polygon>[] = [];
+    const groupKeys = Object.keys(groups);
+    groupKeys.forEach(k => groups[k].sort((a, b) => b.score - a.score));
+
+    let added = 0;
+    groupKeys.forEach(k => {
+        if (groups[k].length > 0) {
+            finalSelection.push(groups[k][0].feature);
+            groups[k].shift();
+            added++;
+        }
+    });
+
+    const remaining: typeof candidates = [];
+    groupKeys.forEach(k => remaining.push(...groups[k]));
+    remaining.sort((a, b) => b.score - a.score);
+    while (finalSelection.length < 5 && remaining.length > 0) {
+        finalSelection.push(remaining[0].feature);
+        remaining.shift();
+    }
+
+    return finalSelection;
 }
 
 /**
- * Generates H-shaped buildings within a plot
+ * Robust "Perimeter-Aligned" H-Shape Generator
+ * 1. Identify "Opposite Edges" (roughly parallel, facing each other).
+ * 2. Create "Right/Left Wings" by buffering these edges.
+ * 3. Create "Crossbar" by connecting their midpoints.
  */
 export function generateHShapes(
     plotGeometry: Feature<Polygon | MultiPolygon>,
     params: GeometricTypologyParams
 ): Feature<Polygon>[] {
-    const buildings: Feature<Polygon>[] = [];
-    const { wingDepth, orientation, setback, obstacles } = params;
-    const barLength = params.wingLengthA || 30;
-    const separation = params.wingLengthB || 20;
+    const { wingDepth, setback, obstacles } = params;
 
-    // 1. Apply Setback
+    // 1. Valid Area
     // @ts-ignore
     const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
     if (!bufferedPlot) return [];
-
     // @ts-ignore
     const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    // @ts-ignore
+    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
-    // Calculate plot dimensions
+    // Coords
+    const coords = (simplified.geometry.type === 'Polygon')
+        ? simplified.geometry.coordinates[0]
+        : (simplified.geometry as MultiPolygon).coordinates[0][0];
+
+    // Depth
     const bbox = turf.bbox(validArea);
-    const [minX, minY, maxX, maxY] = bbox;
-    const plotWidth = turf.distance(turf.point([minX, minY]), turf.point([maxX, minY])) * 1000;
-    const plotHeight = turf.distance(turf.point([minX, minY]), turf.point([minX, maxY])) * 1000;
-    const plotArea = plotWidth * plotHeight;
+    const widthM = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
+    const heightM = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
+    const minDim = Math.min(widthM, heightM);
+    const targetDepth = wingDepth || 14;
+    const safeDepth = Math.min(targetDepth, minDim * 0.35);
 
-    // REALISTIC SIZING: H-shape reduced to 30-35% to allow other shapes
-    const scaleFactor = plotArea < 3000 ? 0.38 : (plotArea < 6000 ? 0.35 : 0.30);
+    const candidates: { feature: Feature<Polygon>, score: number, pairId?: string }[] = [];
 
-    // Optimal wing depth: 10-14m
-    const optimalDepth = Math.min(14, Math.max(10, Math.min(plotWidth, plotHeight) * 0.1));
-    const effectiveDepth = wingDepth || optimalDepth;
-
-    // H-Shape: Smaller bar and separation for realistic layouts
-    // CRITICAL: Separation > depth is needed for bridge to exist
-    const minBar = effectiveDepth * 2.5;
-    const minSep = effectiveDepth * 1.5;
-
-    let scaledBar = Math.max(
-        minBar,
-        Math.min(
-            Math.max(barLength, plotHeight * scaleFactor),
-            Math.min(plotHeight * 0.60, 140)
-        )
-    );
-    // Separation for visible courtyard
-    let scaledSep = Math.max(
-        minSep,
-        Math.min(
-            Math.max(separation, plotWidth * 0.35),
-            Math.min(plotWidth * 0.50, 100)
-        )
-    );
-
-    // Ensure total width (sep + 2*depth) fits in plot
-    const totalWidth = scaledSep + 2 * effectiveDepth;
-    if (totalWidth > plotWidth * 0.55) {
-        scaledSep = Math.max(effectiveDepth * 1.5, plotWidth * 0.55 - 2 * effectiveDepth);
-    }
-
-    console.log('H-shape dimensions:', { plotWidth, plotHeight, plotArea, scaledBar, scaledSep, effectiveDepth, minBar, minSep });
-
-    // SMART PLACEMENT: Use inner candidates
-    const w = scaledSep + 2 * effectiveDepth; // Approx width
-    const candidates = getSmartCandidates(
-        validArea, bbox, w, scaledBar, params.vastuCompliant || false, params.targetPosition
-    );
-    const candidatePoints = candidates.map(c => c.point);
-
-    for (const candidate of candidatePoints) {
-        if (buildings.length > 0) break;
-
-        const hShape = createHShape(candidate, scaledBar, scaledSep, effectiveDepth, orientation);
-
-        if (hShape) {
+    // Loop through pairs of edges to find "Parallel Opposites"
+    // Complexity: O(N^2), but N is small (simplified plot).
+    for (let i = 0; i < coords.length - 1; i++) {
+        for (let j = i + 2; j < coords.length - 1; j++) { // Skip adjacent
             try {
-                // @ts-ignore
-                // @ts-ignore
-                const intersected = turf.intersect(hShape, validArea);
-                if (intersected) {
-                    const clippedPoly = intersected as Feature<Polygon>;
-                    const originalArea = turf.area(hShape);
-                    const newArea = turf.area(clippedPoly);
+                const p1 = coords[i];
+                const p2 = coords[i + 1];
+                const p3 = coords[j];
+                const p4 = coords[j + 1];
 
-                    // STRICTER VALIDATION: 85% area retention
-                    if (newArea > originalArea * 0.85 && !checkCollision(clippedPoly, obstacles)) {
-                        const layout = generateBuildingLayout(clippedPoly, { subtype: 'hshaped', unitMix: params.unitMix });
-                        clippedPoly.properties = {
-                            type: 'generated',
-                            subtype: 'hshaped',
-                            wingDepth: effectiveDepth,
-                            area: newArea,
-                            cores: layout.cores,
-                            units: layout.units,
-                            entrances: layout.entrances,
-                        };
-                        buildings.push(clippedPoly);
-                        break;
+                const bearing1 = turf.bearing(p1, p2);
+                const bearing2 = turf.bearing(p3, p4);
+
+                // Check parallelism (Relax to 45 deg?)
+                // H-shapes can accommodate slightly non-parallel sides too.
+                let angleDiff = Math.abs(bearing1 - bearing2);
+                if (angleDiff > 180) angleDiff = 360 - angleDiff;
+
+                // Ideally parallel edges have angle diff ~0 or ~180 depending on direction.
+                // Usually polygon edges traverse in same winding order, so opposite edges are ~180 apart.
+                // Relaxed to 45 degrees to find "rotated" views even on weird plots
+                const isOpposite = Math.abs(angleDiff - 180) < 45 || Math.abs(angleDiff) < 45;
+
+                if (isOpposite) {
+                    const edge1 = turf.lineString([p1, p2]);
+                    const edge2 = turf.lineString([p3, p4]);
+
+                    const mid1 = turf.midpoint(p1, p2);
+                    const mid2 = turf.midpoint(p3, p4);
+
+                    const distCheck = turf.distance(mid1, mid2, { units: 'meters' });
+                    // Must be separated enough to force a crossbar
+                    if (distCheck > minDim * 0.3) { // relaxed distance check too
+
+                        // Define Variations to Generate Variety
+                        const variations = [
+                            { name: 'Standard', offset: 0, depthFactor: 1.0 },
+                            { name: 'Thick', offset: 0, depthFactor: 1.5 },   // 24m width requested
+                            { name: 'Thin', offset: 0, depthFactor: 0.75 },   // Shrink requested
+                            { name: 'Offset Low', offset: -0.2, depthFactor: 1.0 },
+                            { name: 'Offset High', offset: 0.2, depthFactor: 1.0 }
+                        ];
+
+                        variations.forEach(v => {
+                            try {
+                                const currentDepth = safeDepth * v.depthFactor;
+
+                                // Construct Wings (Perimeter: Buffer full depth)
+                                // @ts-ignore
+                                const rawWing1 = turf.buffer(edge1, currentDepth, { units: 'meters', steps: 1 });
+                                // @ts-ignore
+                                const rawWing2 = turf.buffer(edge2, currentDepth, { units: 'meters', steps: 1 });
+                                // @ts-ignore
+                                const wing1 = turf.intersect(rawWing1, validArea);
+                                // @ts-ignore
+                                const wing2 = turf.intersect(rawWing2, validArea);
+
+                                if (wing1 && wing2) {
+                                    // Construct Crossbar (Internal: Buffer HALF depth)
+                                    // Connect Midpoints with Offset
+                                    // Calculate offset point along the edge
+                                    const len1 = turf.length(edge1, { units: 'meters' });
+                                    // const len2 = turf.length(edge2, { units: 'meters' }); // This line was not used, keeping it as is.
+
+                                    // Offset along edge1 (midpoint is at 0.5)
+                                    // Clamp offset so it doesn't go off edge (0.2 to 0.8 safe range)
+                                    const secureOffset = Math.max(-0.35, Math.min(0.35, v.offset));
+                                    const pt1 = turf.along(edge1, len1 * (0.5 + secureOffset), { units: 'meters' }); // Be careful with direction
+
+                                    // Find corresponding point on edge2? Or just offset similarly?
+                                    // If edges are parallel but opposite direction, 0.5 + offset on one matches
+                                    // 0.5 - offset on the other if we want them aligned perpendicularly?
+                                    // Actually if opposite winding, 0.2 on one corresponds to 0.8 on other spatially.
+                                    // Let's project pt1 onto edge2 for robustness.
+                                    const pt2 = turf.nearestPointOnLine(edge2, pt1);
+
+                                    const crossLine = turf.lineString([pt1.geometry.coordinates, pt2.geometry.coordinates]);
+                                    // FIX: Divide depth by 2 for internal line buffer
+                                    // @ts-ignore
+                                    const rawCross = turf.buffer(crossLine, currentDepth / 2, { units: 'meters', steps: 1 });
+                                    // @ts-ignore
+                                    const cross = turf.intersect(rawCross, validArea);
+
+                                    if (cross) {
+                                        // Combine All
+                                        // @ts-ignore
+                                        const shape = turf.union(turf.union(wing1, wing2), cross);
+
+                                        if (shape && turf.area(shape) > 400 && !checkCollision(shape, obstacles)) {
+                                            let score = 100 + (turf.area(shape) / 100);
+                                            if (v.name === 'Standard') score += 10; // Prefer standard symmetry
+
+                                            const layout = generateBuildingLayout(shape, {
+                                                subtype: 'hshaped',
+                                                unitMix: params.unitMix,
+                                                alignmentRotation: 0
+                                            });
+
+                                            shape.properties = {
+                                                type: 'generated', subtype: 'hshaped', area: turf.area(shape),
+                                                cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
+                                                scenarioId: `H-Pair-${i}-${j}-${v.name}`,
+                                                // Add metadata to help with diversity selection
+                                                pairId: `${i}-${j}`,
+                                                variant: v.name,
+                                                score
+                                            };
+                                            candidates.push({ feature: shape, score, pairId: `${i}-${j}` });
+                                        }
+                                    }
+                                }
+                            } catch (e) { }
+                        });
                     }
                 }
-
-                if (buildings.length === 0) {
-                    // Fallback: Try smaller H-shape
-                    let smallerHShape = createHShape(candidate, scaledBar * 0.7, scaledSep * 0.7, effectiveDepth, orientation);
-
-                    if (smallerHShape) {
-                        // @ts-ignore
-                        const smallIntersect = turf.intersect(smallerHShape, validArea);
-                        if (smallIntersect) {
-                            const smallClipped = smallIntersect as Feature<Polygon>;
-                            if (turf.area(smallClipped) > turf.area(smallerHShape) * 0.6 && !checkCollision(smallClipped, obstacles)) {
-                                const layout = generateBuildingLayout(smallClipped, { subtype: 'hshaped', unitMix: params.unitMix });
-                                smallClipped.properties = {
-                                    type: 'generated',
-                                    subtype: 'hshaped',
-                                    wingDepth: effectiveDepth,
-                                    area: turf.area(smallClipped),
-                                    cores: layout.cores,
-                                    units: layout.units,
-                                    entrances: layout.entrances,
-                                };
-                                buildings.push(smallClipped);
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch (e) {
-                console.warn('H-shape validation failed:', e);
-            }
+            } catch (e) { }
         }
     }
 
-    return buildings;
+    // DIVERSITY SELECTION
+    // Ensure we pick candidates from DIFFERENT edge pairs (orientations) if possible.
+    // 1. Group by Pair ID
+    const groups: { [key: string]: typeof candidates } = {};
+    candidates.forEach(c => {
+        const pairId = c.pairId || 'default';
+        if (!groups[pairId]) groups[pairId] = [];
+        groups[pairId].push(c);
+    });
+
+    const finalSelection: Feature<Polygon>[] = [];
+    const pairIds = Object.keys(groups);
+
+    // Round-Robin Selection from each group (Orientation)
+    let addedCount = 0;
+    // let max perGroup = 2; // Allow up to 2 per orientation initially // This line was commented out in the instruction, keeping it commented.
+
+    // Sort each group by score
+    pairIds.forEach(pid => groups[pid].sort((a, b) => b.score - a.score));
+
+    // Pass 1: Top 1 from each group
+    pairIds.forEach(pid => {
+        if (groups[pid].length > 0) {
+            finalSelection.push(groups[pid][0].feature);
+            groups[pid].shift(); // Remove used
+            addedCount++;
+        }
+    });
+
+    // Pass 2: Top 1 from each group again (if space)
+    if (addedCount < 5) {
+        pairIds.forEach(pid => {
+            if (groups[pid].length > 0 && addedCount < 5) {
+                finalSelection.push(groups[pid][0].feature);
+                groups[pid].shift();
+                addedCount++;
+            }
+        });
+    }
+
+    // Pass 3: Fill remaining slots with best available from any group
+    const remaining: typeof candidates = [];
+    pairIds.forEach(pid => remaining.push(...groups[pid]));
+    remaining.sort((a, b) => b.score - a.score);
+
+    while (finalSelection.length < 5 && remaining.length > 0) {
+        finalSelection.push(remaining[0].feature);
+        remaining.shift();
+    }
+
+    return finalSelection;
 }
 
-// ============ Helper Functions for Creating Shapes ============
-
-// Helper to get destination point
-const getDest = (origin: any, dist: number, bear: number, turf: any) => {
-    // @ts-ignore
-    const fn = turf.rhumbDestination || turf.destination;
-    // @ts-ignore
-    return fn(origin, dist, bear, { units: 'meters' }).geometry.coordinates;
-};
 
 /**
- * Creates an L-shaped polygon centered at 'center'
+ * Slab Generator (Rectangular Blocks at Corners/Edges)
+ * Replaces generic "Lamella" with specific corner-based logic.
  */
-function createLShape(
-    center: Feature<Point>,
-    lengthA: number,
-    lengthB: number,
-    depth: number,
-    angle: number
-): Feature<Polygon> | null {
-    // Add variance (±10%)
-    const variance = 0.9 + Math.random() * 0.2;
-    lengthA *= variance;
-    lengthB *= variance;
+/**
+ * Slab Generator (Rectangular Blocks along Edges)
+ * Creates discrete elongated slabs centered on plot edges
+ */
+export function generateSlabShapes(
+    plotGeometry: Feature<Polygon | MultiPolygon>,
+    params: GeometricTypologyParams
+): Feature<Polygon>[] {
+    const { wingDepth, setback, obstacles } = params;
 
+    // 1. Valid Area
     // @ts-ignore
-    const fn = turf.rhumbDestination || turf.destination;
-
-    // Move to P0 from Center
+    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
+    if (!bufferedPlot) return [];
     // @ts-ignore
-    const startX = fn(center, lengthB / 2, angle + 270, { units: 'meters' });
+    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
-    const startP = fn(startX, lengthA / 2, angle + 180, { units: 'meters' });
-    const p0 = startP.geometry.coordinates;
+    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
-    // Trace L-Shape from P0 (Bottom-Left Corner)
-    const p1 = getDest(startP, lengthA, angle, turf); // Up
-    const p2 = getDest(turf.point(p1), depth, angle + 90, turf); // Right (Top Width)
-    const p3 = getDest(turf.point(p2), lengthA - depth, angle + 180, turf); // Down (Inner Vert)
-    const p4 = getDest(turf.point(p3), lengthB - depth, angle + 90, turf); // Right (Inner Horiz)
-    const p5 = getDest(turf.point(p4), depth, angle + 180, turf); // Down (Right Wing Tip)
-    const p6 = getDest(turf.point(p5), lengthB, angle + 270, turf); // Left (Bottom Edge) -> Back to P0
+    // Coords
+    const coords = (simplified.geometry.type === 'Polygon')
+        ? simplified.geometry.coordinates[0]
+        : (simplified.geometry as MultiPolygon).coordinates[0][0];
 
-    return turf.polygon([[p0, p1, p2, p3, p4, p5, p6, p0]]);
+    console.log(`[SlabGen] Valid Area: ${turf.area(validArea).toFixed(0)}m², Corners: ${coords.length}`);
+
+    const candidates: { feature: Feature<Polygon>, score: number, variantId?: string }[] = [];
+
+    // NEW APPROACH: Create slabs centered on EDGES (not corners)
+    for (let i = 0; i < coords.length - 1; i++) {
+        try {
+            const p1 = turf.point(coords[i]);
+            const p2 = turf.point(coords[i + 1]);
+
+            // Edge properties
+            const edgeLength = turf.distance(p1, p2, { units: 'meters' });
+            const edgeBearing = turf.bearing(p1, p2);
+            const midpoint = turf.midpoint(p1, p2);
+
+            // Skip very short edges
+            if (edgeLength < 8) {
+                console.log(`[SlabGen] Edge ${i} too short: ${edgeLength.toFixed(1)}m`);
+                continue;
+            }
+
+            // Slab dimensions - adaptive to edge length
+            const slabLength = Math.min(30, edgeLength * 0.9); // 90% coverage, max 30m
+            const slabDepth = wingDepth || 14;
+
+            const variations = [
+                { name: 'Standard', length: slabLength, depth: slabDepth },
+            ];
+
+            variations.forEach(v => {
+                try {
+                    // Create rectangle centered on edge midpoint
+                    const halfLen = v.length / 2;
+
+                    // Points along the edge (centered)
+                    // @ts-ignore
+                    const edgeStart = turf.destination(midpoint, halfLen, edgeBearing + 180, { units: 'meters' });
+                    // @ts-ignore
+                    const edgeEnd = turf.destination(midpoint, halfLen, edgeBearing, { units: 'meters' });
+
+                    // Try both inward directions (+90 and -90 from edge bearing)
+                    [90, -90].forEach(turn => {
+                        try {
+                            // Create inner edge (perpendicular to plot edge)
+                            // @ts-ignore
+                            const innerStart = turf.destination(edgeStart, v.depth, edgeBearing + turn, { units: 'meters' });
+                            // @ts-ignore
+                            const innerEnd = turf.destination(edgeEnd, v.depth, edgeBearing + turn, { units: 'meters' });
+
+                            const poly = turf.polygon([[
+                                edgeStart.geometry.coordinates,
+                                edgeEnd.geometry.coordinates,
+                                innerEnd.geometry.coordinates,
+                                innerStart.geometry.coordinates,
+                                edgeStart.geometry.coordinates
+                            ]]);
+
+                            // Check if centroid is inside valid area
+                            // @ts-ignore
+                            if (turf.booleanPointInPolygon(turf.centroid(poly), validArea)) {
+                                // @ts-ignore
+                                const intersect = turf.intersect(poly, validArea);
+                                if (intersect) {
+                                    const intArea = turf.area(intersect);
+                                    const targetArea = v.length * v.depth;
+
+                                    if (intArea > targetArea * 0.6) { // At least 60% inside
+                                        if (!checkCollision(intersect as Feature<Polygon>, obstacles)) {
+                                            const layout = generateBuildingLayout(intersect as Feature<Polygon>, {
+                                                subtype: 'slab',
+                                                unitMix: params.unitMix,
+                                                alignmentRotation: edgeBearing
+                                            });
+
+                                            intersect.properties = {
+                                                type: 'generated',
+                                                subtype: 'slab',
+                                                area: intArea,
+                                                cores: layout.cores,
+                                                units: layout.units,
+                                                entrances: layout.entrances,
+                                                internalUtilities: layout.utilities,
+                                                scenarioId: `Slab-Edge-${i}-${v.name}`,
+                                                score: intArea
+                                            };
+                                            candidates.push({ feature: intersect as Feature<Polygon>, score: intArea, variantId: `Edge-${i}` });
+                                        } else {
+                                            console.log(`[SlabGen] Collision at Edge ${i}`);
+                                        }
+                                    } else {
+                                        console.log(`[SlabGen] Area too small at Edge ${i}: ${intArea.toFixed(0)} < ${(targetArea * 0.6).toFixed(0)}`);
+                                    }
+                                } else {
+                                    console.log(`[SlabGen] No intersection at Edge ${i}`);
+                                }
+                            } else {
+                                console.log(`[SlabGen] Centroid outside at Edge ${i}`);
+                            }
+                        } catch (e) {
+                            console.error(`[SlabGen] Error creating slab on Edge ${i}`, e);
+                        }
+                    });
+                } catch (e) {
+                    console.error(`[SlabGen] Error processing Edge ${i}`, e);
+                }
+            });
+        } catch (e) {
+            console.error(`[SlabGen] Error at Edge ${i}`, e);
+        }
+    }
+
+    // Diversity Selection
+    console.log(`[SlabGen] Total candidates found: ${candidates.length}`);
+
+    // Sort by Score (Area)
+    candidates.sort((a, b) => b.score - a.score);
+
+    const finalSelection: Feature<Polygon>[] = [];
+
+    for (const cand of candidates) {
+        // Check overlap with already selected
+        let overlap = false;
+        for (const existing of finalSelection) {
+            // @ts-ignore
+            if (turf.booleanOverlap(cand.feature, existing) || turf.booleanContains(cand.feature, existing) || turf.booleanContains(existing, cand.feature) || turf.intersect(cand.feature, existing)) {
+                overlap = true;
+                break;
+            }
+        }
+        if (!overlap) {
+            finalSelection.push(cand.feature);
+            if (finalSelection.length >= 4) break; // Max 4 slabs
+        }
+    }
+
+    return finalSelection;
 }
 
 /**
- * Creates a U-shaped polygon centered at 'center'
+ * Point Generator (Square Towers at Corners)
  */
-function createUShape(
-    center: Feature<Point>,
-    length: number,
-    width: number,
-    depth: number,
-    angle: number
-): Feature<Polygon> | null {
-    const variance = 0.9 + Math.random() * 0.2;
-    length *= variance;
-    width *= variance;
+export function generatePointShapes(
+    plotGeometry: Feature<Polygon | MultiPolygon>,
+    params: GeometricTypologyParams
+): Feature<Polygon>[] {
+    const { wingDepth, setback, obstacles } = params;
 
+    // 1. Valid Area
     // @ts-ignore
-    const fn = turf.rhumbDestination || turf.destination;
-
-    // P0 is Bottom-Left Outer Corner.
-    // Center to P0: West by Width/2, South by Length/2.
+    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
+    if (!bufferedPlot) return [];
     // @ts-ignore
-    const startX = fn(center, width / 2, angle + 270, { units: 'meters' });
+    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
-    const startP = fn(startX, length / 2, angle + 180, { units: 'meters' });
-    const p0 = startP.geometry.coordinates;
+    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
-    const p1 = getDest(startP, length, angle, turf); // Up Left Outer
-    const p2 = getDest(turf.point(p1), width, angle + 90, turf); // Top Edge
-    const p3 = getDest(turf.point(p2), length, angle + 180, turf); // Down Right Outer
-    const p4 = getDest(turf.point(p3), depth, angle + 270, turf); // Left (Bottom Right Inner)
-    const p5 = getDest(turf.point(p4), length - depth, angle, turf); // Up Inner Right
-    const p6 = getDest(turf.point(p5), width - 2 * depth, angle + 270, turf); // Left Inner Top
-    const p7 = getDest(turf.point(p6), length - depth, angle + 180, turf); // Down Inner Left
+    // Coords
+    const coords = (simplified.geometry.type === 'Polygon')
+        ? simplified.geometry.coordinates[0]
+        : (simplified.geometry as MultiPolygon).coordinates[0][0];
 
-    return turf.polygon([[p0, p1, p2, p3, p4, p5, p6, p7, p0]]);
-}
+    const candidates: { feature: Feature<Polygon>, score: number, variantId?: string }[] = [];
 
-/**
- * Creates a T-shaped polygon centered at 'center'
- */
-function createTShape(
-    center: Feature<Point>,
-    stemLength: number,
-    capLength: number,
-    depth: number,
-    angle: number
-): Feature<Polygon> | null {
-    const variance = 0.9 + Math.random() * 0.2;
-    stemLength *= variance;
-    capLength *= variance;
+    // Loop through Corner Vertices
+    for (let i = 0; i < coords.length - 1; i++) {
+        try {
+            const pCurrent = coords[i];
 
-    // @ts-ignore
-    const fn = turf.rhumbDestination || turf.destination;
+            // Point Dimensions (Square)
+            const baseSide = 16; // Approx 16m x 16m (tower)
 
-    // @ts-ignore
-    const startX = fn(center, depth / 2, angle + 270, { units: 'meters' });
-    // @ts-ignore
-    const startP = fn(startX, (stemLength + depth) / 2, angle + 180, { units: 'meters' });
-    const p0 = startP.geometry.coordinates;
+            const variations = [
+                { name: 'Standard', side: baseSide },
+                { name: 'Small', side: baseSide * 0.75 },
+                { name: 'Large', side: baseSide * 1.25 },
+            ];
 
-    const p1 = getDest(startP, stemLength, angle, turf); // Up Stem
-    const p2 = getDest(turf.point(p1), (capLength - depth) / 2, angle + 270, turf); // Left to Cap Start
-    const p3 = getDest(turf.point(p2), depth, angle, turf); // Cap Height Up
-    const p4 = getDest(turf.point(p3), capLength, angle + 90, turf); // Cap Width Right
-    const p5 = getDest(turf.point(p4), depth, angle + 180, turf); // Cap Height Down
-    const p6 = getDest(turf.point(p5), (capLength - depth) / 2, angle + 270, turf); // Left to Stem Join
-    const p7 = getDest(turf.point(p6), stemLength, angle + 180, turf); // Stem Down
+            // Try aligning with Angle Bisector to fit into corner?
+            // Or just align to edges like Slab?
+            // Aligning to edges is safer.
 
-    return turf.polygon([[p0, p1, p2, p3, p4, p5, p6, p7, p0]]);
-}
+            const pNext = coords[i + 1];
+            const bearingNext = turf.bearing(pCurrent, pNext);
 
-/**
- * Creates an H-shaped polygon centered at 'center'
- */
-function createHShape(
-    center: Feature<Point>,
-    barLength: number,
-    separation: number,
-    depth: number,
-    angle: number
-): Feature<Polygon> | null {
-    const variance = 0.9 + Math.random() * 0.2;
-    barLength *= variance;
-    separation *= variance;
+            variations.forEach(v => {
+                // Try placing square at corner aligned with Next Edge
+                [90, -90].forEach(turn => {
+                    try {
+                        // @ts-ignore
+                        const v1 = pCurrent;
+                        // @ts-ignore
+                        const v2 = turf.destination(pCurrent, v.side, bearingNext, { units: 'meters' });
+                        // @ts-ignore
+                        const v3 = turf.destination(v2, v.side, bearingNext + turn, { units: 'meters' });
+                        // @ts-ignore
+                        const v4 = turf.destination(v1, v.side, bearingNext + turn, { units: 'meters' });
 
-    // @ts-ignore
-    const fn = turf.rhumbDestination || turf.destination;
+                        const poly = turf.polygon([[
+                            v1.geometry.coordinates,
+                            v2.geometry.coordinates,
+                            v3.geometry.coordinates,
+                            v4.geometry.coordinates,
+                            v1.geometry.coordinates
+                        ]]);
 
-    const totalWidth = 2 * depth + separation;
-    // @ts-ignore
-    const startX = fn(center, totalWidth / 2, angle + 270, { units: 'meters' });
-    // @ts-ignore
-    const startP = fn(startX, barLength / 2, angle + 180, { units: 'meters' });
-    const p0 = startP.geometry.coordinates;
+                        // Check Center Inside
+                        // @ts-ignore
+                        if (turf.booleanPointInPolygon(turf.centroid(poly), validArea)) {
+                            // @ts-ignore
+                            const intersect = turf.intersect(poly, validArea);
+                            if (intersect && turf.area(intersect) > v.side * v.side * 0.8) {
+                                if (!checkCollision(intersect as Feature<Polygon>, obstacles)) {
+                                    const layout = generateBuildingLayout(intersect as Feature<Polygon>, {
+                                        subtype: 'point',
+                                        unitMix: params.unitMix,
+                                        alignmentRotation: bearingNext
+                                    });
 
-    const bridgeHeight = depth;
-    const bridgeY = (barLength - bridgeHeight) / 2;
+                                    intersect.properties = {
+                                        type: 'generated', subtype: 'point', area: turf.area(intersect),
+                                        cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
+                                        scenarioId: `Point-Corner-${i}-${v.name}`, score: turf.area(intersect)
+                                    };
+                                    candidates.push({ feature: intersect as Feature<Polygon>, score: turf.area(intersect), variantId: `Corner-${i}` });
+                                }
+                            }
+                        }
+                    } catch (e) { }
+                });
+            });
 
-    const p1 = getDest(startP, barLength, angle, turf); // Up Left Bar
-    const p2 = getDest(turf.point(p1), depth, angle + 90, turf); // Right (Top)
-    const p3 = getDest(turf.point(p2), barLength - bridgeY - bridgeHeight, angle + 180, turf); // Down inner
-    const p4 = getDest(turf.point(p3), separation, angle + 90, turf); // Across Bridge
-    const p5 = getDest(turf.point(p4), barLength - bridgeY - bridgeHeight, angle, turf); // Up Inner Right
-    const p6 = getDest(turf.point(p5), depth, angle + 90, turf); // Right (Top Right)
-    const p7 = getDest(turf.point(p6), barLength, angle + 180, turf); // Down Right Bar
-    const p8 = getDest(turf.point(p7), depth, angle + 270, turf); // Left (Bottom Right Inner)
-    const p9 = getDest(turf.point(p8), bridgeY, angle, turf); // Up Inner
-    const p10 = getDest(turf.point(p9), separation, angle + 270, turf); // Left Across Bridge
-    const p11 = getDest(turf.point(p10), bridgeY, angle + 180, turf); // Down Inner Left
+        } catch (e) { }
+    }
 
-    return turf.polygon([[p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p0]]);
+    // Diversity Selection (Greedy non-overlapping)
+    candidates.sort((a, b) => b.score - a.score);
+    const finalSelection: Feature<Polygon>[] = [];
+
+    for (const cand of candidates) {
+        let overlap = false;
+        for (const existing of finalSelection) {
+            // @ts-ignore
+            if (turf.booleanOverlap(cand.feature, existing) || turf.booleanContains(cand.feature, existing) || turf.booleanContains(existing, cand.feature) || turf.intersect(cand.feature, existing)) {
+                overlap = true;
+                break;
+            }
+        }
+        if (!overlap) {
+            finalSelection.push(cand.feature);
+            if (finalSelection.length >= 4) break;
+        }
+    }
+
+    return finalSelection;
 }

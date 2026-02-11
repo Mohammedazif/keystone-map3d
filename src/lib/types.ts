@@ -63,6 +63,7 @@ export interface Building {
   visible: boolean;
   baseHeight?: number;
   utilities?: UtilityType[]; // Utilities contained within this building
+  internalUtilities?: UtilityArea[]; // Generated internal utility zones (HVAC, Electrical)
 }
 
 export interface GreenArea {

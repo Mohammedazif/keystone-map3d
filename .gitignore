@@ -72,3 +72,8 @@ CLIENT INPUTS.md
 Implementation Plan - Additional Typologies & KPIs.md
 Debugging Extraction and Saving.md
 dashboard_and_admin_enhancement_plan.md.resolved
+fix_h_shape.py
+scripts/
+inject_fixes.py
+update_strategies.py
+tmp_debug.txt

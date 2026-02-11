@@ -15,7 +15,7 @@ import { generateMassingOptions } from '@/ai/flows/ai-massing-generator';
 import { generateLayoutZones } from '@/ai/flows/ai-zone-generator';
 
 import { generateLamellas, generateTowers, generatePerimeter, AlgoParams, AlgoTypology } from '@/lib/generators/basic-generator';
-import { generateLShapes, generateUShapes, generateTShapes, generateHShapes } from '@/lib/generators/geometric-typologies';
+import { generateLShapes, generateUShapes, generateTShapes, generateHShapes, generateSlabShapes, generatePointShapes } from '@/lib/generators/geometric-typologies';
 import { generateSiteUtilities, generateBuildingLayout } from '@/lib/generators/layout-generator';
 import { splitPolygon } from '@/lib/polygon-utils';
 import { db } from '@/lib/firebase';
@@ -51,6 +51,7 @@ interface BuildingState {
     selectedObjectId: { type: SelectableObjectType; id: string } | null;
     hoveredObjectId: { type: SelectableObjectType; id: string } | null;
     uiState: { showVastuCompass: boolean; isFeasibilityPanelOpen: boolean; ghostMode: boolean }; // New UI State
+    componentVisibility: { electrical: boolean; hvac: boolean; basements: boolean; cores: boolean; units: boolean };
     aiScenarios: (AiScenario | AiMassingScenario)[] | null;
     isLoading: boolean;
     active: boolean;
@@ -112,6 +113,7 @@ interface BuildingState {
         toggleVastuCompass: (show: boolean) => void;
         toggleFeasibilityPanel: () => void;
         toggleGhostMode: () => void;
+        toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units') => void;
         setFeasibilityPanelOpen: (isOpen: boolean) => void;
 
         undo: () => void;
@@ -193,6 +195,10 @@ const prepareForFirestore = (plots: Plot[]): any[] => {
                     ...u,
                     geometry: JSON.stringify(u.geometry)
                 })),
+                internalUtilities: (b.internalUtilities || []).map(u => ({
+                    ...u,
+                    geometry: JSON.stringify(u.geometry)
+                })),
             })),
             greenAreas: (plot.greenAreas || []).map(g => ({
                 ...g,
@@ -265,6 +271,10 @@ const parseFromFirestore = (plots: any[]): Plot[] => {
                     units: (b.units || []).map((u: any) => ({
                         ...u,
                         geometry: safeParse(u.geometry, `unit-${u.id}`)
+                    })),
+                    internalUtilities: (b.internalUtilities || []).map((u: any) => ({
+                        ...u,
+                        geometry: safeParse(u.geometry, `util-int-${u.id}`)
                     })),
                 })),
                 greenAreas: (plot.greenAreas || []).map((g: any) => ({
@@ -397,6 +407,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     selectedObjectId: null,
     hoveredObjectId: null,
     uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false, ghostMode: false },
+    componentVisibility: { electrical: false, hvac: false, basements: false, cores: false, units: false },
     aiScenarios: null,
     isLoading: true,
     active: false,
@@ -639,7 +650,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set({ isGeneratingScenarios: true });
 
             // Helper to generate buildings for a scenario
-            const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number }) => {
+            const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number; overrideTypologies?: string[] }) => {
                 let geomFeatures: Feature<Polygon>[] = [];
 
                 // Adjust defaults based on Land Use
@@ -715,7 +726,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     'point': 10
                 };
 
-                const typologiesToGenerate = params.typologies || [params.typology || 'point'];
+                let typologiesToGenerate = p.overrideTypologies || params.typologies || [params.typology || 'point'];
+
                 const sortedTypologies = [...typologiesToGenerate].sort((a, b) => {
                     return (typologyWeights[b] || 0) - (typologyWeights[a] || 0);
                 });
@@ -787,10 +799,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                     switch (typology) {
                         case 'point':
-                            generated = generateTowers(plotStub.geometry, genParams as any);
+                            generated = generatePointShapes(plotStub.geometry, genParams);
                             break;
                         case 'slab':
-                            generated = generateLamellas(plotStub.geometry, genParams as any);
+                        case 'plot':
+                            generated = generateSlabShapes(plotStub.geometry, genParams);
                             break;
                         case 'lshaped':
                             generated = generateLShapes(plotStub.geometry, genParams);
@@ -808,17 +821,37 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             generated = generatePerimeter(plotStub.geometry, genParams as any);
                             break;
                         default:
-                            generated = generateTowers(plotStub.geometry, genParams as any);
+                            generated = generatePointShapes(plotStub.geometry, genParams);
                     }
 
-                    // Add to combined features (limit per typology to avoid overcrowding)
-                    if (generated.length > 0) {
-                        // Limit based on GFA/Density, but do not hard cap count unless necessary for performance
-                        // const safeLimit = (typology === 'point' || typology === 'slab') ? 4 : 1;
-                        // Allow all generated buildings that fit
-                        const toAdd = generated; // .slice(0, safeLimit);
-                        builtObstacles.push(...toAdd);
-                        geomFeatures.push(...toAdd);
+                    // CRITICAL FIX: Handle mutually exclusive geometry options (L, U, T, H)
+                    // These generators return multiple distinct options (e.g. SW, SE, NE, NW L-shapes).
+                    // We must NOT combine them into a single scenario (which creates a ring).
+                    // Instead, we should pick ONE option per generated scenario loop iteration, 
+                    // or if this `generateScenarios` function is creating a SINGLE scenario, we should randomly pick one.
+
+                    // For now, since `generateScenarios` creates ONE scenario entity derived from `scenarioIterations`,
+                    // we need to pick just ONE of the valid generated shapes to avoid the "Ring" effect.
+
+                    if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(typology)) {
+                        if (generated.length > 0) {
+                            // Pick a random candidate to allow variation across the 3 scenario slots
+                            // Since `generateScenarios` runs once per scenario definition in the UI,
+                            // picking randomly here ensures Scenario 1, 2, and 3 get different shapes.
+
+                            const randomIndex = Math.floor(Math.random() * generated.length);
+                            const selectedCandidate = generated[randomIndex];
+
+                            builtObstacles.push(selectedCandidate);
+                            geomFeatures.push(selectedCandidate);
+                        }
+                    } else {
+                        // For Point/Slab towers, we DO want multiple buildings in one scenario
+                        if (generated.length > 0) {
+                            const toAdd = generated;
+                            builtObstacles.push(...toAdd);
+                            geomFeatures.push(...toAdd);
+                        }
                     }
                 });
 
@@ -902,7 +935,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     // --- INTERNAL LAYOUT (CORES/UNITS) ---
                     // Some generators (like L/U/T/H) already calculate layout.
                     // Others (like Tower/Lamella) need it calculated here.
-                    let layout = { cores: f.properties?.cores || [], units: f.properties?.units || [] };
+                    let layout: any = {
+                        cores: f.properties?.cores || [],
+                        units: f.properties?.units || [],
+                        utilities: f.properties?.internalUtilities || []
+                    };
 
                     if (layout.units.length === 0) {
                         const activeProject = get().projects.find(prj => prj.id === get().activeProjectId);
@@ -913,7 +950,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             subtype: f.properties?.subtype || params.typology,
                             unitMix: projectUnitMix
                         });
-                        layout = { cores: layoutResult.cores, units: layoutResult.units };
+                        layout = { cores: layoutResult.cores, units: layoutResult.units, utilities: layoutResult.utilities };
+                    }
+
+                    // Ensure utilities from geometric-typologies (f.properties.internalUtilities) are preserved if not re-generated
+                    if (!layout.utilities && f.properties?.internalUtilities) {
+                        layout.utilities = f.properties.internalUtilities;
                     }
 
                     return {
@@ -934,6 +976,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         })),
                         cores: layout.cores,
                         units: layout.units,
+                        internalUtilities: layout.utilities || [],
                         area: turf.area(f),
                         numFloors: floors,
                         typicalFloorHeight: floorHeight,
@@ -1180,37 +1223,58 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // Helper to get random int
                 const rnd = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
+                // HYBRID LOGIC: Determine distinct combinations for the 3 scenarios
+                let scenarioTypologies: string[][] = [[], [], []];
+
+                if (params.typologies && params.typologies.length > 1) {
+                    // Generate all non-empty subsets logic
+                    const getAllSubsets = (arr: string[]) => arr.reduce(
+                        (subsets, value) => subsets.concat(subsets.map(set => [value, ...set])),
+                        [[]] as string[][]
+                    ).filter(s => s.length > 0);
+
+                    const allSubsets = getAllSubsets(params.typologies);
+                    // Shuffle subsets to get random variety each time
+                    const shuffledSubsets = allSubsets.sort(() => 0.5 - Math.random());
+
+                    // Assign to 3 slots (cycling if fewer subsets than slots)
+                    for (let i = 0; i < 3; i++) {
+                        scenarioTypologies[i] = shuffledSubsets[i % shuffledSubsets.length];
+                    }
+                }
+
                 // Scenario 1: Optimized / Vastu (The "Best" fit)
-                // If Vastu, stricter orientation (0/90). If not, align to road (0 usually default).
                 generatedScenarios.push(createScenario("Scenario 1: Optimized", {
                     typology: baseTypo as AlgoTypology,
                     spacing: 15,
-                    orientation: isVastu ? 0 : 0, // Vastu prefers N/E alignment (0/90)
+                    orientation: isVastu ? 0 : 0,
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
-                    vastuCompliant: isVastu
+                    vastuCompliant: isVastu,
+                    overrideTypologies: scenarioTypologies[0].length > 0 ? scenarioTypologies[0] : undefined
                 }));
 
                 // Scenario 2: High Density / Maximized
-                // Tighter spacing, potentially different orientation to fit more
                 generatedScenarios.push(createScenario("Scenario 2: Max Density", {
-                    typology: baseTypo as AlgoTypology, // Could vary typology here if supported
+                    typology: baseTypo as AlgoTypology,
                     spacing: 12,
                     orientation: isVastu ? 0 : (plotStub.roadAccessSides?.includes('E') ? 90 : 0),
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
-                    vastuCompliant: isVastu // Still respect Vastu if requested, but maximize area
+                    vastuCompliant: isVastu,
+                    overrideTypologies: scenarioTypologies[1].length > 0 ? scenarioTypologies[1] : undefined
                 }));
 
                 // Scenario 3: Creative / Alternative
                 // Try a different angle or configuration
-                const altAngle = isVastu ? 0 : 15; // Vastu dislikes 15 deg skew usually, keep 0
-                const altTypo = baseTypo; // Could switch L -> U?
+                const altAngle = isVastu ? 0 : 15;
+                const altTypo = baseTypo;
 
                 generatedScenarios.push(createScenario("Scenario 3: Alternative", {
                     typology: altTypo as AlgoTypology,
                     spacing: 18,
                     orientation: altAngle,
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
-                    vastuCompliant: isVastu
+                    vastuCompliant: isVastu,
+                    overrideTypologies: scenarioTypologies[2].length > 0 ? scenarioTypologies[2] : undefined
                 }));
 
                 set({
@@ -1231,10 +1295,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 selectedScenario.plots.forEach((scenPlot: Plot) => {
                     const plotIndex = draft.plots.findIndex(p => p.id === scenPlot.id);
                     if (plotIndex !== -1) {
-                        draft.plots[plotIndex].buildings = scenPlot.buildings;
-                        draft.plots[plotIndex].greenAreas = scenPlot.greenAreas;
-                        draft.plots[plotIndex].parkingAreas = scenPlot.parkingAreas;
-                        draft.plots[plotIndex].utilityAreas = scenPlot.utilityAreas;
+                        // Deep clone to ensure React detects the change and triggers map cleanup
+                        // Replace all generated areas to ensure clean state
+                        draft.plots[plotIndex].buildings = JSON.parse(JSON.stringify(scenPlot.buildings));
+                        draft.plots[plotIndex].greenAreas = JSON.parse(JSON.stringify(scenPlot.greenAreas));
+                        draft.plots[plotIndex].parkingAreas = JSON.parse(JSON.stringify(scenPlot.parkingAreas));
+                        draft.plots[plotIndex].buildableAreas = JSON.parse(JSON.stringify(scenPlot.buildableAreas));
+                        draft.plots[plotIndex].utilityAreas = JSON.parse(JSON.stringify(scenPlot.utilityAreas));
                     }
                 });
             }));
@@ -1315,6 +1382,23 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set(produce((draft: BuildingState) => {
                 draft.uiState.ghostMode = !draft.uiState.ghostMode;
                 toast({ title: draft.uiState.ghostMode ? "Ghost Mode Enabled" : "Ghost Mode Disabled", description: "Internal structures are now " + (draft.uiState.ghostMode ? "visible" : "hidden") });
+            }));
+        },
+
+        toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units') => {
+            set(produce((draft: BuildingState) => {
+                // Toggle the specific component
+                draft.componentVisibility[component] = !draft.componentVisibility[component];
+
+                // Auto-enable ghostMode if any component is now visible
+                const anyVisible = Object.values(draft.componentVisibility).some(v => v);
+                if (anyVisible && !draft.uiState.ghostMode) {
+                    draft.uiState.ghostMode = true;
+                }
+                // Auto-disable ghostMode if no components are visible
+                else if (!anyVisible && draft.uiState.ghostMode) {
+                    draft.uiState.ghostMode = false;
+                }
             }));
         },
 
@@ -1742,7 +1826,20 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 window.dispatchEvent(new CustomEvent('flyTo', { detail: { center: selectedObjectCentroid.geometry.coordinates } }));
             }
 
-            set({ selectedObjectId: { id, type } });
+            set(produce((draft: BuildingState) => {
+                draft.selectedObjectId = { id, type };
+
+                // Auto-exit Ghost Mode when selecting main entities
+                if (type === 'Plot' || type === 'Building') {
+                    draft.uiState.ghostMode = false;
+                    // Reset all component visibilities
+                    draft.componentVisibility.electrical = false;
+                    draft.componentVisibility.hvac = false;
+                    draft.componentVisibility.basements = false;
+                    draft.componentVisibility.cores = false;
+                    draft.componentVisibility.units = false;
+                }
+            }));
         },
         updateBuilding: (buildingId, props) => {
             set(produce((draft: BuildingState) => {
@@ -2009,8 +2106,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 // Select generator
                 switch (params.typology as any) {
-                    case 'point': generatedBuildings = generateTowers(plot.geometry, { ...params, width: wingDepth, setback: effectiveSetback } as any); break;
-                    case 'slab': generatedBuildings = generateLamellas(plot.geometry, { ...params, width: wingDepth, setback: effectiveSetback } as any); break;
+                    case 'point': generatedBuildings = generatePointShapes(plot.geometry, { wingDepth: wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, unitMix: params.unitMix } as any); break;
+                    case 'slab': generatedBuildings = generateSlabShapes(plot.geometry, { wingDepth: wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, unitMix: params.unitMix } as any); break;
                     case 'lshaped': generatedBuildings = generateLShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 30, wingLengthB: 30 }); break;
                     case 'ushaped': generatedBuildings = generateUShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 40, wingLengthB: 30 }); break;
                     case 'tshaped': generatedBuildings = generateTShapes(plot.geometry, { wingDepth, orientation: params.gridOrientation ?? 0, setback: effectiveSetback, wingLengthA: 30, wingLengthB: 40 }); break;
@@ -2350,6 +2447,17 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 if (userDefinedAreas.length === 0) {
                     toast({ title: 'No zones found.', description: 'AI will generate zones first, then place buildings.' });
 
+                    // Clear previous AI zones to avoid accumulation
+                    set(produce((draft: BuildingState) => {
+                        const p = draft.plots.find(plot => plot.id === plotId);
+                        if (p) {
+                            p.greenAreas = p.greenAreas.filter(g => !g.id.startsWith('ai-zone-'));
+                            p.parkingAreas = p.parkingAreas.filter(pa => !pa.id.startsWith('ai-zone-'));
+                            p.buildableAreas = p.buildableAreas.filter(ba => !ba.id.startsWith('ai-zone-'));
+                            p.utilityAreas = p.utilityAreas.filter(ua => !ua.id.startsWith('ai-zone-'));
+                        }
+                    }));
+
                     const zoneResult: GenerateZonesOutput = await generateLayoutZones({
                         plotGeometry: JSON.stringify(plot.geometry),
                         prompt: augmentedPrompt,
@@ -2492,6 +2600,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 plot.buildings = plot.buildings.filter(b => !b.id.startsWith('ai-gen-'));
                 plot.greenAreas = plot.greenAreas.filter(g => !g.id.startsWith('ai-gen-'));
                 plot.parkingAreas = plot.parkingAreas.filter(p => !p.id.startsWith('ai-gen-'));
+                plot.utilityAreas = plot.utilityAreas.filter(u => !u.id.startsWith('ai-gen-') && !u.id.startsWith('ai-zone-'));
 
                 scenario.objects.forEach((aiObj, aiIndex) => {
                     const aiMassingObject = aiObj as AiMassingGeneratedObject;

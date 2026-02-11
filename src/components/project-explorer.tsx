@@ -28,10 +28,11 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collap
 
 
 function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
-    const { actions, selectedObjectId, uiState } = useBuildingStore(s => ({
+    const { actions, selectedObjectId, uiState, componentVisibility } = useBuildingStore(s => ({
         actions: s.actions,
         selectedObjectId: s.selectedObjectId,
-        uiState: s.uiState
+        uiState: s.uiState,
+        componentVisibility: s.componentVisibility
     }));
     const [isOpen, setIsOpen] = React.useState(true);
 
@@ -93,49 +94,63 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                         <React.Fragment key={b.id}>
                             {renderObject(b, 'Building')}
 
-                            {/* Render Attached Utilities & Parking */}
-                            {(b.utilities?.includes('Electrical' as any) || b.floors.some(f => f.utilityType === 'HVAC' || f.type === 'Parking')) && (
+                            {/* Render Internal Utilities (New System) */}
+                            {b.internalUtilities && b.internalUtilities.length > 0 && (
                                 <div className="pl-8 space-y-1 pb-2">
-                                    {b.utilities?.includes('Electrical' as any) && (
+                                    {b.internalUtilities.map(util => (
                                         <div
-                                            className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
+                                            key={util.id}
+                                            className={cn(
+                                                "flex items-center text-xs cursor-pointer transition-colors group",
+                                                (util.type === 'Electrical' && componentVisibility.electrical) || (util.type === 'HVAC' && componentVisibility.hvac)
+                                                    ? "text-primary font-medium"
+                                                    : "text-muted-foreground hover:text-primary"
+                                            )}
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                actions.selectObject(`floor-${b.id}-electrical`, 'Utility' as any);
+                                                if (util.type === 'Electrical') actions.toggleComponentVisibility('electrical');
+                                                else if (util.type === 'HVAC') actions.toggleComponentVisibility('hvac');
                                             }}
                                         >
-                                            <Zap className="h-3 w-3 mr-2 text-amber-400" />
-                                            <span>Electrical Room (Base)</span>
-                                        </div>
-                                    )}
-                                    {b.floors.some(f => f.utilityType === 'HVAC') && (
-                                        <div
-                                            className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                actions.selectObject(`floor-${b.id}-hvac`, 'Utility' as any);
-                                            }}
-                                        >
-                                            <Fan className="h-3 w-3 mr-2 text-blue-400" />
-                                            <span>HVAC Plant (Roof)</span>
-                                        </div>
-                                    )}
-                                    {b.floors.filter(f => f.type === 'Parking' && f.parkingType !== 'Stilt' && f.parkingType !== 'Podium').map(f => (
-                                        <div
-                                            key={f.id}
-                                            className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                actions.selectObject(f.id, 'Parking' as any);
-                                            }}
-                                        >
-                                            {f.parkingType === 'Basement' ?
-                                                <ArrowDownToLine className="h-3 w-3 mr-2 text-slate-500" /> :
-                                                (f.parkingType === 'Stilt' ? <Layers className="h-3 w-3 mr-2 text-slate-500" /> : <Car className="h-3 w-3 mr-2 text-slate-500" />)
+                                            {util.type === 'Electrical' ? <Zap className="h-3 w-3 mr-2 text-amber-400" /> : <Fan className="h-3 w-3 mr-2 text-blue-400" />}
+                                            <span className="flex-1">{util.name}</span>
+                                            {((util.type === 'Electrical' && componentVisibility.electrical) || (util.type === 'HVAC' && componentVisibility.hvac)) ?
+                                                <Eye className="h-3 w-3 ml-2" /> :
+                                                <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />
                                             }
-                                            <span>{f.parkingType || 'Basement'} Parking ({f.parkingCapacity || 0})</span>
                                         </div>
                                     ))}
+                                </div>
+                            )}
+
+                            {/* Basement Parking with Visibility Toggle - Show Individual Floors */}
+                            {b.floors.filter(f => f.type === 'Parking' && f.parkingType !== 'Stilt' && f.parkingType !== 'Podium').length > 0 && (
+                                <div className="pl-8 space-y-1 pb-2">
+                                    {b.floors
+                                        .filter(f => f.type === 'Parking' && f.parkingType !== 'Stilt' && f.parkingType !== 'Podium')
+                                        .map((floor, index) => (
+                                            <div
+                                                key={floor.id}
+                                                className={cn(
+                                                    "flex items-center text-xs cursor-pointer transition-colors group",
+                                                    componentVisibility.basements
+                                                        ? "text-primary font-medium"
+                                                        : "text-muted-foreground hover:text-primary"
+                                                )}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    actions.toggleComponentVisibility('basements');
+                                                }}
+                                                title={componentVisibility.basements ? "Hide Basements" : "Show Basements"}
+                                            >
+                                                <ArrowDownToLine className="h-3 w-3 mr-2 text-slate-500" />
+                                                <span className="flex-1">
+                                                    {floor.parkingType || 'Basement'} Parking ({floor.parkingCapacity || 0})
+                                                </span>
+                                                {componentVisibility.basements ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
+                                            </div>
+                                        ))
+                                    }
                                 </div>
                             )}
 
@@ -143,32 +158,42 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                             {b.cores && b.cores.length > 0 && (
                                 <div className="pl-8 space-y-1 pb-2">
                                     <div
-                                        className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
+                                        className={cn(
+                                            "flex items-center text-xs cursor-pointer transition-colors group",
+                                            componentVisibility.cores
+                                                ? "text-primary font-medium"
+                                                : "text-muted-foreground hover:text-primary"
+                                        )}
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            actions.toggleGhostMode();
+                                            actions.toggleComponentVisibility('cores');
                                         }}
-                                        title={uiState.ghostMode ? "Hide Internal Structure" : "Show Internal Structure"}
+                                        title={componentVisibility.cores ? "Hide Cores" : "Show Only Cores"}
                                     >
                                         <Box className="h-3 w-3 mr-2 text-zinc-500" />
                                         <span className="flex-1">Cores ({b.cores.length})</span>
-                                        {uiState.ghostMode ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-50" />}
+                                        {componentVisibility.cores ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
                                     </div>
                                 </div>
                             )}
                             {b.units && b.units.length > 0 && (
                                 <div className="pl-8 space-y-1 pb-2">
                                     <div
-                                        className="flex items-center text-xs text-muted-foreground hover:text-primary cursor-pointer transition-colors"
+                                        className={cn(
+                                            "flex items-center text-xs cursor-pointer transition-colors group",
+                                            componentVisibility.units
+                                                ? "text-primary font-medium"
+                                                : "text-muted-foreground hover:text-primary"
+                                        )}
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            actions.toggleGhostMode();
+                                            actions.toggleComponentVisibility('units');
                                         }}
-                                        title={uiState.ghostMode ? "Hide Internal Structure" : "Show Internal Structure"}
+                                        title={componentVisibility.units ? "Hide Units" : "Show Only Units"}
                                     >
                                         <Grid className="h-3 w-3 mr-2 text-blue-400" />
                                         <span className="flex-1">Units ({b.units.length})</span>
-                                        {uiState.ghostMode ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-50" />}
+                                        {componentVisibility.units ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
                                     </div>
                                 </div>
                             )}
