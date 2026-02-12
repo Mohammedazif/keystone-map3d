@@ -1,6 +1,7 @@
 import * as turf from '@turf/turf';
 import type { Feature, Polygon, MultiPolygon, Point } from 'geojson';
 import { UnitTypology } from '../types';
+import { applyVariableSetbacks } from './setback-utils';
 
 export type AlgoTypology = 'lamella' | 'tower' | 'perimeter' | 'point' | 'slab' | 'lshaped' | 'ushaped' | 'tshaped' | 'hshaped' | 'oshaped';
 
@@ -9,6 +10,13 @@ export interface AlgoParams {
     spacing: number;       // Gap between blocks (meters) or Grid Spacing
     width: number;         // Width of the block (meters) or Building Depth
     setback: number;       // Boundary setback (meters)
+
+    // Variable Setbacks
+    frontSetback?: number;
+    rearSetback?: number;
+    sideSetback?: number;
+    roadAccessSides?: string[]; // 'N', 'S', 'E', 'W'
+
     orientation: number;   // Rotation in degrees (0-180)
     wingDepth?: number;    // Building wing depth (for L/T/U/H shapes)
     minLength?: number;    // Minimum viable block length
@@ -47,6 +55,9 @@ export interface AlgoParams {
     wingLengthA?: number;
     wingLengthB?: number;
 
+    // Seed for pagination/refresh
+    seedOffset?: number;
+
     // Unit Mix Configuration
     unitMix?: UnitTypology[];
 }
@@ -65,7 +76,7 @@ export function generateTowers(
 
     // 1. Apply Setback
     // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' as const });
+    const bufferedPlot = applyVariableSetbacks(plotGeometry, params);
     if (!bufferedPlot) return [];
 
     // @ts-ignore
@@ -74,8 +85,20 @@ export function generateTowers(
     const [minX, minY, maxX, maxY] = bbox;
 
     // 2. Create Grid of Points
-    // stride = width + spacing
-    const stride = width + spacing;
+    // Directional Spacing
+    // Side-to-Side (along orientation) = width + sideSetback
+    // Front-to-Back (perpendicular) = width + frontSetback + rearSetback
+
+    const sideGap = params.sideSetback ?? params.spacing ?? 6;
+    const depthGap = (params.frontSetback ?? 6) + (params.rearSetback ?? 6);
+
+    // If Front/Rear are not specifically set, fallback to spacing or default
+    // preciseDepthGap logic: if user didn't set F/R, maybe just use spacing? 
+    // But we want to enforce the new rule. User said "front and rear setbacks would be applied".
+    // We'll use the specific params if available, else fall back to a reasonable default.
+
+    const strideX = width + sideGap;
+    const strideY = width + depthGap;
 
     const center = turf.centroid(validArea);
     const pMin = turf.point([minX, minY]);
@@ -83,8 +106,8 @@ export function generateTowers(
     const diagonal = turf.distance(pMin, pMax, { units: 'kilometers' as const }) * 1000;
     const genSize = diagonal * 1.5;
 
-    const cols = Math.ceil(genSize / stride);
-    const rows = Math.ceil(genSize / stride);
+    const cols = Math.ceil(genSize / strideX);
+    const rows = Math.ceil(genSize / strideY);
 
     const startX = -genSize / 2;
     const startY = -genSize / 2;
@@ -94,8 +117,8 @@ export function generateTowers(
 
     for (let i = 0; i < cols; i++) {
         for (let j = 0; j < rows; j++) {
-            const xOffset = startX + (i * stride);
-            const yOffset = startY + (j * stride);
+            const xOffset = startX + (i * strideX);
+            const yOffset = startY + (j * strideY);
 
             // Move from center along rotated axes
             // @ts-ignore
@@ -199,7 +222,7 @@ export function generatePerimeter(
 
     // 1. Apply Setback (Outer boundary)
     // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' as const });
+    const bufferedPlot = applyVariableSetbacks(plotGeometry, params);
     if (!bufferedPlot) return [];
 
     // @ts-ignore
@@ -262,9 +285,11 @@ export function generateLamellas(
     const buildings: Feature<Polygon>[] = [];
     const { spacing, width, orientation, setback, minLength = 10 } = params;
 
+    console.log('[generateLamellas] typology:', params.typology);
+
     // 1. Apply Setback
     // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' as const });
+    const bufferedPlot = applyVariableSetbacks(plotGeometry, params);
 
     if (!bufferedPlot) return [];
 

@@ -54,7 +54,43 @@ export function ScenarioSelectorModal() {
                 </DialogHeader>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 py-4">
-                    {tempScenarios.map((scenario, index) => {
+                    {/* Always render 3 slots */}
+                    {[0, 1, 2].map((index) => {
+                        const scenario = tempScenarios[index];
+
+                        if (!scenario) {
+                            // Skeleton Loader
+                            return (
+                                <Card key={index} className="group relative overflow-hidden border border-border/40 shadow-sm bg-muted/5">
+                                    <div className="w-full h-40 bg-muted/10 animate-pulse flex items-center justify-center">
+                                        <div className="h-8 w-8 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        <div className="h-5 w-1/3 bg-muted/20 rounded animate-pulse" />
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="space-y-1">
+                                                <div className="h-3 w-8 bg-muted/20 rounded animate-pulse" />
+                                                <div className="h-4 w-16 bg-muted/20 rounded animate-pulse" />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <div className="h-3 w-8 bg-muted/20 rounded animate-pulse" />
+                                                <div className="h-4 w-16 bg-muted/20 rounded animate-pulse" />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <div className="h-3 w-8 bg-muted/20 rounded animate-pulse" />
+                                                <div className="h-4 w-16 bg-muted/20 rounded animate-pulse" />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <div className="h-3 w-8 bg-muted/20 rounded animate-pulse" />
+                                                <div className="h-4 w-16 bg-muted/20 rounded animate-pulse" />
+                                            </div>
+                                        </div>
+                                        <div className="h-9 w-full bg-muted/10 rounded animate-pulse mt-2" />
+                                    </div>
+                                </Card>
+                            );
+                        }
+
                         // Calculate stats
                         let totalGFA = 0;
                         let totalUnits = 0;

@@ -16,6 +16,9 @@ const ExtractedRegulationSchema = z.object({
   type: z.string().describe('The regulation type/category (e.g., "Residential", "Commercial", "Mixed-Use")'),
   geometry: z.object({
     setback: RegulationValueSchema.optional(),
+    front_setback: RegulationValueSchema.optional(),
+    rear_setback: RegulationValueSchema.optional(),
+    side_setback: RegulationValueSchema.optional(),
     road_width: RegulationValueSchema.optional(),
     max_ground_coverage: RegulationValueSchema.optional(),
     floor_area_ratio: RegulationValueSchema.optional(),
@@ -61,7 +64,10 @@ Task:
 2. **SANITIZATION**:
    - **FAR**: Must be a small decimal (e.g. 1.5, 2.0, 3.5). If you see "225" and it represents area, IGNORE it. If you see "225" and it means 2.25, use 2.25.
    - **Coverage**: Must be Percentage (0-100).
-   - **Setback**: Must be reasonable (meters).
+   - **Setback**: 
+     - Look for specific **Front**, **Rear**, and **Side** setbacks if mentioned.
+     - If only a general "Setback" is mentioned, use the 'setback' field.
+     - Values must be in meters.
 
 Andaman and Nicobar Islands, Andhra Pradesh, Arunachal Pradesh, Assam, Bihar, Chandigarh, Chhattisgarh, Dadra and Nagar Haveli and Daman and Diu, Delhi, Goa, Gujarat, Haryana, Himachal Pradesh, Jammu and Kashmir, Jharkhand, Karnataka, Kerala, Ladakh, Lakshadweep, Madhya Pradesh, Maharashtra, Manipur, Meghalaya, Mizoram, Nagaland, Odisha, Puducherry, Punjab, Rajasthan, Sikkim, Tamil Nadu, Telangana, Tripura, Uttar Pradesh, Uttarakhand, West Bengal
 
@@ -74,7 +80,10 @@ Return a JSON array of objects.
     "location": "Delhi",
     "type": "Residential - Plotted",
     "geometry": {
-      "setback": {"desc": "Distance from plot boundary", "unit": "m", "value": 4, "min": 3, "max": 6},
+      "front_setback": {"desc": "Min front setback", "unit": "m", "value": 3, "min": 2, "max": 6},
+      "rear_setback": {"desc": "Min rear setback", "unit": "m", "value": 2, "min": 1, "max": 4},
+      "side_setback": {"desc": "Min side setback", "unit": "m", "value": 2, "min": 1, "max": 4},
+      "setback": {"desc": "General setback", "unit": "m", "value": 3, "min": 2, "max": 6},
       "road_width": {"desc": "Adjacent road width", "unit": "m", "value": 12, "min": 6, "max": 30},
       "max_ground_coverage": {"desc": "Maximum ground coverage", "unit": "%", "value": 60, "min": 10, "max": 80},
       "floor_area_ratio": {"desc": "FAR/FSI value", "unit": "", "value": 2.0, "min": 0.5, "max": 5},

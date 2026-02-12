@@ -213,7 +213,7 @@ export function generateBuildingLayout(
         // Try left core
         for (const candidate of leftCandidates) {
             // @ts-ignore
-            if (turf.booleanContains(buildingPoly, candidate)) {
+            if (turf.booleanPointInPolygon(candidate, buildingPoly)) {
                 const core = createCoreAtPoint(candidate, 'core-h-left');
                 if (core) {
                     cores.push({ id: 'core-h-left', type: 'Lobby', geometry: core });
@@ -226,7 +226,7 @@ export function generateBuildingLayout(
         // Try right core
         for (const candidate of rightCandidates) {
             // @ts-ignore
-            if (turf.booleanContains(buildingPoly, candidate)) {
+            if (turf.booleanPointInPolygon(candidate, buildingPoly)) {
                 const core = createCoreAtPoint(candidate, 'core-h-right');
                 if (core) {
                     cores.push({ id: 'core-h-right', type: 'Lobby', geometry: core });
@@ -263,6 +263,12 @@ export function generateBuildingLayout(
     }
 
     console.log('[Layout Generator] Total cores placed:', cores.length);
+
+    // Safety check: If no cores were placed, return empty layout
+    if (cores.length === 0) {
+        console.warn('[Layout Generator] No cores placed, returning empty layout');
+        return { cores: [], units: [], utilities: [], entrances: [] };
+    }
 
     const coreGeom = cores[0].geometry;
 

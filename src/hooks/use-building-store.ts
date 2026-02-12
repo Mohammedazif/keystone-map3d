@@ -15,12 +15,13 @@ import { generateMassingOptions } from '@/ai/flows/ai-massing-generator';
 import { generateLayoutZones } from '@/ai/flows/ai-zone-generator';
 
 import { generateLamellas, generateTowers, generatePerimeter, AlgoParams, AlgoTypology } from '@/lib/generators/basic-generator';
-import { generateLShapes, generateUShapes, generateTShapes, generateHShapes, generateSlabShapes, generatePointShapes } from '@/lib/generators/geometric-typologies';
+import { generateLShapes, generateUShapes, generateTShapes, generateHShapes, generateSlabShapes, generatePointShapes, checkCollision } from '@/lib/generators/geometric-typologies';
 import { generateSiteUtilities, generateBuildingLayout } from '@/lib/generators/layout-generator';
 import { splitPolygon } from '@/lib/polygon-utils';
 import { db } from '@/lib/firebase';
 import { calculateVastuScore } from '@/lib/engines/vastu-engine';
 import { calculateGreenAnalysis } from '@/lib/engines/green-analysis-engine';
+import { ComplianceEngine } from '@/lib/engines/compliance-engine';
 import { collection, doc, getDocs, setDoc, deleteDoc, writeBatch, getDoc, query, where } from 'firebase/firestore';
 import useAuthStore from './use-auth-store';
 
@@ -628,21 +629,21 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             });
             toast({ title: "Scenario Loaded", description: `Active layout restored to ${option.name}.` });
         },
-        deleteDesignOption: (id) => {
+        deleteDesignOption: (id: string) => {
             set(produce((draft: BuildingState) => {
-                draft.designOptions = draft.designOptions.filter(o => o.id !== id);
+                draft.designOptions = draft.designOptions.filter((o: DesignOption) => o.id !== id);
             }));
             get().actions.saveCurrentProject();
             toast({ title: "Scenario Deleted" });
         },
-        toggleVastuCompass: (show) => set(produce((state: BuildingState) => {
+        toggleVastuCompass: (show: boolean) => set(produce((state: BuildingState) => {
             state.uiState.showVastuCompass = show;
         })),
-        setFeasibilityPanelOpen: (isOpen) => set(produce((state: BuildingState) => {
+        setFeasibilityPanelOpen: (isOpen: boolean) => set(produce((state: BuildingState) => {
             state.uiState.isFeasibilityPanelOpen = isOpen;
         })),
 
-        generateScenarios: (plotId, params) => {
+        generateScenarios: (plotId: string, params: AlgoParams) => {
             const { plots } = get();
             const plotStub = plots.find(p => p.id === plotId);
             if (!plotStub) return;
@@ -650,7 +651,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set({ isGeneratingScenarios: true });
 
             // Helper to generate buildings for a scenario
-            const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number; overrideTypologies?: string[] }) => {
+            const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number; overrideTypologies?: string[]; seed?: number }) => {
                 let geomFeatures: Feature<Polygon>[] = [];
 
                 // Adjust defaults based on Land Use
@@ -735,6 +736,51 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // 3. Sequential Generation Loop
                 const plotArea = turf.area(plotStub.geometry);
 
+                // Get current project
+                const project = get().projects.find(prj => prj.id === get().activeProjectId);
+
+                // COMPLIANCE CALCULATION
+                // ---------------------------------------------------------
+                // Fetch regulation from plot or fall back to defaults
+                const currentRegulation = plotStub.regulation || {
+                    geometry: {
+                        floor_area_ratio: { value: 2.0 }, // Fallback FAR
+                        max_ground_coverage: { value: 50 }, // Fallback Coverage
+                        max_height: { value: 15 },
+                        setback: { value: p.setback || 4 }
+                    }
+                };
+
+                const complianceInput = {
+                    plotArea: plotArea,
+                    regulation: currentRegulation,
+                    intendedUse: project?.intendedUse || 'Residential'
+                };
+
+                // @ts-ignore
+                const complianceOutput = ComplianceEngine.calculate(complianceInput);
+                const {
+                    maxFootprint: regulationMaxFootprint,
+                    maxGFA,
+                    targetFloors: regulationMaxFloors
+                } = complianceOutput;
+
+                // Use user overrides if provided, otherwise use regulation values
+                const effectiveMaxFootprint = params.maxFootprint ?? regulationMaxFootprint;
+                const effectiveMinFootprint = params.minFootprint ?? 100;
+                const effectiveMaxFloors = params.maxFloors ?? regulationMaxFloors;
+
+                console.log(`[Compliance] Plot Area: ${plotArea.toFixed(0)}m²`);
+                console.log(`[Compliance] Regulation Defaults: MaxFootprint=${regulationMaxFootprint.toFixed(0)}m², MaxFloors=${regulationMaxFloors}`);
+                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m², MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}`);
+
+                if (params.maxFootprint) {
+                    console.warn(`[Override] User set maxFootprint to ${params.maxFootprint}m² (regulation: ${regulationMaxFootprint.toFixed(0)}m²)`);
+                }
+                if (params.maxFloors && params.maxFloors !== regulationMaxFloors) {
+                    console.warn(`[Override] User set maxFloors to ${params.maxFloors} (regulation: ${regulationMaxFloors})`);
+                }
+
                 // Keep track of placed buildings to avoid collision
                 const builtObstacles: Feature<Polygon>[] = [];
 
@@ -751,6 +797,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     builtObstacles.push(brahmasthan);
                 }
 
+                console.log('[DEBUG] generateScenarios p:', p);
                 sortedTypologies.forEach((typology: string, index: number) => {
                     // small plot check (warn/skip if too small)
                     // Relaxed constraints applied previously
@@ -787,14 +834,34 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     const genParams: AlgoParams = {
                         ...p,
                         wingDepth: wingDepth || undefined, // Let generator calculate if not set
-                        width: wingDepth || 12, // Default 12m for Point/Slab
+                        width: wingDepth || 20, // Default 20m (matches minBuildingWidth)
                         obstacles: builtObstacles,
                         targetPosition: targetPos,
                         vastuCompliant: !!p.vastuCompliant,
                         unitMix: projectUnitMix, // Pass project unit mix
-                        // Optional hints - generators will calculate optimal if not provided
+                        // PASS EFFECTIVE COMPLIANCE LIMITS (with user overrides applied)
+                        maxFootprint: effectiveMaxFootprint,
+                        minFootprint: effectiveMinFootprint,
+                        maxFloors: effectiveMaxFloors,
+
+                        // Dimensional Constraints (Hardcoded for now as per user request)
+                        minBuildingWidth: 20,
+                        maxBuildingWidth: 25,
+                        minBuildingLength: 25,
+                        maxBuildingLength: 55,
+
+                        // Spacing - Use passed param (override), then Global UI param, then regulation, then default (6m)
+                        sideSetback: p.sideSetback ?? p.setback ?? plotStub.regulation?.geometry?.side_setback?.value ?? 6,
+                        frontSetback: p.frontSetback ?? p.setback ?? plotStub.regulation?.geometry?.front_setback?.value ?? 6,
+                        rearSetback: p.rearSetback ?? p.setback ?? plotStub.regulation?.geometry?.rear_setback?.value ?? 6,
+                        roadAccessSides: plotStub.roadAccessSides || [],
+
+                        // Optional hints
                         wingLengthA: undefined,
-                        wingLengthB: undefined
+                        wingLengthB: undefined,
+
+                        // Diversity seed (will be set by caller for scenario variation)
+                        seed: p.seed ?? 0
                     };
 
                     switch (typology) {
@@ -812,6 +879,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             generated = generateUShapes(plotStub.geometry, genParams);
                             break;
                         case 'tshaped':
+                            // Fixed: Pass correct params
                             generated = generateTShapes(plotStub.geometry, genParams);
                             break;
                         case 'hshaped':
@@ -824,34 +892,23 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             generated = generatePointShapes(plotStub.geometry, genParams);
                     }
 
-                    // CRITICAL FIX: Handle mutually exclusive geometry options (L, U, T, H)
-                    // These generators return multiple distinct options (e.g. SW, SE, NE, NW L-shapes).
-                    // We must NOT combine them into a single scenario (which creates a ring).
-                    // Instead, we should pick ONE option per generated scenario loop iteration, 
-                    // or if this `generateScenarios` function is creating a SINGLE scenario, we should randomly pick one.
-
-                    // For now, since `generateScenarios` creates ONE scenario entity derived from `scenarioIterations`,
-                    // we need to pick just ONE of the valid generated shapes to avoid the "Ring" effect.
-
+                    // CRITICAL FIX: L/U/T/H generators return ALL segments forming the complete shape
+                    // NOT alternative candidates - we need to push ALL segments
                     if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(typology)) {
-                        if (generated.length > 0) {
-                            // Pick a random candidate to allow variation across the 3 scenario slots
-                            // Since `generateScenarios` runs once per scenario definition in the UI,
-                            // picking randomly here ensures Scenario 1, 2, and 3 get different shapes.
-
-                            const randomIndex = Math.floor(Math.random() * generated.length);
-                            const selectedCandidate = generated[randomIndex];
-
-                            builtObstacles.push(selectedCandidate);
-                            geomFeatures.push(selectedCandidate);
-                        }
+                        generated.forEach(segment => {
+                            builtObstacles.push(segment);
+                            geomFeatures.push(segment);
+                        });
                     } else {
                         // For Point/Slab towers, we DO want multiple buildings in one scenario
-                        if (generated.length > 0) {
-                            const toAdd = generated;
-                            builtObstacles.push(...toAdd);
-                            geomFeatures.push(...toAdd);
-                        }
+                        // But we still need to avoid overlapping previous heavy shapes
+                        generated.forEach(g => {
+                            // Use checkCollision which includes proper spacing/buffer logic
+                            if (!checkCollision(g, builtObstacles)) {
+                                builtObstacles.push(g);
+                                geomFeatures.push(g);
+                            }
+                        });
                     }
                 });
 
@@ -970,7 +1027,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const projectUnitMix = activeProject?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
 
                         console.log(`[use-building-store] Generating internal layout for building ${i} using unitMix`, projectUnitMix);
-                        const layoutResult = generateBuildingLayout(f, {
+                        const layoutResult = generateBuildingLayout(f as Feature<Polygon>, {
                             subtype: f.properties?.subtype || params.typology,
                             unitMix: projectUnitMix
                         });
@@ -1228,8 +1285,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 return { plots: [plotClone] };
             };
 
-            // Generate 3 Variations
-            setTimeout(() => { // minimal delay to allow UI to show loading if needed
+            // Generate 3 Variations Sequentially with Delays
+            // This creates the "AI Thinking" effect in the UI
+            setTimeout(async () => {
+                const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+                // Initialize empty to open modal with skeletons
+                set({ tempScenarios: [] });
 
                 // Base topology param mapping
                 const baseTypo = (params.typology === 'lshaped' || params.typology === 'slab') ? 'lamella' :
@@ -1237,57 +1299,64 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 const generatedScenarios: { plots: Plot[] }[] = [];
 
-                // Revert to generating active regulation scenarios
-                // Use plotStub's current constraints (derived from active regulation) for all these variations
+                // Use plotStub's current constraints
+                const isVastu = params.vastuCompliant === true;
 
-                // Dynamic Scenario Generation Strategies
-                // 1. Determine base strategy based on constraints
-                const isVastu = params.vastuCompliant === true; // or check project settings
-
-                // Helper to get random int
-                const rnd = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
-
-                // HYBRID LOGIC: Determine distinct combinations for the 3 scenarios
+                // HYBRID LOGIC: Determine distinct combinations
                 let scenarioTypologies: string[][] = [[], [], []];
 
                 if (params.typologies && params.typologies.length > 1) {
-                    // Generate all non-empty subsets logic
                     const getAllSubsets = (arr: string[]) => arr.reduce(
                         (subsets, value) => subsets.concat(subsets.map(set => [value, ...set])),
                         [[]] as string[][]
                     ).filter(s => s.length > 0);
 
                     const allSubsets = getAllSubsets(params.typologies);
-                    // Shuffle subsets to get random variety each time
                     const shuffledSubsets = allSubsets.sort(() => 0.5 - Math.random());
 
-                    // Assign to 3 slots (cycling if fewer subsets than slots)
                     for (let i = 0; i < 3; i++) {
                         scenarioTypologies[i] = shuffledSubsets[i % shuffledSubsets.length];
                     }
                 }
 
-                // Scenario 1: Optimized / Vastu (The "Best" fit)
+                // --- Generate Scenario 1 ---
+                await sleep(100); // Quick start
                 generatedScenarios.push(createScenario("Scenario 1: Optimized", {
                     typology: baseTypo as AlgoTypology,
                     spacing: 15,
                     orientation: isVastu ? 0 : 0,
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
+                    sideSetback: params.sideSetback,
+                    frontSetback: params.frontSetback,
+                    rearSetback: params.rearSetback,
                     vastuCompliant: isVastu,
-                    overrideTypologies: scenarioTypologies[0].length > 0 ? scenarioTypologies[0] : undefined
+                    overrideTypologies: scenarioTypologies[0].length > 0 ? scenarioTypologies[0] : undefined,
+                    seed: 0 + (params.seedOffset || 0)
                 }));
+                // Update State to show S1
+                set({ tempScenarios: [...generatedScenarios] });
 
-                // Scenario 2: High Density / Maximized
+
+                // --- Generate Scenario 2 ---
+                await sleep(600); // Thinking time
                 generatedScenarios.push(createScenario("Scenario 2: Max Density", {
                     typology: baseTypo as AlgoTypology,
                     spacing: 12,
                     orientation: isVastu ? 0 : (plotStub.roadAccessSides?.includes('E') ? 90 : 0),
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
+                    sideSetback: params.sideSetback,
+                    frontSetback: params.frontSetback,
+                    rearSetback: params.rearSetback,
                     vastuCompliant: isVastu,
-                    overrideTypologies: scenarioTypologies[1].length > 0 ? scenarioTypologies[1] : undefined
+                    overrideTypologies: scenarioTypologies[1].length > 0 ? scenarioTypologies[1] : undefined,
+                    seed: 1 + (params.seedOffset || 0)
                 }));
+                // Update State to show S1, S2
+                set({ tempScenarios: [...generatedScenarios] });
 
-                // Scenario 3: Creative / Alternative
+
+                // --- Generate Scenario 3 ---
+                await sleep(600); // Thinking time
                 // Try a different angle or configuration
                 const altAngle = isVastu ? 0 : 15;
                 const altTypo = baseTypo;
@@ -1297,18 +1366,26 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     spacing: 18,
                     orientation: altAngle,
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
+                    sideSetback: params.sideSetback,
+                    frontSetback: params.frontSetback,
+                    rearSetback: params.rearSetback,
                     vastuCompliant: isVastu,
-                    overrideTypologies: scenarioTypologies[2].length > 0 ? scenarioTypologies[2] : undefined
+                    overrideTypologies: scenarioTypologies[2].length > 0 ? scenarioTypologies[2] : undefined,
+                    seed: 2 + (params.seedOffset || 0)
                 }));
+                // Update State to show S1, S2, S3
+                set({ tempScenarios: [...generatedScenarios] });
 
+
+                // Finalize
                 set({
-                    tempScenarios: generatedScenarios,
                     isGeneratingScenarios: false
                 });
-            }, 500);
+
+            }, 100);
         },
 
-        applyScenario: (index) => {
+        applyScenario: (index: number) => {
             const { tempScenarios } = get();
             if (!tempScenarios || !tempScenarios[index]) return;
 
@@ -1335,7 +1412,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
         clearTempScenarios: () => set({ tempScenarios: null }),
 
-        setGenerationParams: (params) => {
+        setGenerationParams: (params: Partial<AlgoParams>) => {
             set(produce(draft => {
                 Object.assign(draft.generationParams, params);
             }));
@@ -1402,9 +1479,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         },
 
 
-        toggleGhostMode: () => {
+        toggleGhostMode: (show?: boolean) => {
             set(produce((draft: BuildingState) => {
-                draft.uiState.ghostMode = !draft.uiState.ghostMode;
+                draft.uiState.ghostMode = show !== undefined ? show : !draft.uiState.ghostMode;
                 toast({ title: draft.uiState.ghostMode ? "Ghost Mode Enabled" : "Ghost Mode Disabled", description: "Internal structures are now " + (draft.uiState.ghostMode ? "visible" : "hidden") });
             }));
         },
@@ -1426,7 +1503,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }));
         },
 
-        setMapLocation: (location) => set({ mapLocation: location }),
+        setMapLocation: (location: { lat: number; lng: number }) => set({ mapLocation: location }),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
         loadProjects: async () => {
@@ -1464,7 +1541,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             try {
                 await deleteDoc(doc(db, 'users', userId, 'projects', projectId));
                 set(produce(draft => {
-                    draft.projects = draft.projects.filter(p => p.id !== projectId);
+                    draft.projects = draft.projects.filter((p: Project) => p.id !== projectId);
                     if (draft.activeProjectId === projectId) {
                         draft.activeProjectId = null;
                         draft.plots = [];
@@ -1604,7 +1681,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        startDrawing: (objectType, activePlotId = null) => {
+        startDrawing: (objectType: DrawingObjectType, activePlotId: string | null = null) => {
             set(
                 produce(draft => {
                     draft.selectedObjectId = null;
@@ -1614,7 +1691,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 })
             );
         },
-        addDrawingPoint: (point) => {
+        addDrawingPoint: (point: [number, number]) => {
             set(
                 produce(draft => {
                     if (draft.drawingState.isDrawing) {
@@ -1623,7 +1700,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 })
             );
         },
-        finishDrawing: (geometry) => {
+        finishDrawing: (geometry: Feature<Polygon>) => {
             try {
                 const { drawingState, projects, activeProjectId, plots, actions } = get();
                 if (!drawingState.isDrawing || !drawingState.objectType) return false;
@@ -1715,7 +1792,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 height: numFloors * typicalFloorHeight,
                                 opacity: getOpacityForBuildingType(intendedUse),
                                 extrusion: true,
-                                soilData: { ph: null, bd: null },
+                                soilData: null,
                                 intendedUse,
                                 floors,
                                 area,
@@ -1779,7 +1856,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 return false;
             }
         },
-        defineZone: (name, type, intendedUse, utilityType) => {
+        defineZone: (name: string, type: ZoneType, intendedUse?: BuildingIntendedUse, utilityType?: UtilityType) => {
             const { zoneDefinition } = get();
             if (!zoneDefinition.isDefining || !zoneDefinition.geometry || !zoneDefinition.centroid || !zoneDefinition.activePlotId) return;
 
@@ -1824,7 +1901,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             });
         },
-        selectObject: (id, type) => {
+        selectObject: (id: string | null, type: SelectedObjectType | null) => {
             get().actions.resetDrawing();
             if (!id || !type) {
                 set({ selectedObjectId: null });
@@ -1865,7 +1942,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        updateBuilding: (buildingId, props) => {
+        updateBuilding: (buildingId: string, props: Partial<Building>) => {
             set(produce((draft: BuildingState) => {
                 for (const plot of draft.plots) {
                     const building = plot.buildings.find(b => b.id === buildingId);
@@ -1908,7 +1985,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        addParkingFloor: (buildingId, parkingType, _level) => {
+        addParkingFloor: (buildingId: string, parkingType: ParkingType, _level?: number) => {
             // STILT/PODIUM PARKING DISABLED As per user request
             if (parkingType === ParkingType.Stilt || parkingType === ParkingType.Podium) return;
 
@@ -1960,15 +2037,15 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        updateProject: (projectId, props) => {
+        updateProject: (projectId: string, props: Partial<Project>) => {
             set(produce((draft: BuildingState) => {
-                const project = draft.projects.find(p => p.id === projectId);
+                const project = draft.projects.find((p: Project) => p.id === projectId);
                 if (project) {
                     Object.assign(project, props);
                 }
             }));
         },
-        updatePlot: (plotId, props) => {
+        updatePlot: (plotId: string, props: Partial<Plot>) => {
             set(produce(draft => {
                 const plot = draft.plots.find(p => p.id === plotId);
                 if (plot) {
@@ -1982,7 +2059,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        updateObject: (objectId, objectType, props) => {
+        updateObject: (objectId: string, objectType: SelectedObjectType, props: any) => {
             set(produce((draft: BuildingState) => {
                 for (const plot of draft.plots) {
                     let objectFound = false;
@@ -2016,7 +2093,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        deletePlot: (id) => {
+        deletePlot: (id: string) => {
             const { selectedObjectId } = get();
             const wasSelected = selectedObjectId?.type === 'Plot' && selectedObjectId.id === id;
             set(produce(draft => {
@@ -2026,7 +2103,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        deleteObject: (plotId, objectId, type) => {
+        deleteObject: (plotId: string, objectId: string, type: SelectedObjectType) => {
             const { selectedObjectId } = get();
             const wasSelected = selectedObjectId?.id === objectId;
             set(produce(draft => {
@@ -2034,9 +2111,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 if (plot) {
                     if (type === 'Building') plot.buildings = plot.buildings.filter(b => b.id !== objectId);
                     if (type === 'GreenArea') plot.greenAreas = plot.greenAreas.filter(g => g.id !== objectId);
-                    if (type === 'ParkingArea') plot.parkingAreas = plot.parkingAreas.filter((p: any) => p.id !== objectId);
+                    if (type === 'ParkingArea') plot.parkingAreas = plot.parkingAreas.filter((p: ParkingArea) => p.id !== objectId);
                     if (type === 'BuildableArea') plot.buildableAreas = plot.buildableAreas.filter(b => b.id !== objectId);
-                    if (type === 'UtilityArea') plot.utilityAreas = plot.utilityAreas.filter((u: any) => u.id !== objectId);
+                    if (type === 'UtilityArea') plot.utilityAreas = plot.utilityAreas.filter((u: UtilityArea) => u.id !== objectId);
                     if (type === 'Label' && plot.labels) plot.labels = plot.labels.filter(l => l.id !== objectId);
 
                     if (wasSelected) {
@@ -2379,10 +2456,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         }
                     }
                 }
-
-                // Debug logging
-                console.log('[Utility Debug] Generated utility areas:', newUtilityAreas.length);
-                newUtilityAreas.forEach(u => console.log(`  - ${u.name} (${u.type}) at position`, u.centroid.geometry.coordinates));
 
                 // Update State
                 set(produce((draft: BuildingState) => {

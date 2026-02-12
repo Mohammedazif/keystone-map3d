@@ -110,6 +110,9 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [avgUnitSize, setAvgUnitSize] = useState(85);
     const [commercialPercent, setCommercialPercent] = useState(0);
     const [setback, setSetback] = useState(5); // Setback distance in meters
+    const [frontSetback, setFrontSetback] = useState<number | undefined>(undefined);
+    const [rearSetback, setRearSetback] = useState<number | undefined>(undefined);
+    const [sideSetback, setSideSetback] = useState<number | undefined>(undefined);
     const [siteCoverage, setSiteCoverage] = useState(0.6); // 60% default utilization
 
     // Generation Mode: Parametric Only
@@ -132,7 +135,12 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [maxAllowedHeight, setMaxAllowedHeight] = useState(100);
     const [maxAllowedFAR, setMaxAllowedFAR] = useState(4.0);
 
+    // Compliance Overrides (optional - will use regulation defaults if not set)
+    const [maxFootprintOverride, setMaxFootprintOverride] = useState<number | undefined>(undefined);
+    const [minFootprintOverride, setMinFootprintOverride] = useState<number>(100);
+
     // Scenario Management State
+    const [seedOffset, setSeedOffset] = useState(0);
 
 
     // Update mix when land use changes
@@ -228,6 +236,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                 }
             }
 
+            // Variable Setbacks
+            if (geomRegs['front_setback']?.value) setFrontSetback(Number(geomRegs['front_setback'].value));
+            if (geomRegs['rear_setback']?.value) setRearSetback(Number(geomRegs['rear_setback'].value));
+            if (geomRegs['side_setback']?.value) setSideSetback(Number(geomRegs['side_setback'].value));
+
             if (farValue !== undefined) {
                 const far = Number(farValue);
                 if (!isNaN(far) && far > 0) {
@@ -284,13 +297,13 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             targetGFA: targetGFA, // Use state value
             targetFAR,
             minFloors: floorRange[0],
-            maxFloors: floorRange[1],
+            maxFloors: floorRange[1], // This will be used as compliance maxFloors
             minHeight: heightRange[0],
             maxHeight: heightRange[1],
             parkingType: selectedParking,
             parkingRatio,
-            minFootprint: footprintRange[0],
-            maxFootprint: footprintRange[1],
+            minFootprint: minFootprintOverride, // Compliance override
+            maxFootprint: maxFootprintOverride, // Compliance override (optional)
             minSCR: scrRange[0],
             maxSCR: scrRange[1],
             gridOrientation,
@@ -302,9 +315,30 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             programMix, // Single instance
             selectedUtilities,
             setback,
+            frontSetback,
+            rearSetback,
+            sideSetback,
             maxAllowedFAR, // Pass the override max FAR
-            siteCoverage
+            siteCoverage,
+            seedOffset
         };
+
+        // Increment seed offset for NEXT generation (Simulation of "Refresh")
+        // But we want THIS generation to use the NEW offset?
+        // Or do we use the CURRENT offset and increment for NEXT?
+        // Let's use current, but trigger update for next.
+        // Actually, if we just set state, it won't update 'params' immediately in this closure.
+
+        // Calculate new offset here, use it, then set state.
+        const newOffset = seedOffset + 3;
+        setSeedOffset(newOffset);
+        params.seedOffset = newOffset;
+
+        console.log('[ParametricToolbar] Generating with params:', {
+            setback,
+            sideSetback,
+            paramsSideSetback: params.sideSetback
+        });
 
         // Trigger scenario generation (this will open the modal)
         actions.generateScenarios(selectedPlot.id, params);
@@ -585,6 +619,41 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     </div>
                                 </div>
 
+                                {/* Compliance Footprint Controls */}
+                                <div className="grid grid-cols-2 gap-3 pt-2">
+                                    <div className="space-y-1.5">
+                                        <div className="flex justify-between text-[10px]">
+                                            <span className="font-medium text-foreground/80">Max Footprint</span>
+                                            <span className="text-muted-foreground">m²</span>
+                                        </div>
+                                        <div className="relative">
+                                            <Input
+                                                type="number"
+                                                placeholder="Auto"
+                                                value={maxFootprintOverride ?? ''}
+                                                onChange={(e) => setMaxFootprintOverride(e.target.value ? Number(e.target.value) : undefined)}
+                                                className="h-8 text-xs bg-muted/20 border-border"
+                                            />
+                                        </div>
+                                        <p className="text-[9px] text-muted-foreground italic">Leave empty for regulation default</p>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <div className="flex justify-between text-[10px]">
+                                            <span className="font-medium text-foreground/80">Min Footprint</span>
+                                            <span className="text-muted-foreground">m²</span>
+                                        </div>
+                                        <div className="relative">
+                                            <Input
+                                                type="number"
+                                                value={minFootprintOverride}
+                                                onChange={(e) => setMinFootprintOverride(Number(e.target.value))}
+                                                className="h-8 text-xs bg-muted/20 border-border"
+                                            />
+                                        </div>
+                                        <p className="text-[9px] text-muted-foreground italic">Minimum viable building size</p>
+                                    </div>
+                                </div>
+
                                 {/* Constraints */}
                                 <div className="space-y-3 pt-1">
                                     <div className="space-y-2">
@@ -627,6 +696,43 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 className={cn("h-8 text-xs bg-muted/20 border-border pr-8", selectedPlot?.regulation?.geometry?.setback?.value && setback < selectedPlot.regulation.geometry.setback.value && "border-red-500 text-red-500")}
                                             />
                                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">m</span>
+                                        </div>
+
+                                        {/* Variable Setback Overrides */}
+                                        <div className="grid grid-cols-3 gap-2 pt-1">
+                                            <div className="space-y-1">
+                                                <Label className="text-[9px] text-muted-foreground">Front</Label>
+                                                <Input
+                                                    type="number"
+                                                    step="0.5"
+                                                    value={frontSetback ?? ''}
+                                                    onChange={e => setFrontSetback(e.target.value ? Number(e.target.value) : undefined)}
+                                                    placeholder="Auto"
+                                                    className="h-7 text-[10px] bg-muted/20 border-border"
+                                                />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <Label className="text-[9px] text-muted-foreground">Rear</Label>
+                                                <Input
+                                                    type="number"
+                                                    step="0.5"
+                                                    value={rearSetback ?? ''}
+                                                    onChange={e => setRearSetback(e.target.value ? Number(e.target.value) : undefined)}
+                                                    placeholder="Auto"
+                                                    className="h-7 text-[10px] bg-muted/20 border-border"
+                                                />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <Label className="text-[9px] text-muted-foreground">Side</Label>
+                                                <Input
+                                                    type="number"
+                                                    step="0.5"
+                                                    value={sideSetback ?? ''}
+                                                    onChange={e => setSideSetback(e.target.value ? Number(e.target.value) : undefined)}
+                                                    placeholder="Auto"
+                                                    className="h-7 text-[10px] bg-muted/20 border-border"
+                                                />
+                                            </div>
                                         </div>
                                     </div>
 

@@ -41,7 +41,10 @@ import { PlanningParamsPanel } from './planning-params-panel';
 
 const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
     geometry: {
-        setback: { desc: "Setback from plot boundary", unit: "m", value: 5, min: 0, max: 20 },
+        setback: { desc: "General setback (if uniform)", unit: "m", value: 5, min: 0, max: 20 },
+        front_setback: { desc: "Front setback from road", unit: "m", value: 6, min: 0, max: 30 },
+        rear_setback: { desc: "Rear setback from boundary", unit: "m", value: 4, min: 0, max: 20 },
+        side_setback: { desc: "Side setback from boundary", unit: "m", value: 3, min: 0, max: 15 },
         road_width: { desc: "Adjacent road width", unit: "m", value: 9, min: 6, max: 30 },
         max_ground_coverage: { desc: "Maximum ground coverage", unit: "%", value: 40, min: 10, max: 80 },
         floor_area_ratio: { desc: "Floor Area Ratio (FAR)", unit: "", value: 1.8, min: 0.5, max: 5 },
