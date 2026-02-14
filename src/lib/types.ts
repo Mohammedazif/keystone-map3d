@@ -182,12 +182,20 @@ export interface Project {
   lastModified: string;
   totalPlotArea?: number | null;
   designOptions?: string | DesignOption[]; // JSON string for Firestore storage, or parsed object in app
-  intendedUse?: 'Residential' | 'Commercial' | 'Mixed Use' | 'Public' | 'Industrial';
+  intendedUse?: BuildingIntendedUse;
   location?: string | { lat: number; lng: number }; // e.g. "Delhi", "Maharashtra" or geocoded coordinates
   regulationId?: string; // Specific regulation document ID (e.g. "Delhi-Residential Group Housing")
   greenCertification?: ('IGBC' | 'GRIHA' | 'LEED' | 'Green Building')[];
   vastuCompliant?: boolean;
   feasibilityParams?: FeasibilityParams;
+  simulationResults?: {
+    wind?: { compliantArea: number; avgSpeed: number };
+    sun?: { compliantArea: number; avgHours: number };
+  };
+  locationData?: {
+    amenities: any[]; // Storing FeatureCollection or array of amenities
+    score?: number;
+  };
 }
 
 export interface UnitTypology {
@@ -239,6 +247,12 @@ export interface GreenRegulationData {
     minOpenSpace?: number; // 0.30 for 30%
     maxGroundCoverage?: number;
     minGreenCover?: number;
+  };
+  // Explicit analysis thresholds for visual analysis engine
+  analysisThresholds?: {
+    sunHours?: { min: number; target: number }; // e.g., { min: 2, target: 4 }
+    daylightFactor?: { min: number; target: number }; // e.g., { min: 0.02, target: 0.04 }
+    windSpeed?: { min: number; target: number }; // e.g., { min: 1, target: 2 } in m/s
   };
   // Comprehensive data structure
   categories?: CertificationCategory[];

@@ -66,12 +66,14 @@ interface BuildingState {
     isGeneratingScenarios: boolean;
 
     mapLocation: string | null;
+    mapCommand: { type: 'flyTo'; center: [number, number]; zoom?: number } | null;
     greenRegulations: GreenRegulationData[]; // Global Green Regulations cache
 
     actions: {
         setMapLocation: (location: string | null) => void;
+        executeMapCommand: (command: { type: 'flyTo'; center: [number, number]; zoom?: number } | null) => void;
         loadProjects: () => Promise<void>;
-        createProject: (name: string, totalPlotArea?: number, intendedUse?: 'Residential' | 'Commercial' | 'Mixed Use' | 'Public' | 'Industrial', location?: string, regulationId?: string, greenCertification?: ('IGBC' | 'GRIHA' | 'LEED' | 'Green Building')[], vastuCompliant?: boolean) => Promise<Project | null>;
+        createProject: (name: string, totalPlotArea?: number, intendedUse?: BuildingIntendedUse, location?: string, regulationId?: string, greenCertification?: ('IGBC' | 'GRIHA' | 'LEED' | 'Green Building')[], vastuCompliant?: boolean) => Promise<Project | null>;
         deleteProject: (projectId: string) => Promise<void>;
         loadProject: (projectId: string) => Promise<void>;
         saveCurrentProject: () => Promise<void>;
@@ -83,6 +85,8 @@ interface BuildingState {
         selectObject: (id: string | null, type: SelectableObjectType | null) => void;
         updateBuilding: (buildingId: string, props: Partial<Omit<Building, 'id' | 'floors'>>) => void;
         updateProject: (projectId: string, props: Partial<Project>) => void;
+        updateSimulationResults: (results: { wind?: { compliantArea: number; avgSpeed: number }; sun?: { compliantArea: number; avgHours: number } }) => void;
+        setScenario: (scenario: any) => void;
         updatePlot: (plotId: string, props: Partial<Omit<Plot, 'id'>>) => void;
         updateObject: (objectId: string, objectType: SelectableObjectType, props: Partial<any>) => void;
         deletePlot: (id: string) => void;
@@ -116,6 +120,9 @@ interface BuildingState {
         toggleGhostMode: () => void;
         toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units') => void;
         setFeasibilityPanelOpen: (isOpen: boolean) => void;
+
+        setLocationData: (data: any) => void;
+        toggleAmenityVisibility: (category: string) => void;
 
         undo: () => void;
         redo: () => void;
@@ -451,7 +458,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ isLoading: false });
             }
         },
-        createProject: async (name, totalPlotArea, intendedUse = 'Residential', location, regulationId, greenCertification, vastuCompliant) => {
+        createProject: async (name, totalPlotArea, intendedUse = BuildingIntendedUse.Residential, location, regulationId, greenCertification, vastuCompliant) => {
             console.log('[createProject] Received parameters:');
             console.log('  name:', name);
             console.log('  totalPlotArea:', totalPlotArea);
@@ -642,6 +649,17 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         setFeasibilityPanelOpen: (isOpen: boolean) => set(produce((state: BuildingState) => {
             state.uiState.isFeasibilityPanelOpen = isOpen;
         })),
+        updateSimulationResults: (results) => {
+            set(produce((draft: BuildingState) => {
+                const activeProject = draft.projects.find(p => p.id === draft.activeProjectId);
+                if (activeProject) {
+                    if (!activeProject.simulationResults) {
+                        activeProject.simulationResults = {};
+                    }
+                    Object.assign(activeProject.simulationResults, results);
+                }
+            }));
+        },
 
         generateScenarios: (plotId: string, params: AlgoParams) => {
             const { plots } = get();
@@ -2952,6 +2970,97 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
+
+        // Location & Connectivity Actions
+        setLocationData: (data: any) => set(produce((state: BuildingState) => {
+            const activeProject = state.projects.find(p => p.id === state.activeProjectId);
+            if (!activeProject) return;
+
+            // Ensure locationData object exists
+            if (!activeProject.locationData) {
+                activeProject.locationData = { amenities: [] };
+            }
+
+            // data might be a FeatureCollection or array. Standardize.
+            const amenities = Array.isArray(data) ? data : (data.features || []);
+
+            // Merge or replace? For now replace to avoid stale data
+            activeProject.locationData.amenities = amenities;
+            activeProject.lastModified = new Date().toISOString();
+        })),
+
+        toggleAmenityVisibility: async (category: string) => {
+            const state = get();
+            const { mapLocation, activeProjectId, projects, plots } = state;
+
+            // 1. Check if category is currently active in UI state
+            // We need a place to store active categories. 
+            // uiState seems to be the place, but it might not have the field yet.
+            // Let's assume we can add it to uiState or just use a local Set if we can't modify type easily here.
+            // Ideally we should update the BuildingState interface, but for now let's check active project's data or a temp state.
+            // Actually, the previous view showed `uiState: { ... }` without activeCategories.
+            // I will implement a "fetch and store" logic. Visibility toggling might need a separate visual state.
+            // For now, let's FETCH the data if it's not there, effectively "Activating" it.
+
+            const activeProject = projects.find(p => p.id === activeProjectId);
+            if (!activeProject) return;
+
+            // Check if we already have data for this category? 
+            // Or just always fetch for now to ensure freshness.
+
+            // Determine Center
+            let center: [number, number] | null = null;
+
+            // Try plot centroid
+            const projectPlots = plots.filter(p => !p.projectId || p.projectId === activeProjectId);
+            if (projectPlots.length > 0 && projectPlots[0].centroid) {
+                center = projectPlots[0].centroid.geometry.coordinates as [number, number];
+            } else if (mapLocation) {
+                try {
+                    const parts = mapLocation.split(',').map(s => parseFloat(s.trim()));
+                    if (parts.length === 2) center = [parts[1], parts[0]]; // Lat, Lng string -> Lng, Lat array
+                } catch (e) { }
+            }
+
+            if (!center) {
+                toast({ title: "Location Error", description: "Project location or plot not set.", variant: "destructive" });
+                return;
+            }
+
+            set({ isLoading: true });
+
+            try {
+                // Dynamic import to avoid circular deps if any
+                const { OverpassPlacesService } = await import('@/services/overpass-places-service');
+                const newAmenities = await OverpassPlacesService.searchNearby(center, category as any);
+
+                set(produce((draft: BuildingState) => {
+                    const project = draft.projects.find(p => p.id === activeProjectId);
+                    if (project) {
+                        if (!project.locationData) project.locationData = { amenities: [] };
+
+                        // Remove existing items of this category to avoid dupes
+                        const otherAmenities = project.locationData.amenities.filter((a: any) => a.category !== category);
+
+                        // Add new ones
+                        project.locationData.amenities = [...otherAmenities, ...newAmenities];
+                        project.lastModified = new Date().toISOString();
+                    }
+                }));
+
+                if (newAmenities.length === 0) {
+                    toast({ title: "No Results", description: `No ${category} found nearby.` });
+                } else {
+                    toast({ title: "Data Updated", description: `Found ${newAmenities.length} ${category} locations.` });
+                }
+
+            } catch (error) {
+                console.error("Error fetching amenities:", error);
+                toast({ title: "Fetch Error", description: "Failed to load proximity data.", variant: "destructive" });
+            } finally {
+                set({ isLoading: false });
+            }
+        },
     },
 }));
 
@@ -3041,12 +3150,13 @@ const useProjectData = () => {
                 totalBuildableArea: 0,
                 consumedBuildableArea: 0,
                 consumedPlotArea: consumedPlotArea,
-                intendedUse: 'Residential' as BuildingIntendedUse,
+                intendedUse: BuildingIntendedUse.Residential,
                 location: 'Delhi',
                 greenCertification: [],
                 vastuCompliant: false,
                 plots: [],
-                lastModified: new Date().toISOString()
+                lastModified: new Date().toISOString(),
+                simulationResults: undefined,
             };
         }
 

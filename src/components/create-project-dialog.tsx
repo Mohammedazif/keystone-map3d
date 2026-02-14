@@ -68,6 +68,16 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
         return acc;
     }, {} as Record<string, any[]>);
 
+    // Helper to find the "best" (latest) regulation for a group
+    const getBestRegIdForType = (type: string) => {
+        const regs = groupedGreenRegs[type] || [];
+        if (regs.length === 0) return null;
+        // Sort by name descending (assuming Version 6.0 > v.2019 > v2015)
+        // This is a simple heuristic; ideally we'd have a 'version' or 'date' field
+        const sorted = [...regs].sort((a, b) => b.name.localeCompare(a.name));
+        return sorted[0].id;
+    };
+
     // Fetch regulations when location changes
     useEffect(() => {
         const fetchRegulations = async () => {
@@ -262,40 +272,51 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                                     {isLoadingGreenRegs ? (
                                         <div className="text-sm text-muted-foreground">Loading regulations...</div>
                                     ) : (
-                                        Object.entries(groupedGreenRegs).map(([type, regs]) => (
-                                            <div key={type} className="space-y-2">
-                                                <div className="font-semibold text-sm text-muted-foreground">{type}</div>
-                                                <div className="grid grid-cols-1 gap-2">
-                                                    {regs.map((reg) => (
-                                                        <div
-                                                            key={reg.id}
-                                                            className={cn(
-                                                                "flex items-center space-x-2 rounded-md border p-3 cursor-pointer hover:bg-accent transition-colors",
-                                                                greenCertification.includes(reg.id as any) ? "border-primary bg-primary/5" : "border-border"
-                                                            )}
-                                                            onClick={() => {
-                                                                setGreenCertification(prev =>
-                                                                    prev.includes(reg.id as any)
-                                                                        ? prev.filter(c => c !== reg.id)
-                                                                        : [...prev, reg.id as any]
-                                                                );
-                                                            }}
-                                                        >
-                                                            <div className={cn("h-4 w-4 rounded border flex items-center justify-center shrink-0", greenCertification.includes(reg.id as any) ? "bg-primary border-primary" : "border-muted-foreground")}>
-                                                                {greenCertification.includes(reg.id as any) && <div className="h-2 w-2 bg-background rounded-sm" />}
+                                        <div className="grid grid-cols-1 gap-3 w-full">
+                                            {(Object.entries(groupedGreenRegs) as [string, any[]][]).map(([type, regs]) => {
+                                                const bestId = getBestRegIdForType(type);
+                                                const isSelected = greenCertification.includes(bestId as any);
+
+                                                return (
+                                                    <div
+                                                        key={type}
+                                                        className={cn(
+                                                            "flex items-center justify-between rounded-lg border p-4 cursor-pointer hover:bg-accent transition-colors",
+                                                            isSelected ? "border-primary bg-primary/5" : "border-border"
+                                                        )}
+                                                        onClick={() => {
+                                                            // Single Selection across types
+                                                            if (isSelected) {
+                                                                setGreenCertification([]);
+                                                            } else if (bestId) {
+                                                                setGreenCertification([bestId as any]);
+                                                            }
+                                                        }}
+                                                    >
+                                                        <div className="flex items-center space-x-4">
+                                                            <div className={cn(
+                                                                "h-10 w-10 rounded-full flex items-center justify-center font-bold text-xs",
+                                                                isSelected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                                                            )}>
+                                                                {type.substring(0, 4).toUpperCase()}
                                                             </div>
                                                             <div className="flex flex-col">
-                                                                <span className="text-sm font-medium">{reg.name}</span>
+                                                                <span className="text-sm font-semibold">{type} Certification</span>
                                                                 <span className="text-xs text-muted-foreground">
-                                                                    Min Green: {reg.constraints?.minGreenCover ? (reg.constraints.minGreenCover * 100).toFixed(0) + '%' : 'N/A'} •
-                                                                    Max Cover: {reg.constraints?.maxGroundCoverage ? (reg.constraints.maxGroundCoverage * 100).toFixed(0) + '%' : 'N/A'}
+                                                                    {regs.length} standard{regs.length > 1 ? 's' : ''} found • Using latest version
                                                                 </span>
                                                             </div>
                                                         </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        ))
+                                                        <div className={cn(
+                                                            "h-6 w-6 rounded-full border-2 flex items-center justify-center",
+                                                            isSelected ? "border-primary" : "border-muted"
+                                                        )}>
+                                                            {isSelected && <div className="h-3 w-3 bg-primary rounded-full" />}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     )}
                                     {greenRegulationsList.length === 0 && !isLoadingGreenRegs && (
                                         <div className="text-sm text-muted-foreground italic">No green regulations found. Please upload them in Admin Panel.</div>

@@ -5,7 +5,7 @@ import { collection, doc, getDocs, setDoc, writeBatch, deleteDoc, getDoc } from 
 import type { RegulationData, GreenRegulationData, VastuRegulationData } from '@/lib/types';
 import { Button } from './ui/button';
 import { toast } from '@/hooks/use-toast';
-import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload, Leaf, Compass } from 'lucide-react';
+import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload, Leaf, Compass, Pencil } from 'lucide-react';
 import { AdminDetailsSidebar } from './admin-details-sidebar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { cn } from '@/lib/utils';
@@ -32,6 +32,7 @@ import { Skeleton } from './ui/skeleton';
 import { produce } from 'immer';
 import { UploadRegulationDialog } from './upload-regulation-dialog';
 import { UploadGreenRegulationDialog } from './upload-green-regulation-dialog';
+import { EditGreenRegulationDialog } from './edit-green-regulation-dialog';
 import { UploadVastuDialog } from './upload-vastu-dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { UnitTemplatesPanel } from './unit-templates-panel';
@@ -79,6 +80,8 @@ export function AdminPanel() {
     const [isNewRegDialogOpen, setIsNewRegDialogOpen] = useState(false);
     const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
     const [isUploadGreenDialogOpen, setIsUploadGreenDialogOpen] = useState(false);
+    const [isEditGreenDialogOpen, setIsEditGreenDialogOpen] = useState(false);
+    const [selectedGreenRegulation, setSelectedGreenRegulation] = useState<GreenRegulationData | null>(null);
     const [isUploadVastuDialogOpen, setIsUploadVastuDialogOpen] = useState(false);
 
     const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -303,6 +306,7 @@ export function AdminPanel() {
 
             toast({ title: 'Success', description: 'Green regulations saved successfully.' });
             setIsUploadGreenDialogOpen(false);
+            setIsEditGreenDialogOpen(false); // Close edit dialog if open
         } catch (error) {
             console.error('Error saving green regulation:', error);
             toast({ variant: 'destructive', title: 'Error', description: 'Failed to save green regulations.' });
@@ -518,27 +522,51 @@ export function AdminPanel() {
 
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                                 {greenRegulations.map(reg => (
-                                    <Card key={reg.id} className="relative group border-border/50">
+                                    <Card
+                                        key={reg.id}
+                                        className="relative group border-border/50 cursor-pointer hover:bg-secondary/30 transition-colors"
+                                        onClick={() => {
+                                            setSelectedGreenRegulation(reg);
+                                            setIsEditGreenDialogOpen(true);
+                                        }}
+                                    >
                                         <CardHeader>
                                             <div className="flex justify-between items-start">
                                                 <Badge variant="default">{reg.certificationType}</Badge>
-                                                <AlertDialog>
-                                                    <AlertDialogTrigger asChild>
-                                                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity -mr-2 -mt-2">
-                                                            <Trash2 className="h-3 w-3" />
-                                                        </Button>
-                                                    </AlertDialogTrigger>
-                                                    <AlertDialogContent>
-                                                        <AlertDialogHeader>
-                                                            <AlertDialogTitle>Delete {reg.name}?</AlertDialogTitle>
-                                                            <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
-                                                        </AlertDialogHeader>
-                                                        <AlertDialogFooter>
-                                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                            <AlertDialogAction className="bg-destructive" onClick={() => reg.id && handleDeleteGreenRegulation(reg.id)}>Delete</AlertDialogAction>
-                                                        </AlertDialogFooter>
-                                                    </AlertDialogContent>
-                                                </AlertDialog>
+                                                <div className="flex gap-1">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-6 w-6 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setSelectedGreenRegulation(reg);
+                                                            setIsEditGreenDialogOpen(true);
+                                                        }}
+                                                    >
+                                                        <Pencil className="h-3 w-3" />
+                                                    </Button>
+                                                    <AlertDialog>
+                                                        <AlertDialogTrigger asChild>
+                                                            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <Trash2 className="h-3 w-3" />
+                                                            </Button>
+                                                        </AlertDialogTrigger>
+                                                        <AlertDialogContent>
+                                                            <AlertDialogHeader>
+                                                                <AlertDialogTitle>Delete {reg.name}?</AlertDialogTitle>
+                                                                <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
+                                                            </AlertDialogHeader>
+                                                            <AlertDialogFooter>
+                                                                <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
+                                                                <AlertDialogAction className="bg-destructive" onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    reg.id && handleDeleteGreenRegulation(reg.id);
+                                                                }}>Delete</AlertDialogAction>
+                                                            </AlertDialogFooter>
+                                                        </AlertDialogContent>
+                                                    </AlertDialog>
+                                                </div>
                                             </div>
                                             <CardTitle className="text-base mt-2">{reg.name}</CardTitle>
                                         </CardHeader>
@@ -556,6 +584,22 @@ export function AdminPanel() {
                                                     <div className="flex justify-between">
                                                         <span className="text-muted-foreground">Min Green Cover:</span>
                                                         <span className="font-mono font-medium">{reg.constraints.minGreenCover ? `${(reg.constraints.minGreenCover * 100).toFixed(0)}%` : '-'}</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-2 pt-2 border-t border-border/30">
+                                                    <div className="text-[10px] font-semibold uppercase text-muted-foreground mb-1">Analysis Targets</div>
+                                                    <div className="flex justify-between">
+                                                        <span className="text-muted-foreground">Sun Hours:</span>
+                                                        <span className="font-mono font-medium">{reg.analysisThresholds?.sunHours?.min || '-'}h / {reg.analysisThresholds?.sunHours?.target || '-'}h</span>
+                                                    </div>
+                                                    <div className="flex justify-between">
+                                                        <span className="text-muted-foreground">Daylight Factor:</span>
+                                                        <span className="font-mono font-medium">{reg.analysisThresholds?.daylightFactor?.min ? `${(reg.analysisThresholds.daylightFactor.min * 100).toFixed(1)}%` : '-'} / {reg.analysisThresholds?.daylightFactor?.target ? `${(reg.analysisThresholds.daylightFactor.target * 100).toFixed(1)}%` : '-'}</span>
+                                                    </div>
+                                                    <div className="flex justify-between">
+                                                        <span className="text-muted-foreground">Wind Speed:</span>
+                                                        <span className="font-mono font-medium">{reg.analysisThresholds?.windSpeed?.min || '-'} / {reg.analysisThresholds?.windSpeed?.target || '-'} m/s</span>
                                                     </div>
                                                 </div>
 
@@ -692,6 +736,13 @@ export function AdminPanel() {
                 isOpen={isUploadVastuDialogOpen}
                 onOpenChange={setIsUploadVastuDialogOpen}
                 onExtracted={handleSaveVastuRegulation}
+            />
+            <EditGreenRegulationDialog
+                key={selectedGreenRegulation?.id || 'new'}
+                isOpen={isEditGreenDialogOpen}
+                onOpenChange={setIsEditGreenDialogOpen}
+                regulation={selectedGreenRegulation}
+                onSave={handleSaveGreenRegulation}
             />
         </div>
     );

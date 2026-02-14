@@ -2,16 +2,18 @@
 import { BUILDING_MATERIALS, hslToRgb } from '@/lib/color-utils';
 import { useToast } from '@/hooks/use-toast';
 import { BuildingIntendedUse, GreenRegulationData, UtilityType, Building, Core, Unit, Plot, GreenArea, ParkingArea, BuildableArea, UtilityArea } from '@/lib/types';
-import { Feature, Polygon, Point } from 'geojson';
+import { Feature, Polygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import Script from 'next/script';
 import { createShaktiChakraGroup } from '@/lib/shakti-chakra-visualizer';
 import { AnalysisMode } from './solar-controls';
-import { runVisualAnalysis } from '@/lib/engines/visual-analysis-engine';
+import { runVisualAnalysis, runGroundAnalysis, runWallAnalysis, calculateAggregateStats } from '@/lib/engines/visual-analysis-engine';
 import { useRegulations } from '@/hooks/use-regulations';
 import { generateBuildingTexture } from '@/lib/texture-generator';
+import { WindStreamlineLayer } from '@/lib/wind-streamline-layer';
+import { Amenity } from '@/services/mapbox-places-service';
 
 
 declare global {
@@ -56,8 +58,8 @@ interface MapEditorProps {
   onMapReady?: () => void;
   solarDate: Date;
   setSolarDate: (d: Date) => void;
-  isSolarEnabled: boolean;
-  setIsSolarEnabled: (b: boolean) => void;
+  isSimulatorEnabled: boolean;
+  setIsSimulatorEnabled: (b: boolean) => void;
   analysisMode: AnalysisMode;
   setAnalysisMode: (m: AnalysisMode) => void;
   activeGreenRegulations?: GreenRegulationData[];
@@ -67,8 +69,8 @@ export function MapEditor({
   onMapReady,
   solarDate,
   setSolarDate,
-  isSolarEnabled,
-  setIsSolarEnabled,
+  isSimulatorEnabled,
+  setIsSimulatorEnabled,
   analysisMode,
   setAnalysisMode,
   activeGreenRegulations = []
@@ -85,6 +87,7 @@ export function MapEditor({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); // Default primary color
   const hasNavigatedRef = useRef(false); // Track if we've navigated in this component instance
+  const windStreamlineLayer = useRef<WindStreamlineLayer | null>(null);
 
 
 
@@ -95,6 +98,7 @@ export function MapEditor({
   const selectedObjectId = useBuildingStore(s => s.selectedObjectId);
   const isLoading = useBuildingStore(s => s.isLoading);
   const plots = useBuildingStore(s => s.plots);
+  const mapCommand = useBuildingStore(s => s.mapCommand);
   const uiState = useBuildingStore(s => s.uiState);
   const componentVisibility = useBuildingStore(s => s.componentVisibility);
   const activeProjectId = useBuildingStore(s => s.activeProjectId);
@@ -132,12 +136,12 @@ export function MapEditor({
     const polygonFeature = turf.polygon([finalPoints]);
     const centroid = turf.centroid(polygonFeature);
 
+
     const success = actions.finishDrawing(polygonFeature);
     if (!success) {
       // Toast message is now handled inside the store for more specific errors.
       // Generic fallback in case the store doesn't provide one.
       const lastToast = toast({
-        variant: 'destructive',
         title: 'Drawing Error',
         description: 'Could not create the object. Ensure it is drawn correctly and within required boundaries.',
       });
@@ -309,6 +313,8 @@ export function MapEditor({
     };
   }, [actions, getStoreState]);
 
+
+
   useEffect(() => {
     const handleLocate = () => locateUser();
     const handleCloseEvent = () => closePolygon();
@@ -407,6 +413,27 @@ export function MapEditor({
           'sky-atmosphere-sun-intensity': 15
         }
       });
+
+      // Add Wind Arrow Image
+      const arrowSize = 32;
+      const canvas = document.createElement('canvas');
+      canvas.width = arrowSize;
+      canvas.height = arrowSize;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.strokeStyle = '#3b82f6'; // blue-500
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        // Draw an arrow pointing UP (0 degrees)
+        ctx.moveTo(16, 4);
+        ctx.lineTo(16, 28);
+        ctx.moveTo(16, 4);
+        ctx.lineTo(8, 12);
+        ctx.moveTo(16, 4);
+        ctx.lineTo(24, 12);
+        ctx.stroke();
+        mapInstance.addImage('wind-arrow', ctx.getImageData(0, 0, arrowSize, arrowSize));
+      }
 
       // Enable 3D buildings in Mapbox Standard Style
       try {
@@ -599,145 +626,411 @@ export function MapEditor({
   }, [isMapLoaded, plots, actions]);
 
 
-  // Effect: Run Visual Analysis when mode/date changes or buildings change
+
+
+
+  // Render Amenity Markers
   useEffect(() => {
-    if (!isMapLoaded || !window.tb || !window.tb.world) return;
+    if (!map.current || !isMapLoaded) return;
 
-    console.log('[Analysis Effect] Mode:', analysisMode, 'Date:', solarDate);
-    console.log('[Analysis Effect] Active Green Regulations:', activeGreenRegulations);
+    // Clear existing markers
+    markers.current.forEach(marker => marker.remove());
+    markers.current = [];
 
-    // Collect buildings immediately (synchronously)
-    const buildings: any[] = [];
-    const context: any[] = [];
+    const amenities = activeProject?.locationData?.amenities;
+    if (!amenities || amenities.length === 0) return;
 
-    if (window.tb.world && window.tb.world.children) {
+    amenities.forEach((amenity: Amenity) => {
+      // Create element
+      const el = document.createElement('div');
+      el.className = 'amenity-marker';
+      el.style.width = '24px';
+      el.style.height = '24px';
+      el.style.borderRadius = '50%';
+      el.style.border = '2px solid white';
+      el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+      el.style.cursor = 'pointer';
+
+      // Color based on category
+      let color = '#888';
+      if (amenity.category === 'transit') color = '#2196F3'; // Blue
+      else if (amenity.category === 'school') color = '#FF9800'; // Orange
+      else if (amenity.category === 'hospital') color = '#F44336'; // Red
+      else if (amenity.category === 'park') color = '#4CAF50'; // Green
+      else if (amenity.category === 'shopping') color = '#9C27B0'; // Purple
+      else if (amenity.category === 'restaurant') color = '#FFEB3B'; // Yellow
+
+      el.style.backgroundColor = color;
+
+      // Create Popup
+      const popup = new mapboxgl.Popup({ offset: 25 })
+        .setHTML(`
+          <div style="padding: 5px;">
+            <strong style="font-size: 14px; color: #333;">${amenity.name}</strong><br/>
+            <span style="color: #666; font-size: 12px; text-transform: capitalize;">
+              ${amenity.category} • ${amenity.distance}m
+            </span><br/>
+            <span style="color: #999; font-size: 10px;">${amenity.address}</span>
+          </div>
+        `);
+
+      const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat(amenity.coordinates as [number, number])
+        .setPopup(popup)
+        .addTo(map.current!);
+
+      markers.current.push(marker);
+    });
+
+    // Optional: Fit bounds? Maybe too intrusive on every update.
+    // For now, let the user pan/zoom manually or use simple flyTo on setLocationData action if needed.
+
+  }, [isMapLoaded, activeProject?.locationData?.amenities]);
+
+
+  // Move cleanupOverlays to a reusable callback
+  const cleanupOverlays = useCallback(() => {
+    if (!map.current) return;
+
+    // Cleanup Mapbox Heatmap Layer
+    const heatmapId = 'solar-ground-heatmap';
+    if (map.current.getLayer(heatmapId)) map.current.removeLayer(heatmapId);
+
+    // Cleanup Wall Analysis Layer
+    const wallLayerId = 'analysis-walls';
+    const wallSourceId = 'analysis-walls-source';
+    if (map.current.getLayer(wallLayerId)) map.current.removeLayer(wallLayerId);
+
+    // Cleanup Wind Direction Layer (old arrows)
+    const windDirId = 'wind-direction';
+    if (map.current.getLayer(windDirId)) map.current.removeLayer(windDirId);
+
+    // Cleanup Wind Streamline Layer
+    if (windStreamlineLayer.current && map.current.getLayer('wind-streamlines')) {
+      map.current.removeLayer('wind-streamlines');
+      windStreamlineLayer.current = null;
+    }
+
+    // Now cleanup sources after layers are gone
+    if (map.current.getSource(heatmapId)) map.current.removeSource(heatmapId);
+    if (map.current.getSource(wallSourceId)) map.current.removeSource(wallSourceId);
+    if (map.current.getSource(windDirId)) map.current.removeSource(windDirId);
+
+    if (window.tb && window.tb.world) {
+      const oldGroup = window.tb.world.getObjectByName('analysis-results-group');
+      if (oldGroup) {
+        window.tb.world.remove(oldGroup);
+      }
       window.tb.world.children.forEach((child: any) => {
-        if (child.userData.isBuildingGroup) {
-          child.traverse((node: any) => {
-            if (node.isMesh) {
-              buildings.push(node);
-            }
-          });
-        } else if (child.name && child.name.startsWith('building-group')) {
-          child.traverse((node: any) => {
-            if (node.isMesh) {
-              buildings.push(node);
-            }
-          });
+        if (child.name && child.name.startsWith('heatmap-overlay-')) {
+          window.tb.world.remove(child);
         }
       });
     }
+  }, []);
 
-    console.log(`[Analysis Effect] Found ${buildings.length} building meshes`);
+  // Execute Map Commands (e.g., flyTo from Location Panel)
+  useEffect(() => {
+    if (!map.current || !isMapLoaded || !mapCommand) return;
 
-    // IMMEDIATE: Reset colors synchronously when switching to 'none'
-    if (analysisMode === 'none') {
-      console.log('[Analysis Effect] Resetting colors immediately');
+    if (mapCommand.type === 'flyTo') {
+      map.current.flyTo({
+        center: mapCommand.center,
+        zoom: mapCommand.zoom || 15,
+        essential: true,
+        duration: 1500
+      });
 
-      // Strict cleanup: Remove ALL heatmap overlays from world
-      if (window.tb && window.tb.world) {
-        window.tb.world.traverse((obj: any) => {
-          if (obj.name && obj.name.startsWith('heatmap-overlay-')) {
-            obj.parent?.remove(obj);
+      // Clear the command after executing
+      useBuildingStore.setState({ mapCommand: null });
+    }
+  }, [mapCommand, isMapLoaded]);
+
+  // Monitor toggle to reset analysis
+  useEffect(() => {
+    if (!isSimulatorEnabled) {
+      setAnalysisMode('none');
+      cleanupOverlays();
+    }
+  }, [isSimulatorEnabled, setAnalysisMode, cleanupOverlays]);
+
+
+  const resetBuildingColors = (forcedColor?: string) => {
+    if (!map.current) return;
+
+    plots.forEach(plot => {
+      plot.buildings.forEach(building => {
+        // Reset each building's floors to their original color (or forced color)
+        const colorToApply = forcedColor || getBuildingColor(building.intendedUse);
+
+        building.floors.forEach(floor => {
+          const layerId = `building-floor-fill-${floor.id}-${building.id}`;
+
+          if (map.current!.getLayer(layerId)) {
+            try {
+              map.current!.setPaintProperty(layerId, 'fill-extrusion-color', colorToApply);
+            } catch (e) {
+              console.warn(`[MAP EDITOR] Failed to reset color for ${layerId}`, e);
+            }
           }
         });
-        window.tb.repaint();
-      }
-      return; // Don't run debounced analysis
+      });
+    });
+  };
+
+  // Effect: Run Visual Analysis when mode/date changes or buildings change
+  useEffect(() => {
+    if (!isMapLoaded) return;
+
+    if (analysisMode === 'none') {
+      cleanupOverlays();
+      resetBuildingColors();
+      if (window.tb) window.tb.repaint();
+      return;
     }
 
     // For analysis modes: small debounce to batch rapid changes
-    const timer = setTimeout(() => {
-      console.log('[Analysis Effect] Running analysis after debounce');
+    const timer = setTimeout(async () => {
+      // Collect buildings from STORE
+      const allBuildings = plots.flatMap(p => p.buildings);
 
-      if (buildings.length === 0) {
-        console.warn('[Analysis Effect] No buildings found - skipping analysis');
+      if (allBuildings.length === 0) {
+        console.warn('[MAP EDITOR] No buildings found for analysis');
         return;
       }
 
-      runVisualAnalysis(buildings, context, analysisMode, solarDate, activeGreenRegulations);
-    }, 150); // Fast response time
+      console.log(`[MAP EDITOR] Running ${analysisMode} on ${allBuildings.length} buildings...`);
+
+      cleanupOverlays(); // Clear previous results before adding new ones
+      resetBuildingColors('#eeeeee'); // Reset buildings to neutral grey so walls are visible
+
+      // --- PER-FACE WALL ANALYSIS ---
+      const wallFeatures = await runWallAnalysis(allBuildings, allBuildings, analysisMode, solarDate, activeGreenRegulations);
+
+      console.log('[MAP EDITOR] Wall Analysis complete, features:', { count: wallFeatures.features.length });
+
+      // Mapbox-native fill-extrusion for building analysis
+      const wallLayerId = 'analysis-walls';
+      const wallSourceId = 'analysis-walls-source';
+
+      if (map.current) {
+        if (map.current.getSource(wallSourceId)) {
+          (map.current.getSource(wallSourceId) as mapboxgl.GeoJSONSource).setData(wallFeatures);
+        } else {
+          map.current.addSource(wallSourceId, {
+            type: 'geojson',
+            data: wallFeatures
+          });
+          map.current.addLayer({
+            id: wallLayerId,
+            type: 'fill-extrusion',
+            source: wallSourceId,
+            paint: {
+              'fill-extrusion-color': ['get', 'color'],
+              'fill-extrusion-height': ['get', 'height'],
+              'fill-extrusion-base': ['get', 'base_height'],
+              'fill-extrusion-opacity': 0.85,
+              'fill-extrusion-vertical-gradient': true
+            }
+          }, LABELS_LAYER_ID); // Place below labels
+        }
+      }
+
+      // --- GROUND HEATMAP ANALYSIS ---
+      if (map.current && plots.length > 0) {
+        try {
+          console.log('[MAP EDITOR] Running Ground Analysis...');
+          // Store results for rendering
+          // 1. Run Ground Analysis (Heatmap)
+          const groundPoints = await runGroundAnalysis(
+            plots[0].geometry,
+            allBuildings,
+            analysisMode,
+            solarDate,
+            activeGreenRegulations
+          );
+
+          // 2. Run Visual Analysis (Building Stats)
+          const buildingResults = await runVisualAnalysis(
+            allBuildings,
+            allBuildings,
+            analysisMode,
+            solarDate,
+            activeGreenRegulations
+          );
+
+          // NEW: Calculate Aggregate Stats and Update Project State
+          const stats = calculateAggregateStats(buildingResults, analysisMode, allBuildings, activeGreenRegulations);
+          console.log('[MAP EDITOR] Analysis Stats:', stats);
+
+          if (analysisMode === 'wind') {
+            actions.updateSimulationResults({ wind: { compliantArea: stats.compliantArea, avgSpeed: stats.avgValue } });
+          } else if (analysisMode === 'sun-hours') {
+            actions.updateSimulationResults({ sun: { compliantArea: stats.compliantArea, avgHours: stats.avgValue } });
+          } else if (analysisMode === 'daylight') {
+            actions.updateSimulationResults({ sun: { compliantArea: stats.compliantArea, avgHours: stats.avgValue } });
+          }
+
+          // Apply colors to buildings
+          const heatmapId = 'solar-ground-heatmap';
+
+          if (groundPoints && groundPoints.features.length > 0) {
+            if (map.current.getSource(heatmapId)) {
+              (map.current.getSource(heatmapId) as GeoJSONSource).setData(groundPoints);
+            } else {
+              map.current.addSource(heatmapId, {
+                type: 'geojson',
+                data: groundPoints
+              });
+            }
+
+            if (!map.current.getLayer(heatmapId)) {
+              // Determine color ramp based on mode
+              // For Wind/Sun: Use Compliance Ramp (Red=Bad, Green=Good)
+              // This matches the building wall colors for visual consistency
+              let colorRamp: any[];
+
+              if (analysisMode === 'wind' || analysisMode === 'sun-hours' || analysisMode === 'daylight') {
+                // Compliance Ramp: Red (Low/Bad) -> Yellow (Medium) -> Green (High/Good)
+                colorRamp = [
+                  'interpolate', ['linear'], ['heatmap-density'],
+                  0, 'rgba(239, 68, 68, 0)',   // Transparent red
+                  0.2, '#ef4444',               // red-500 (Stagnant/Shady/Dark)
+                  0.4, '#f59e0b',               // amber-500 (Fair)
+                  0.6, '#eab308',               // yellow-500 (Moderate)
+                  0.8, '#10b981',               // emerald-500 (Good)
+                  1, '#00cc00'                  // bright green (Excellent)
+                ];
+              } else {
+                // Standard Thermal Heatmap: Blue (Low) -> Red (High)
+                colorRamp = [
+                  'interpolate', ['linear'], ['heatmap-density'],
+                  0, 'rgba(0, 0, 255, 0)',
+                  0.2, '#3b82f6',               // blue-500
+                  0.4, '#10b981',               // emerald-500
+                  0.6, '#f59e0b',               // amber-500
+                  0.8, '#ef4444',               // red-500
+                  1, '#b91c1c'                  // red-700
+                ];
+              }
+
+              map.current.addLayer({
+                id: heatmapId,
+                type: 'heatmap',
+                source: heatmapId,
+                paint: {
+                  // Weight based on 'weight' property (0-1)
+                  'heatmap-weight': ['get', 'weight'] as any,
+                  // Intensity increases with zoom
+                  'heatmap-intensity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    15, 0.7,  // Slightly reduced from 0.8
+                    18, 1.8   // Slightly reduced from 2.0
+                  ] as any,
+                  'heatmap-color': colorRamp as any,
+                  'heatmap-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    15, 20,  // Reduced from 30
+                    20, 40   // Reduced from 50
+                  ] as any,
+                  'heatmap-opacity': 0.7
+                }
+              }, LABELS_LAYER_ID); // Place below labels
+            }
+
+            // --- WIND STREAMLINES (Animated) ---
+            if (analysisMode === 'wind') {
+              // Remove old arrow layer if it exists
+              const windDirId = 'wind-direction';
+              if (map.current.getLayer(windDirId)) {
+                map.current.removeLayer(windDirId);
+              }
+
+              // Add streamline layer if not already added
+              if (!windStreamlineLayer.current) {
+                windStreamlineLayer.current = new WindStreamlineLayer('wind-streamlines');
+
+                // Add layer to map
+                if (!map.current.getLayer('wind-streamlines')) {
+                  map.current.addLayer(windStreamlineLayer.current as any, LABELS_LAYER_ID);
+                }
+
+                // Initialize with buildings and wind direction
+                windStreamlineLayer.current.initialize(allBuildings, 45); // Default NE wind
+              }
+
+              // Update bounds when map moves
+              const updateBounds = () => {
+                if (windStreamlineLayer.current) {
+                  windStreamlineLayer.current.updateBounds();
+                }
+              };
+
+              map.current.on('moveend', updateBounds);
+              map.current.on('zoomend', updateBounds);
+            }
+          }
+        } catch (e) {
+          console.warn('[MAP EDITOR] Ground Analysis Failed', e);
+        }
+      }
+
+    }, 200);
 
     return () => clearTimeout(timer);
-  }, [analysisMode, solarDate, plots, isMapLoaded, activeGreenRegulations]); // Added isMapLoaded dependency
+  }, [analysisMode, solarDate, plots, isMapLoaded, activeGreenRegulations]);
 
   // Solar Lighting Effect
   useEffect(() => {
-    if (!window.tb || !isMapLoaded) return;
-    const THREE = window.tb.THREE || window.THREE;
-    if (!THREE) return;
+    if (!isMapLoaded) return;
+    const mapInstance = map.current;
+    if (!mapInstance) return;
 
-    // Access the scene
-    const scene = window.tb.scene || window.tb.world; // Threebox attaches to 'world'? 
-    // Threebox structure: tb.world is the root Group added to Mapbox. 
-    // But lights are usually attached to tb.scene? Wait, Threebox doesn't expose 'scene' officially in docs easily?
-    // usually tb.world.parent or just search the scene graph.
-    // In Threebox, 'tb.scene' might be undefined.
-    // Let's assume standard Threebox behavior: lights are children of window.tb.world or similar?
-    // Actually, Threebox adds lights to the map scene?
+    // Helper to manage Three.js lights
+    const updateThreeLights = (azimuth: number, altitude: number, enabled: boolean) => {
+      if (!window.tb) return;
+      const scene = window.tb.world; // Use world as root
+      if (!scene) return;
 
-    // Best bet: Create a group for our custom lights, remove 'default' lights if we can find them.
-    // For 'defaultLights: true', it adds `tb.lights` array.
+      const LIGHT_GROUP_NAME = 'simulation-lights-group';
+      let lightGroup = scene.getObjectByName(LIGHT_GROUP_NAME);
 
-    // Strategy: 
-    // 1. Find and remove existing sun/simulation lights.
-    // 2. If simulation enabled, calculate position and add directional shadow casting light.
-    // 3. If disabled, ensure default generic lighting exists (Ambient + Directional from Top).
+      if (!lightGroup) {
+        lightGroup = new window.tb.THREE.Group();
+        lightGroup.name = LIGHT_GROUP_NAME;
+        scene.add(lightGroup);
+      }
 
-    const LIGHT_GROUP_NAME = 'simulation-lights-group';
-    let lightGroup = scene.getObjectByName(LIGHT_GROUP_NAME);
+      lightGroup.clear();
 
-    if (!lightGroup) {
-      lightGroup = new THREE.Group();
-      lightGroup.name = LIGHT_GROUP_NAME;
-      scene.add(lightGroup);
-    }
+      if (enabled) {
+        // Convert to Threebox/Mapbox World coords logic
+        // Mapbox World: Z up.
+        // Sun Az/Alt -> Vector
+        // We use the same logic as Analysis Engine for consistency
+        const lat = 28.6; // Dummy, unused for vector direction if we have Az/Alt
+        // ... actually we just need normalized vector
 
-    // Clear previous frame lights
-    lightGroup.clear();
+        // Azimuth 0 = South, PI/2 = West (from sun-utils)
+        // Three.js: X=East, Y=North
+        // x = sin(az)*cos(alt)
+        // y = -cos(az)*cos(alt)
+        // z = sin(alt)
 
-    if (isSolarEnabled) {
-      // Calculate position
-      // Center of map for light target?
-      const center = map.current?.getCenter();
-      if (center) {
-        const { getSunPosition } = require('@/lib/sun-utils');
-        const { azimuth, altitude } = getSunPosition(solarDate, center.lat, center.lng);
-
-        // Convert Az/Alt to Vector3
-        // Azimuth 0 = South, PI/2 = West. 
-        // Three.js Y up? No, Mapbox Z up.
-        // X = East, Y = North, Z = Up.
-        // Azimuth Ref: 0 is usually North in Map/Navigation, but solar formula might be South-based.
-        // Our formula: 0->South. 
-        // To Mapbox (Z-up, Y-North):
-        // South vector: (0, -1, 0).
-        // Altitude (angle from horizon).
-
-        // Simple conversion:
-        // dist * [ sin(azi) * cos(alt),  -cos(azi) * cos(alt), sin(alt) ] ??
-        // Let's trial and error or use standard conversion.
-        // Formula returned Azimuth 0 -> South. 
-        // Vector should be:
-        // x = sin(azimuth) * cos(altitude)
-        // y = -cos(azimuth) * cos(altitude) // South is -y
-        // z = sin(altitude)
-
-        const dist = 1000; // Far away
+        const dist = 1000;
         const x = dist * Math.sin(azimuth) * Math.cos(altitude);
         const y = dist * -1 * Math.cos(azimuth) * Math.cos(altitude);
         const z = dist * Math.sin(altitude);
 
-        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        const sunLight = new window.tb.THREE.DirectionalLight(0xffffff, 1.5);
         sunLight.position.set(x, y, z);
-        // Target the center (0,0,0 of the scene is usually map center in Mercator? No, Threebox handles unit coords.)
-        // We set target to 0,0,0 local? 
+        sunLight.target.position.set(0, 0, 0);
         sunLight.castShadow = true;
 
-        // Shadow Props
+        // Optimize Shadows
         sunLight.shadow.mapSize.width = 2048;
         sunLight.shadow.mapSize.height = 2048;
-        const d = 500; // Shadow camera size
+        const d = 1000;
         sunLight.shadow.camera.left = -d;
         sunLight.shadow.camera.right = d;
         sunLight.shadow.camera.top = d;
@@ -746,34 +1039,92 @@ export function MapEditor({
         lightGroup.add(sunLight);
         lightGroup.add(sunLight.target);
 
-        // Softer Ambient
-        const ambient = new THREE.AmbientLight(0x404040, 0.4);
+        // Ambient
+        const ambient = new window.tb.THREE.AmbientLight(0x404040, 0.4);
         lightGroup.add(ambient);
 
-        // console.log(`Sun Sim: Az=${azimuth.toFixed(2)}, Alt=${altitude.toFixed(2)}`, {x,y,z});
+      } else {
+        // Default Threebox Lighting (if any?)
+        // Usually Threebox has default lights if 'defaultLights' is true.
+        // If we want to restore defaults, we might just leave this group empty.
       }
 
-      // Try to disable default lights if possible
-      // if(window.tb.lights) window.tb.lights.forEach(l => l.visible = false);
+      if (window.tb) window.tb.repaint();
+    };
+
+
+    if (isSimulatorEnabled) {
+      const center = mapInstance.getCenter();
+      // Dynamically require to avoid top-level import issues if not needed
+      const { getSunPosition } = require('@/lib/sun-utils');
+      const { azimuth, altitude } = getSunPosition(solarDate, center.lat, center.lng);
+
+      // 1. Sync Mapbox Native Light (for fill-extrusion)
+      // Azimuth: Sun 0(S) -> Map 180(S). Sun 90(W) -> Map 270(W).
+      // Map = (SunDeg + 180) % 360
+      const azDeg = (azimuth * 180 / Math.PI + 180) % 360;
+
+      // Polar: Sun Alt 0 -> Map Polar 90. Sun Alt 90 -> Map Polar 0.
+      const polarDeg = 90 - (altitude * 180 / Math.PI);
+
+      // Safety clamp
+      // Safety clamp
+      const safePolar = Math.max(0, Math.min(90, polarDeg));
+
+      // 1. Sync Mapbox Standard Style Lighting
+      // Mapbox Standard style uses 'lightPreset' config and handles sun position automatically based on that preset.
+      // We map our solar time to these presets.
+
+      const hour = solarDate.getHours();
+      let preset = 'day';
+      if (hour >= 5 && hour < 8) preset = 'dawn';
+      else if (hour >= 8 && hour < 17) preset = 'day';
+      else if (hour >= 17 && hour < 20) preset = 'dusk';
+      else preset = 'night';
+
+      if (mapInstance.getStyle()?.name === 'Mapbox Standard') {
+        try {
+          mapInstance.setConfigProperty('basemap', 'lightPreset', preset);
+          // We can also try to enable shadows if not already
+          mapInstance.setConfigProperty('basemap', 'show3dObjects', true);
+        } catch (e) {
+          console.warn('Failed to set lightPreset', e);
+        }
+      } else {
+        // Fallback for non-standard styles (if any)
+        try {
+          // @ts-ignore - simple check to avoid TS errors if types aren't updated
+          if (mapInstance.setLights) {
+            // Use new API if needed, but for now just skip to avoid errors
+          }
+        } catch (e) { }
+      }
+
+      // 2. Sync Threebox Lights (for heatmaps/other 3D)
+      // Note: We removed Threebox, but this function might still be called?
+
+
+      // Legacy Threebox Initialization Removed
+      // We now rely on pure Mapbox GL JS layers (fill-extrusion) which are more performant and consistent.
+
+      // --- MANAGE SOLAR LIGHTING ---
+      // Legacy Solar Lighting (Three.js) Removed
+      // TODO: Implement Mapbox Native Solar/Shadow API when needed.
+
+      // 2. Sync Threebox Lights
+      updateThreeLights(azimuth, altitude, true);
 
     } else {
-      // Default Lighting (if we disabled built-ins, we restore, OR we just let built-ins handle it)
-      // Assuming built-ins are always on. If we add strong lights on top, might be too bright?
-      // Let's assume built-ins are "Base".
-      // Simulation Mode adds a STRONG shadow caster.
-      // Ideally we turn off defaults.
+      // Reset Default
+      if (mapInstance.getStyle()?.name === 'Mapbox Standard') {
+        try {
+          mapInstance.setConfigProperty('basemap', 'lightPreset', 'day');
+        } catch (e) { }
+      }
+      updateThreeLights(0, 0, false);
     }
 
-    window.tb.repaint();
-
-  }, [isSolarEnabled, solarDate, isMapLoaded]);
-
-  // Legacy Threebox Initialization Removed
-  // We now rely on pure Mapbox GL JS layers (fill-extrusion) which are more performant and consistent.
-
-  // --- MANAGE SOLAR LIGHTING ---
-  // Legacy Solar Lighting (Three.js) Removed
-  // TODO: Implement Mapbox Native Solar/Shadow API when needed.
+  }, [isSimulatorEnabled, solarDate, isMapLoaded]);
 
   const vastuObjectsRef = useRef<any[]>([]);
 
@@ -806,7 +1157,7 @@ export function MapEditor({
       });
 
       const outlineSource = mapInstance.getSource(DRAWING_OUTLINE_SOURCE_ID) as GeoJSONSource;
-      let outlineData: turf.Feature<turf.LineString> | turf.FeatureCollection = turf.featureCollection([]);
+      let outlineData: Feature<LineString> | FeatureCollection = turf.featureCollection([]);
       if (drawingPoints.length > 1) {
         outlineData = turf.lineString(drawingPoints);
       }
@@ -894,7 +1245,7 @@ export function MapEditor({
       }
     });
 
-    const allLabels: turf.Feature<turf.Point, { label: string; id: string }>[] = [];
+    const allLabels: Feature<Point, { label: string; id: string }>[] = [];
 
     // Ensure the label layer and source exist before we do anything else
     if (!mapInstance.getSource(LABELS_SOURCE_ID)) {
@@ -2007,7 +2358,3 @@ export function MapEditor({
     </div >
   );
 }
-
-
-
-

@@ -11,14 +11,28 @@ const ExtractedGreenRegulationSchema = z.object({
         maxGroundCoverage: z.number().nullish().describe('Maximum percentage of site area that can be covered (0-1)'),
         minGreenCover: z.number().nullish().describe('Minimum percentage of site area that must be vegetated/green (0-1)'),
     }).describe('Mandatory site planning constraints for backward compatibility.'),
+    analysisThresholds: z.object({
+        sunHours: z.object({
+            min: z.number(),
+            target: z.number()
+        }).nullish().describe('Minimum and target sun hours per day for compliance (e.g., min: 2, target: 4)'),
+        daylightFactor: z.object({
+            min: z.number(),
+            target: z.number()
+        }).nullish().describe('Minimum and target daylight factor for compliance (e.g., min: 0.02, target: 0.04)'),
+        windSpeed: z.object({
+            min: z.number(),
+            target: z.number()
+        }).nullish().describe('Minimum and target wind speed in m/s (e.g., min: 1, target: 2)')
+    }).nullish().describe('Explicit thresholds for visual analysis engine'),
     categories: z.array(z.object({
         name: z.string(),
         credits: z.array(z.object({
             code: z.string().optional(),
             name: z.string(),
-            points: z.number().nullish(), // Allow null or undefined
+            points: z.number().nullish(),
             type: z.string().optional(),
-            // Removing verbose fields from schema/prompt to prevent truncation
+            requirements: z.array(z.string()).optional().describe('Detailed text requirements for this credit'),
         }))
     })).optional().describe('Comprehensive list of certification categories and credits'),
     confidence: z.number().min(0).max(1).describe('Confidence score for this extraction (0-1)'),
@@ -105,12 +119,19 @@ Task:
      - **TRICK**: Green ratings often don't have a "Mandatory" green cover, but give points for it. Look for the **Credit Requirement** (e.g. "Ensure at least 15% of site area is soft paved"). Use that 15% (0.15) as the Min Green Cover.
      - Look for "per capita green cover" or "tree cover norms".
 
-2. **COMPREHENSIVE EXTRACTION**: Extract ALL Categories and Credits.
-   - **IMPORTANT**: To save space, extract ONLY: "code", "name", "points", "type".
-   - **DO NOT** extract "requirements", "intent", or "strategies".
-   - List every single credit code and name available.
+2. **ANALYSIS THRESHOLDS**: Identify explicit numeric thresholds for visual analysis.
+   - **Sun Hours**: Look for phrases like "minimum 2 hours of sunlight", "at least X hours of direct sun". Extract the minimum (e.g., 2) and set target as 1.5x-2x that value.
+   - **Daylight Factor**: Look for "daylight factor", "DF", percentages like "2% DF". Convert to decimal (e.g., 2% = 0.02).
+   - **Wind Speed**: Look for phrases like "minimum wind speed", "at least X m/s of air flow", "natural ventilation velocity". Extract values in m/s.
+   - If not found, leave as null.
 
-3. Identify the Certification Standard (IGBC, GRIHA, LEED).
+3. **COMPREHENSIVE EXTRACTION**: Extract ALL Categories and Credits.
+   - **IMPORTANT**: For credits related to DAYLIGHT, SUNLIGHT, NATURAL LIGHT, or VENTILATION:
+     - Extract the "requirements" array with detailed text (e.g., ["Minimum 2 hours of sunlight per day", "75% of rooms must have natural light"])
+   - For other credits, you may omit requirements to save space.
+   - Extract: "code", "name", "points", "type", "requirements" (for relevant credits only).
+
+4. Identify the Certification Standard (IGBC, GRIHA, LEED).
 
 **Structure**:
 {
@@ -121,12 +142,29 @@ Task:
     "maxGroundCoverage": 0.4,
     "minGreenCover": 0.2
   },
+  "analysisThresholds": {
+    "sunHours": { "min": 2, "target": 4 },
+    "daylightFactor": { "min": 0.02, "target": 0.04 },
+    "windSpeed": { "min": 1, "target": 2 }
+  },
   "categories": [ 
     {
       "name": "Sustainable Design",
       "credits": [
          { "code": "Credit 1", "name": "Natural Topography", "points": 2, "type": "credit" },
          { "code": "Mandatory 1", "name": "Soil Erosion", "points": null, "type": "mandatory" }
+      ]
+    },
+    {
+      "name": "Indoor Environmental Quality",
+      "credits": [
+         { 
+           "code": "EQ Credit 2", 
+           "name": "Daylighting", 
+           "points": 3, 
+           "type": "credit",
+           "requirements": ["Minimum 2 hours of sunlight per day", "75% of rooms must have natural light"]
+         }
       ]
     },
     ...

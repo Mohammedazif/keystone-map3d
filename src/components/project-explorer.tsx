@@ -17,7 +17,8 @@ import {
     Grid,
     Ghost,
     Eye,
-    EyeOff
+    EyeOff,
+    Leaf
 } from 'lucide-react';
 import { useBuildingStore } from '@/hooks/use-building-store';
 import { Button } from '@/components/ui/button';
@@ -25,6 +26,10 @@ import { cn } from '@/lib/utils';
 import { ScrollArea } from './ui/scroll-area';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
+import { useGreenRegulations } from '@/hooks/use-green-regulations';
+import { Project } from '@/lib/types';
 
 
 function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
@@ -219,8 +224,23 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
         actions: s.actions
     }));
 
+    const activeProject = useBuildingStore(s => s.projects.find(p => p.id === s.activeProjectId));
+    const { regulations } = useGreenRegulations(activeProject as unknown as Project);
+
+    const handleRegulationChange = (value: string) => {
+        if (activeProject) {
+            // value is the regulation ID (or name if we use that)
+            // But project expects an array of strings in 'greenCertification'
+            // Let's assume the value maps to one of 'IGBC' | 'GRIHA' | 'LEED' | 'Green Building'
+            // Or better, we store the specific regulation ID in 'regulationId' field?
+            // The type definition has 'regulationId?: string' but 'greenCertification?: string[]'.
+            // Let's update 'greenCertification' with the selected value for now.
+            actions.updateProject(activeProject.id, { greenCertification: [value as any] });
+        }
+    };
+
     // Always render structure even if empty to keep layout stable, or return null if preferred.
-    if (plots.length === 0) return null;
+    if (!activeProject && plots.length === 0) return null;
 
     const Container = embedded ? 'div' : Card;
 
@@ -228,22 +248,42 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
         <div className={cn('w-full flex-1 min-h-0 flex flex-col', className)}>
             <Container className={cn("flex flex-col h-full", embedded ? "" : "bg-background/80 backdrop-blur-sm border-t-0 rounded-t-none rounded-b-xl shadow-none")}>
                 {!embedded && (
-                    <CardHeader className="py-2 px-4 border-b flex flex-row items-center justify-between">
-                        <CardTitle className="text-sm">Project Explorer</CardTitle>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className={cn("h-6 w-6", uiState.ghostMode && "text-primary bg-primary/10")}
-                            onClick={actions.toggleGhostMode}
-                            title="Toggle Ghost Mode (View Internals)"
-                        >
-                            <Ghost className="h-4 w-4" />
-                        </Button>
+                    <CardHeader className="py-2 px-4 border-b">
+                        <div className="flex flex-row items-center justify-between mb-2">
+                            <CardTitle className="text-sm">Project Explorer</CardTitle>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className={cn("h-6 w-6", uiState.ghostMode && "text-primary bg-primary/10")}
+                                onClick={actions.toggleGhostMode}
+                                title="Toggle Ghost Mode (View Internals)"
+                            >
+                                <Ghost className="h-4 w-4" />
+                            </Button>
+                        </div>
+                        {/* Green Regulation Selector */}
+                        <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Green Regulation</Label>
+                            <Select
+                                value={activeProject?.greenCertification?.[0] || 'IGBC'}
+                                onValueChange={handleRegulationChange}
+                            >
+                                <SelectTrigger className="h-7 text-xs">
+                                    <SelectValue placeholder="Select Regulation" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="IGBC">IGBC Green Homes</SelectItem>
+                                    <SelectItem value="GRIHA">GRIHA</SelectItem>
+                                    <SelectItem value="LEED">LEED</SelectItem>
+                                    <SelectItem value="Green Building">Generic Green Building</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </CardHeader>
                 )}
                 <div className={cn("flex-1 overflow-hidden", embedded ? "" : "p-0")}>
-                    {/* If embedded, we might want ScrollArea or just simple div. 
-                        Original used ScrollArea. Keep it. 
+                    {/* If embedded, we might want ScrollArea or just simple div.
+                        Original used ScrollArea. Keep it.
                         Original content had p-0 on CardContent. */}
                     <ScrollArea className="h-full">
                         <div className="space-y-2 p-3">

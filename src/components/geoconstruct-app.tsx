@@ -6,8 +6,10 @@ import { Toaster } from '@/components/ui/toaster';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark } from 'lucide-react';
+import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf } from 'lucide-react';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
+import { LocationConnectivityPanel } from './location-connectivity-panel';
+import { GreenScorecardPanel } from './green-scorecard-panel';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useState, useEffect, useRef } from 'react';
@@ -41,7 +43,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const [isRegulationViewerOpen, setIsRegulationViewerOpen] = useState(false);
 
   // Simulation State
-  const [isSolarEnabled, setIsSolarEnabled] = useState(false);
+  const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false);
   const [solarDate, setSolarDate] = useState<Date>(() => {
     const d = new Date();
     d.setHours(12, 0, 0, 0);
@@ -198,8 +200,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
               onMapReady={() => setIsMapReady(true)}
               solarDate={solarDate}
               setSolarDate={setSolarDate}
-              isSolarEnabled={isSolarEnabled}
-              setIsSolarEnabled={setIsSolarEnabled}
+              isSimulatorEnabled={isSimulatorEnabled}
+              setIsSimulatorEnabled={setIsSimulatorEnabled}
               analysisMode={analysisMode}
               setAnalysisMode={setAnalysisMode}
             >
@@ -233,8 +235,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
             onMapReady={() => setIsMapReady(true)}
             solarDate={solarDate}
             setSolarDate={setSolarDate}
-            isSolarEnabled={isSolarEnabled}
-            setIsSolarEnabled={setIsSolarEnabled}
+            isSimulatorEnabled={isSimulatorEnabled}
+            setIsSimulatorEnabled={setIsSimulatorEnabled}
             analysisMode={analysisMode}
             setAnalysisMode={setAnalysisMode}
           >
@@ -265,6 +267,12 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                     <TabsTrigger value="saved" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
                       <Bookmark className="h-5 w-5" />
                     </TabsTrigger>
+                    <TabsTrigger value="scorecard" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
+                      <Leaf className="h-5 w-5" />
+                    </TabsTrigger>
+                    <TabsTrigger value="location" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
+                      <MapPin className="h-5 w-5" />
+                    </TabsTrigger>
                   </TabsList>
                 </div>
 
@@ -286,8 +294,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                       activeGreenRegulations={greenRegulations}
                       date={solarDate}
                       setDate={setSolarDate}
-                      enabled={isSolarEnabled}
-                      setEnabled={setIsSolarEnabled}
+                      enabled={isSimulatorEnabled}
+                      setEnabled={setIsSimulatorEnabled}
                       analysisMode={analysisMode}
                       setAnalysisMode={setAnalysisMode}
                     />
@@ -295,6 +303,13 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
 
                   <TabsContent value="saved" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
                     <SavedScenariosPanel embedded={true} />
+                  </TabsContent>
+
+                  <TabsContent value="scorecard" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
+                    <GreenScorecardPanel />
+                  </TabsContent>
+                  <TabsContent value="location" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
+                    <LocationConnectivityPanel />
                   </TabsContent>
                 </div>
               </Tabs>

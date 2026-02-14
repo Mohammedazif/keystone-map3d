@@ -60,59 +60,68 @@ export function SimulationTab({
             <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-muted-foreground/20">
                 {/* Master Toggle */}
                 <div className="flex items-center justify-between bg-muted/20 p-3 rounded-lg border">
-                    <Label className="font-medium text-sm">Enable Solar Engine</Label>
+                    <Label className="font-medium text-sm">Enable Simulator</Label>
                     <Switch checked={enabled} onCheckedChange={setEnabled} />
                 </div>
 
                 {enabled ? (
                     <div className="space-y-6 animate-in fade-in duration-300">
-                        {/* Time Controls */}
-                        <div className="space-y-4">
-                            <div className="space-y-3">
-                                <div className="flex justify-between text-xs">
-                                    <Label className="text-muted-foreground font-medium uppercase tracking-wider">Time of Day</Label>
-                                    <span className="font-mono text-foreground">{date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        {/* Conditional Controls - Hide if mode is 'none' */}
+                        {analysisMode !== 'none' ? (
+                            <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-500">
+                                {/* Time of Day - Hide for Sun Hours */}
+                                {analysisMode !== 'sun-hours' && (
+                                    <div className="space-y-3">
+                                        <div className="flex justify-between text-xs">
+                                            <Label className="text-muted-foreground font-medium uppercase tracking-wider">Time of Day</Label>
+                                            <span className="font-mono text-foreground">{date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                        </div>
+                                        <Slider
+                                            min={6}
+                                            max={18}
+                                            step={0.25}
+                                            value={[timeVal]}
+                                            onValueChange={handleTimeChange}
+                                            className="cursor-pointer [&_.relative]:h-2 [&_.absolute]:bg-orange-500/20 [&_span]:border-orange-500/50"
+                                        />
+                                        <div className="flex justify-between text-[10px] text-muted-foreground/50 uppercase font-medium">
+                                            <span>Sunrise</span>
+                                            <span>Noon</span>
+                                            <span>Sunset</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Month Slider */}
+                                <div className="space-y-3">
+                                    <div className="flex justify-between text-xs">
+                                        <Label className="text-muted-foreground font-medium uppercase tracking-wider">Month</Label>
+                                        <span className="font-mono text-foreground">{date.toLocaleDateString([], { month: 'long' })}</span>
+                                    </div>
+                                    <Slider
+                                        min={0}
+                                        max={11}
+                                        step={1}
+                                        value={[date.getMonth()]}
+                                        onValueChange={handleMonthChange}
+                                        className="cursor-pointer [&_.relative]:h-2 [&_.absolute]:bg-blue-500/20 [&_span]:border-blue-500/50"
+                                    />
+                                    <div className="flex justify-between text-[10px] text-muted-foreground/50 uppercase font-medium">
+                                        <span>Jan</span>
+                                        <span>Jun</span>
+                                        <span>Dec</span>
+                                    </div>
                                 </div>
-                                <Slider
-                                    min={6}
-                                    max={18}
-                                    step={0.25}
-                                    value={[timeVal]}
-                                    onValueChange={handleTimeChange}
-                                    className="cursor-pointer [&_.relative]:h-2 [&_.absolute]:bg-orange-500/20 [&_span]:border-orange-500/50"
-                                />
-                                <div className="flex justify-between text-[10px] text-muted-foreground/50 uppercase font-medium">
-                                    <span>Sunrise</span>
-                                    <span>Noon</span>
-                                    <span>Sunset</span>
-                                </div>
+                                {/* Divider */}
+                                <div className="my-2 border-t border-border/50" />
                             </div>
-
-                            <div className="space-y-3">
-                                <div className="flex justify-between text-xs">
-                                    <Label className="text-muted-foreground font-medium uppercase tracking-wider">Month</Label>
-                                    <span className="font-mono text-foreground">{date.toLocaleDateString([], { month: 'long' })}</span>
-                                </div>
-                                <Slider
-                                    min={0}
-                                    max={11}
-                                    step={1}
-                                    value={[date.getMonth()]}
-                                    onValueChange={handleMonthChange}
-                                    className="cursor-pointer [&_.relative]:h-2 [&_.absolute]:bg-blue-500/20 [&_span]:border-blue-500/50"
-                                />
-                                <div className="flex justify-between text-[10px] text-muted-foreground/50 uppercase font-medium">
-                                    <span>Jan</span>
-                                    <span>Jun</span>
-                                    <span>Dec</span>
-                                </div>
+                        ) : (
+                            <div className="py-4 text-center text-[10px] text-muted-foreground italic bg-muted/5 rounded-md border border-dashed">
+                                Select an analysis layer below to adjust parameters
                             </div>
-                        </div>
+                        )}
 
-                        {/* Divider */}
-                        <div className="my-2 border-t border-border/50" />
-
-                        {/* Analysis Mode */}
+                        {/* Analysis Mode Toggle Grid */}
                         <div className="space-y-4">
                             <Label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Analysis Layer</Label>
 
@@ -134,9 +143,9 @@ export function SimulationTab({
                                 ))}
                             </div>
 
-                            {/* Legend */}
+                            {/* Legend Section */}
                             {analysisMode !== 'none' && (
-                                <div className="space-y-3 bg-muted/10 p-3 rounded-md border border-border/50">
+                                <div className="space-y-3 bg-muted/10 p-3 rounded-md border border-border/50 animate-in zoom-in-95 duration-300">
                                     {activeGreenRegulations && activeGreenRegulations.length > 0 ? (
                                         <>
                                             <div className="flex items-center justify-between">
@@ -152,16 +161,15 @@ export function SimulationTab({
 
                                             {/* Dynamic Compliance Legend */}
                                             {(() => {
-                                                // Create a merged threshold view for the legend
                                                 const thresholds = activeGreenRegulations.map(parseThresholdsFromRegulation)
                                                     .reduce((max, curr) => ({
                                                         sunHoursMin: Math.max(max.sunHoursMin || 0, curr.sunHoursMin || 0),
                                                         sunHoursTarget: Math.max(max.sunHoursTarget || 0, curr.sunHoursTarget || 0),
-                                                        daylightFactorMin: Math.max(max.daylightFactorMin || 0, curr.daylightFactorMin || 0)
+                                                        daylightFactorMin: Math.max(max.daylightFactorMin || 0, curr.daylightFactorMin || 0),
+                                                        daylightFactorTarget: Math.max(max.daylightFactorTarget || 0, curr.daylightFactorTarget || 0),
+                                                        windSpeedMin: Math.max(max.windSpeedMin || 0, curr.windSpeedMin || 0),
+                                                        windSpeedTarget: Math.max(max.windSpeedTarget || 0, curr.windSpeedTarget || 0),
                                                     }), {} as any);
-
-                                                const minHours = thresholds.sunHoursMin || 2;
-                                                const targetHours = thresholds.sunHoursTarget || 4;
 
                                                 return (
                                                     <div className="space-y-2 text-[10px]">
@@ -169,20 +177,52 @@ export function SimulationTab({
                                                             <>
                                                                 <div className="flex items-center gap-2">
                                                                     <div className="w-3 h-3 rounded-sm bg-[#00cc00] shadow-sm" />
-                                                                    <span>Exceeds ({targetHours}+ hrs)</span>
+                                                                    <span>Exceeds Target ({(thresholds.sunHoursTarget || 4).toFixed(1)}+ hrs)</span>
                                                                 </div>
                                                                 <div className="flex items-center gap-2">
                                                                     <div className="w-3 h-3 rounded-sm bg-[#ffcc00] shadow-sm" />
-                                                                    <span>Meets ({minHours}-{targetHours} hrs)</span>
+                                                                    <span>Meets Min ({(thresholds.sunHoursMin || 2).toFixed(1)}-{(thresholds.sunHoursTarget || 4).toFixed(1)} hrs)</span>
                                                                 </div>
                                                                 <div className="flex items-center gap-2">
                                                                     <div className="w-3 h-3 rounded-sm bg-[#ff0000] shadow-sm" />
-                                                                    <span>Below ({minHours} hrs)</span>
+                                                                    <span>Below Min (&lt; {(thresholds.sunHoursMin || 2).toFixed(1)} hrs)</span>
                                                                 </div>
                                                             </>
                                                         )}
-                                                        {analysisMode !== 'sun-hours' && (
-                                                            <p className="text-muted-foreground italic">Certificate thresholds not available for this mode yet.</p>
+                                                        {analysisMode === 'daylight' && (
+                                                            <>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-3 h-3 rounded-sm bg-[#00cc00] shadow-sm" />
+                                                                    <span>Target Reach ({(thresholds.daylightFactorTarget || 0.04) * 100}%+ DF)</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-3 h-3 rounded-sm bg-[#ffcc00] shadow-sm" />
+                                                                    <span>Meets Minimum ({(thresholds.daylightFactorMin || 0.02) * 100}%-{(thresholds.daylightFactorTarget || 0.04) * 100}% DF)</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-3 h-3 rounded-sm bg-[#ff0000] shadow-sm" />
+                                                                    <span>Poor Lighting (&lt; {(thresholds.daylightFactorMin || 0.02) * 100}% DF)</span>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                        {analysisMode === 'wind' && (
+                                                            <>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-3 h-3 rounded-sm bg-[#00cc00] shadow-sm" />
+                                                                    <span>Good Ventilation ({(thresholds.windSpeedTarget || 1.2).toFixed(1)}+ m/s)</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-3 h-3 rounded-sm bg-[#ffcc00] shadow-sm" />
+                                                                    <span>Fair/Meets ({(thresholds.windSpeedMin || 0.6).toFixed(1)}-{(thresholds.windSpeedTarget || 1.2).toFixed(1)} m/s)</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-3 h-3 rounded-sm bg-[#ff0000] shadow-sm" />
+                                                                    <span>Stagnant (&lt; {(thresholds.windSpeedMin || 0.6).toFixed(1)} m/s)</span>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                        {!['sun-hours', 'daylight', 'wind'].includes(analysisMode) && (
+                                                            <p className="text-muted-foreground italic">Compliance check not supported for this mode.</p>
                                                         )}
                                                     </div>
                                                 );
