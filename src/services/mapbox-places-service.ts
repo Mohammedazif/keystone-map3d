@@ -12,16 +12,20 @@ export interface Amenity {
     address?: string;
 }
 
-export type AmenityCategory = "transit" | "school" | "hospital" | "park" | "restaurant" | "shopping";
+export type AmenityCategory = "transit" | "school" | "hospital" | "park" | "restaurant" | "shopping" | "atm" | "petrol_pump" | "college" | "mall";
 
 // Map our categories to Mapbox Geocoding Types or Keywords
 const CATEGORY_KEYWORDS: Record<AmenityCategory, string> = {
-    transit: "station, bus stop, metro, transit",
-    school: "school, college, university, education",
+    transit: "station, bus stop, metro, transit, airport, train station, bus station",
+    school: "school, university, education",
     hospital: "hospital, clinic, medical",
     park: "park, garden, playground",
     restaurant: "restaurant, cafe, food",
-    shopping: "mall, market, supermarket, shopping"
+    shopping: "supermarket, shopping, shopping center, market",
+    atm: "atm, bank",
+    petrol_pump: "gas station, fuel, petrol pump, diesel pump",
+    college: "college, university",
+    mall: "mall"
 };
 
 /**

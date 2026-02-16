@@ -6,13 +6,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { useBuildingStore, useSelectedPlot, useProjectData } from '@/hooks/use-building-store';
-import { Sparkles, Info, Plus, Trash2, MousePointerClick } from 'lucide-react';
+import { Info, RotateCcw, Box, Layers, Maximize, Move, MousePointer, AlertTriangle, Sparkles, MousePointerClick } from "lucide-react";
 import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
 
-// Building typology icons (simple SVG representations)
 // Building typology icons (simple SVG representations)
 const typologyIcons = {
     point: (
@@ -93,7 +92,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     }));
 
     const [selectedTypologies, setSelectedTypologies] = useState<BuildingTypology[]>(['point']);
-    const [selectedParking, setSelectedParking] = useState<ParkingTypology>('ug');
+    const [selectedParking, setSelectedParking] = useState<ParkingTypology[]>(['ug', 'surface']);
     // ...
     // ... in return JSX ...
     const projectData = useProjectData();
@@ -104,8 +103,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [floorRange, setFloorRange] = useState([5, 12]);
     const [heightRange, setHeightRange] = useState([16.8, 39.2]);
     const [footprintRange, setFootprintRange] = useState([400, 1000]);
-    const [scrRange, setScrRange] = useState([0.25, 0.60]);
+    const [scrRange, setScrRange] = useState<[number, number]>([2.0, 4.0]);
     const [parkingRatio, setParkingRatio] = useState(0.30);
+    const [buildingWidthRange, setBuildingWidthRange] = useState<[number, number]>([20, 25]); // Default: 20-25m
+    const [buildingLengthRange, setBuildingLengthRange] = useState<[number, number]>([25, 55]); // Default: 25-55m
     const [gridOrientation, setGridOrientation] = useState(0);
     const [avgUnitSize, setAvgUnitSize] = useState(85);
     const [commercialPercent, setCommercialPercent] = useState(0);
@@ -128,12 +129,12 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         openSpace: 0
     });
 
-    const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['STP', 'WTP', 'Electrical', 'HVAC', 'Water']);
+    const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'STP', 'WTP', 'Electrical', 'HVAC', 'Water']);
 
     // Constraints
-    const [maxAllowedFloors, setMaxAllowedFloors] = useState(60);
+    const [regulationMaxFloors, setRegulationMaxFloors] = useState(60);
     const [maxAllowedHeight, setMaxAllowedHeight] = useState(100);
-    const [maxAllowedFAR, setMaxAllowedFAR] = useState(4.0);
+    const [regulationMaxFAR, setRegulationMaxFAR] = useState(4.0);
 
     // Compliance Overrides (optional - will use regulation defaults if not set)
     const [maxFootprintOverride, setMaxFootprintOverride] = useState<number | undefined>(undefined);
@@ -159,6 +160,25 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         : selectedObjectId
             ? plots.find(p => p.buildings.some(b => b.id === selectedObjectId.id) || p.greenAreas.some(g => g.id === selectedObjectId.id) || p.parkingAreas.some(pk => pk.id === selectedObjectId.id))
             : undefined;
+
+    // Apply typology-specific dimensions on initial mount
+    useEffect(() => {
+        if (selectedTypologies.length === 1) {
+            const t = selectedTypologies[0];
+            if (t === 'point') {
+                setBuildingWidthRange([20, 25]);
+                setBuildingLengthRange([25, 30]); // Squarish for point blocks
+            } else if (t === 'slab') {
+                setBuildingWidthRange([20, 22]);
+                setBuildingLengthRange([40, 55]); // Long for slabs
+            } else if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(t)) {
+                setBuildingWidthRange([20, 25]);
+                setBuildingLengthRange([40, 55]);
+            }
+        }
+        // Only run on mount (empty dependency array)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Sync setback with Selected Plot (Must be after selectedPlot is defined)
     useEffect(() => {
@@ -195,9 +215,23 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
 
 
-            // Height
+            // Height and Floors
+            const maxFloorsValue = geomRegs['max_floors']?.value
+                || geomRegs['number_of_floors']?.value
+                || geomRegs['floors']?.value;
+
             const maxHeightValue = geomRegs['max_height']?.value || geomRegs['building_height']?.value;
-            if (maxHeightValue) {
+
+            if (maxFloorsValue !== undefined) {
+                const mf = Number(maxFloorsValue);
+                if (!isNaN(mf) && mf > 0) {
+                    setRegulationMaxFloors(mf);
+                    // Initialize floor range to compliant state
+                    setFloorRange([Math.max(1, Math.min(5, mf)), mf]);
+                    // Also update height range if floors are specified
+                    setMaxAllowedHeight(mf * 3.5);
+                }
+            } else if (maxHeightValue) {
                 const maxHeight = Number(maxHeightValue);
                 if (!isNaN(maxHeight)) {
                     setMaxAllowedHeight(maxHeight);
@@ -205,9 +239,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                     setHeightRange(prev => [prev[0], Math.min(prev[1], maxHeight)]);
 
                     // Approximate floors (assuming ~3.5m regular floor)
-                    const maxFloors = Math.floor(maxHeight / 3.5);
-                    setMaxAllowedFloors(maxFloors);
-                    setFloorRange(prev => [prev[0], Math.min(prev[1], maxFloors)]);
+                    const mf = Math.floor(maxHeight / 3.5);
+                    setRegulationMaxFloors(mf);
+                    // Initialize floor range to compliant state
+                    setFloorRange([Math.max(1, Math.min(5, mf)), mf]);
                 }
             }
 
@@ -244,10 +279,9 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             if (farValue !== undefined) {
                 const far = Number(farValue);
                 if (!isNaN(far) && far > 0) {
-                    setMaxAllowedFAR(far);
-                    setTargetFAR(Math.min(targetFAR, far)); // Clamp target if it exceeds new max? Or just set it?
-                    // Let's set it to max if current is default, or clamp
-                    if (targetFAR > far) setTargetFAR(far);
+                    setRegulationMaxFAR(far);
+                    // Update targetFAR to regulation default
+                    setTargetFAR(far);
                 }
             }
         }
@@ -300,7 +334,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             maxFloors: floorRange[1], // This will be used as compliance maxFloors
             minHeight: heightRange[0],
             maxHeight: heightRange[1],
-            parkingType: selectedParking,
+            parkingType: selectedParking[0], // Legacy support
+            parkingTypes: selectedParking,
             parkingRatio,
             minFootprint: minFootprintOverride, // Compliance override
             maxFootprint: maxFootprintOverride, // Compliance override (optional)
@@ -310,6 +345,12 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             avgUnitSize,
             commercialPercent,
             // New Params
+            minBuildingWidth: buildingWidthRange[0],
+            maxBuildingWidth: buildingWidthRange[1],
+            minBuildingLength: buildingLengthRange[0],
+            maxBuildingLength: buildingLengthRange[1],
+            width: buildingWidthRange[1], // Fallback for legacy generators using 'width'
+            minLength: buildingLengthRange[0], // Fallback
             floorHeight,
             landUse,
             programMix, // Single instance
@@ -318,7 +359,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             frontSetback,
             rearSetback,
             sideSetback,
-            maxAllowedFAR, // Pass the override max FAR
+            maxAllowedFAR: targetFAR,
             siteCoverage,
             seedOffset
         };
@@ -384,11 +425,33 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 <button
                                                     onClick={() => {
                                                         setSelectedTypologies(prev => {
+                                                            let next = prev;
                                                             if (prev.includes(type)) {
-                                                                if (prev.length === 1) return prev;
-                                                                return prev.filter(t => t !== type);
+                                                                if (prev.length === 1) next = prev;
+                                                                else next = prev.filter(t => t !== type);
+                                                            } else {
+                                                                next = [...prev, type];
                                                             }
-                                                            return [...prev, type];
+
+                                                            // Smart Defaults for Dimensions
+                                                            // If switching TO a specific single typology, adjust defaults
+                                                            if (next.length === 1) {
+                                                                const t = next[0];
+                                                                if (t === 'point') {
+                                                                    setBuildingWidthRange([20, 25]); // Range within limits
+                                                                    setBuildingLengthRange([25, 30]); // Squarish, above min length
+                                                                } else if (t === 'slab') {
+                                                                    setBuildingWidthRange([20, 22]); // Narrowest allowed (20m)
+                                                                    setBuildingLengthRange([40, 55]); // Long
+                                                                } else if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(t)) {
+                                                                    setBuildingWidthRange([20, 25]); // Wing depth
+                                                                    setBuildingLengthRange([40, 55]); // Overall extent
+                                                                }
+                                                            } else {
+                                                                // Mixed or multiple? Revert to generic "User Request" defaults
+                                                                // Or just leave as is.
+                                                            }
+                                                            return next;
                                                         });
                                                     }}
                                                     className={cn(
@@ -434,26 +497,42 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                 <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Parking</Label>
                                 <div className="space-y-2">
                                     <div className="grid grid-cols-4 gap-2">
-                                        {(['none', 'ug'] as ParkingTypology[]).map(type => (
+                                        {(['none', 'ug', 'surface'] as ParkingTypology[]).map(type => (
                                             <Tooltip key={type}>
                                                 <TooltipTrigger asChild>
                                                     <button
-                                                        onClick={() => setSelectedParking(type)}
+                                                        onClick={() => {
+                                                            if (type === 'none') {
+                                                                setSelectedParking(['none']);
+                                                            } else {
+                                                                setSelectedParking(prev => {
+                                                                    // If previously 'none', start fresh with this type
+                                                                    if (prev.includes('none')) return [type];
+                                                                    // Toggle off
+                                                                    if (prev.includes(type)) {
+                                                                        const next = prev.filter(t => t !== type);
+                                                                        return next.length ? next : ['none'];
+                                                                    }
+                                                                    // Toggle on
+                                                                    return [...prev, type];
+                                                                });
+                                                            }
+                                                        }}
                                                         className={cn(
                                                             'flex-shrink-0 h-10 rounded-md border p-1 transition-all flex items-center justify-center gap-2',
-                                                            selectedParking === type
+                                                            selectedParking.includes(type)
                                                                 ? 'border-primary bg-primary/10 text-primary ring-1 ring-primary/30 shadow-sm'
                                                                 : 'border-border bg-background hover:bg-muted hover:border-primary/50 text-muted-foreground hover:text-foreground'
                                                         )}
                                                     >
                                                         <div className="flex flex-col items-center gap-1">
                                                             <div className="h-4 w-4">{parkingIcons[type]}</div>
-                                                            <span className="text-[9px] font-medium capitalize">{type === 'ug' ? 'Bsmt' : type === 'pod' ? 'Podium' : type === 'none' ? 'None' : 'Surf'}</span>
+                                                            <span className="text-[9px] font-medium capitalize">{type === 'ug' ? 'Bsmt' : type === 'surface' ? 'Ground' : 'None'}</span>
                                                         </div>
                                                     </button>
                                                 </TooltipTrigger>
                                                 <TooltipContent side="bottom">
-                                                    <p>{type === 'ug' ? 'Underground Parking' : type === 'pod' ? 'Podium Parking' : type === 'none' ? 'No Parking Provided' : 'Surface Parking'}</p>
+                                                    <p>{type === 'ug' ? 'Underground Parking' : type === 'surface' ? 'Surface/Ground Parking' : 'No Parking Provided'}</p>
                                                 </TooltipContent>
                                             </Tooltip>
                                         ))}
@@ -472,6 +551,49 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
                                         />
                                     </div>
+                                </div>
+                            </div>
+
+                            {/* Building Dimensions */}
+                            <div className="space-y-3 pt-2">
+                                <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Building Dimensions</Label>
+
+                                {
+                                    /* Warning Removed as per user request */
+                                }
+
+                                {/* Width Range */}
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-[10px]">
+                                        <span className="text-muted-foreground">Building Width</span>
+                                        <span className={cn(buildingWidthRange[0] < 20 || buildingWidthRange[1] > 25 ? "text-destructive font-bold" : "")}>{buildingWidthRange[0]}m - {buildingWidthRange[1]}m</span>
+                                    </div>
+                                    <Slider
+                                        value={buildingWidthRange}
+                                        min={20}
+                                        max={25}
+                                        step={0.5}
+                                        minStepsBetweenThumbs={1}
+                                        onValueChange={(val) => setBuildingWidthRange(val as [number, number])}
+                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
+                                    />
+                                </div>
+
+                                {/* Length Range */}
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-[10px]">
+                                        <span className="text-muted-foreground">Building Length</span>
+                                        <span className={cn(buildingLengthRange[0] < 25 || buildingLengthRange[1] > 55 ? "text-destructive font-bold" : "")}>{buildingLengthRange[0]}m - {buildingLengthRange[1]}m</span>
+                                    </div>
+                                    <Slider
+                                        value={buildingLengthRange}
+                                        min={25}
+                                        max={55}
+                                        step={1}
+                                        minStepsBetweenThumbs={5}
+                                        onValueChange={(val) => setBuildingLengthRange(val as [number, number])}
+                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
+                                    />
                                 </div>
                             </div>
 
@@ -595,7 +717,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     <div className="space-y-1.5">
                                         <div className="flex justify-between text-[10px]">
                                             <span className="font-medium text-foreground/80">FAR</span>
-                                            <span className={cn("text-muted-foreground", targetFAR > maxAllowedFAR && "text-red-500 font-bold")}>Max: {maxAllowedFAR}</span>
+                                            <span className={cn("text-muted-foreground", targetFAR > regulationMaxFAR && "text-red-500 font-bold")}>Max: {regulationMaxFAR}</span>
                                         </div>
                                         <div className="relative">
                                             <Input
@@ -603,7 +725,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 step="0.1"
                                                 value={targetFAR}
                                                 onChange={(e) => setTargetFAR(Number(e.target.value))}
-                                                className={cn("h-8 text-xs bg-muted/20 border-border", targetFAR > maxAllowedFAR && "border-red-500 text-red-500")}
+                                                className={cn("h-8 text-xs bg-muted/20 border-border", targetFAR > regulationMaxFAR && "border-red-500 text-red-500")}
                                             />
                                         </div>
                                         {/* <div className="flex justify-between text-[10px] mt-2">
@@ -739,12 +861,14 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     <div className="space-y-2">
                                         <div className="flex justify-between items-center">
                                             <Label className="text-[10px] font-medium text-foreground/80">Floors</Label>
-                                            <span className="text-[10px] text-muted-foreground">{floorRange[0]} - {floorRange[1]} fl (Max: {maxAllowedFloors})</span>
+                                            <span className={cn("text-[10px] text-muted-foreground", floorRange[1] > regulationMaxFloors && "text-red-500 font-bold")}>
+                                                {floorRange[0]} - {floorRange[1]} fl (Reg: {regulationMaxFloors})
+                                            </span>
                                         </div>
                                         <Slider
                                             value={floorRange}
                                             min={1}
-                                            max={maxAllowedFloors}
+                                            max={60}
                                             step={1}
                                             minStepsBetweenThumbs={1}
                                             onValueChange={setFloorRange}

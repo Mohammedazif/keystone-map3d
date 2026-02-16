@@ -35,7 +35,7 @@ export function applyVariableSetbacks(
 
     // 0. Defaults:
     // If no specific setbacks are provided, use uniform setback (defaulting to 6m if even that is missing, though caller handles defaults)
-    const effectiveUniform = setback || 6;
+    const effectiveUniform = setback ?? 0;
 
     // If we don't have specific variable setbacks OR don't know where the road is, use Uniform.
     if (
@@ -44,6 +44,7 @@ export function applyVariableSetbacks(
         roadAccessSides.length === 0
     ) {
         // Use Uniform Setback
+        if (effectiveUniform === 0) return poly; // No setback needed
         // @ts-ignore
         return turf.buffer(poly, -effectiveUniform, { units: 'meters' });
     }

@@ -47,7 +47,7 @@ export function ProjectInfoPanel({ embedded = false }: { embedded?: boolean }) {
                                 <span>Plot Area</span>
                             </div>
                             <div className="font-mono text-xs">
-                                {consumedPlotArea.toFixed(2)} / {totalPlotArea.toFixed(2)} m²
+                                {consumedPlotArea.toFixed(2)}m²
                             </div>
                         </div>
                         <Progress value={plotUsagePercentage} />

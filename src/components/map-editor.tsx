@@ -655,10 +655,14 @@ export function MapEditor({
       let color = '#888';
       if (amenity.category === 'transit') color = '#2196F3'; // Blue
       else if (amenity.category === 'school') color = '#FF9800'; // Orange
+      else if (amenity.category === 'college') color = '#FF5722'; // Deep Orange
       else if (amenity.category === 'hospital') color = '#F44336'; // Red
       else if (amenity.category === 'park') color = '#4CAF50'; // Green
       else if (amenity.category === 'shopping') color = '#9C27B0'; // Purple
+      else if (amenity.category === 'mall') color = '#673AB7'; // Deep Purple
       else if (amenity.category === 'restaurant') color = '#FFEB3B'; // Yellow
+      else if (amenity.category === 'atm') color = '#009688'; // Teal
+      else if (amenity.category === 'petrol_pump') color = '#607D8B'; // Blue Grey
 
       el.style.backgroundColor = color;
 
@@ -1297,17 +1301,169 @@ export function MapEditor({
       if (plot.centroid) {
         allLabels.push(
           turf.point(plot.centroid.geometry.coordinates, {
-            label: `${plot.area.toFixed(0)} mÂ²`,
+            label: `${plot.area.toFixed(0)} m²`,
             id: `plot-label-${plot.id}`,
             linkedId: plot.id // Link to plot ID for selection highlight
           })
         );
       }
 
+      // --- RENDER UTILITIES & PARKING FIRST (Bottom Layer) ---
+
+      // 1. Parking Areas (Surface & Basements)
+      plot.parkingAreas.forEach(area => {
+        const areaId = `parking-area-${area.id}`;
+        if (!area.geometry) return; // Skip invalid areas
+
+        const areaData: Feature<Polygon> = {
+          type: 'Feature',
+          geometry: (area.geometry as any).type === 'Feature' ? (area.geometry as any).geometry : area.geometry,
+          properties: {
+            id: area.id,
+            name: area.name,
+            type: area.type,
+            area: area.area,
+            capacity: area.capacity
+          }
+        };
+
+        let source = mapInstance.getSource(areaId) as GeoJSONSource;
+        if (source) source.setData(areaData);
+        else mapInstance.addSource(areaId, { type: 'geojson', data: areaData });
+
+        // Ensure layer exists and correct type
+        const existingRef = mapInstance.getLayer(areaId);
+        // If we want to change type (e.g. line to fill), remove it
+        // Surface parking is now Fill, Basement is Line
+        const isBasement = (area.type === 'Basement');
+        const desiredType = isBasement ? 'line' : 'fill';
+
+        if (existingRef && existingRef.type !== desiredType) {
+          mapInstance.removeLayer(areaId);
+        }
+
+        if (!mapInstance.getLayer(areaId)) {
+          if (isBasement) {
+            // Render Basement as dashed outline
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'line',
+              source: areaId,
+              paint: {
+                'line-color': '#1a202c',
+                'line-width': 2,
+                'line-dasharray': [2, 2],
+                'line-opacity': 0.7
+              }
+            }, LABELS_LAYER_ID);
+          } else {
+            // Surface Parking: Visible Fill (Blue Grey)
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'fill',
+              source: areaId,
+              paint: {
+                'fill-color': '#607D8B',
+                'fill-opacity': 0.5,
+                'fill-outline-color': '#455A64'
+              }
+            }, LABELS_LAYER_ID); // Render using Label ID as reference (top), but since this runs BEFORE buildings, buildings will be added AFTER (on top)
+          }
+        } else {
+          // Update Paint Props if needed
+          if (!isBasement) {
+            mapInstance.setPaintProperty(areaId, 'fill-color', '#607D8B');
+            mapInstance.setPaintProperty(areaId, 'fill-opacity', 0.5);
+          }
+        }
+      });
+
+      // 2. Utility Areas (Roads, STP, etc.)
+      const utilitiesToRender = [...(plot.utilityAreas || [])];
+
+      utilitiesToRender.forEach(u => {
+        const areaId = `utility-area-${u.id}`;
+        renderedIds.add(areaId);
+        renderedIds.add(`utility-area-label-${u.id}`);
+
+        if (!u.geometry) return; // Skip invalid utilities
+
+        const featureData = {
+          type: 'Feature',
+          geometry: (u.geometry as any).type === 'Feature' ? (u.geometry as any).geometry : u.geometry,
+          properties: {
+            id: u.id,
+            name: u.name,
+            type: u.type,
+            area: u.area
+          }
+        };
+
+        let source = mapInstance.getSource(areaId) as GeoJSONSource;
+        if (source) source.setData(featureData as any);
+        else mapInstance.addSource(areaId, { type: 'geojson', data: featureData as any });
+
+        let color = '#718096';
+        const typeStr = (u.type || '').toLowerCase();
+
+        if (typeStr.includes('stp')) color = '#9C27B0';
+        else if (typeStr.includes('wtp') || typeStr.includes('water')) color = '#2196F3';
+        else if (typeStr.includes('electrical')) color = '#F44336';
+        else if (typeStr.includes('fire')) color = '#E91E63';
+        else if (typeStr.includes('hvac')) color = '#FF9800';
+        else if (typeStr.includes('gas')) color = '#795548';
+        else if (typeStr.includes('road')) color = '#546E7A';
+
+        const isRoad = u.type === 'Roads' || u.type === 'AppRoads' as any;
+
+        // Force recreation if type mismatch or just ensure correct ADD order relative to buildings
+        // Since we are running BEFORE buildings, standard addLayer will put it below buildings (if they are added later)
+
+        if (!mapInstance.getLayer(areaId)) {
+          if (isRoad) {
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'fill',
+              source: areaId,
+              paint: {
+                'fill-color': color,
+                'fill-opacity': 0.9,
+                'fill-outline-color': '#455A64'
+              }
+            }, LABELS_LAYER_ID);
+          } else {
+            // 3D Extrusion for others
+            mapInstance.addLayer({
+              id: areaId,
+              type: 'fill-extrusion',
+              source: areaId,
+              paint: {
+                'fill-extrusion-color': color,
+                'fill-extrusion-height': 2.5,
+                'fill-extrusion-opacity': 0.7,
+                'fill-extrusion-base': 0
+              }
+            }, LABELS_LAYER_ID);
+          }
+        } else {
+          // Update
+          if (isRoad) {
+            if (mapInstance.getLayer(areaId)?.type === 'fill') {
+              mapInstance.setPaintProperty(areaId, 'fill-color', color);
+            }
+          } else {
+            if (mapInstance.getLayer(areaId)?.type === 'fill-extrusion') {
+              mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', color);
+            }
+          }
+        }
+      });
+
       // Add building labels
+
       plot.buildings.forEach(building => {
         if (building.centroid) {
-          let labelText = `${building.name}\n${building.intendedUse}\n${building.area.toFixed(0)} mÂ²`;
+          let labelText = `${building.name}\n${building.intendedUse}\n${building.area.toFixed(0)} m²`;
 
           allLabels.push(
             turf.point(building.centroid.geometry.coordinates, {
@@ -1594,8 +1750,10 @@ export function MapEditor({
             const slabLayerId = `building-slab-${floor.id}-${building.id}`;
             renderedIds.add(slabLayerId);
 
-            // Slab Opacity: 1.0 in Ordinary Mode. In Ghost Mode, set to 0.0 to avoid gaps in Cores/Units.
-            const slabOpacity = uiState.ghostMode ? 0.0 : 1.0;
+            const userOpacity = building.opacity !== undefined ? building.opacity : 1.0;
+
+            // Slab Opacity: Use user setting in Ordinary Mode. In Ghost Mode, set to 0.0.
+            const slabOpacity = uiState.ghostMode ? 0.0 : userOpacity;
 
             const slabGeo = {
               ...building.geometry,
@@ -1644,7 +1802,7 @@ export function MapEditor({
             );
 
             // NEW OPACITY LOGIC for Floors - "Skeleton Mode"
-            let opacity = 1.0;
+            let opacity = userOpacity;
             if (anyComponentVisible) {
               // If focused on internals, make WALLS invisible (0.0)
               opacity = 0.0;
@@ -1739,7 +1897,7 @@ export function MapEditor({
         if (area.centroid) {
           allLabels.push(
             turf.point(area.centroid.geometry.coordinates, {
-              label: `${area.name}\n${area.area.toFixed(0)} mÂ²`,
+              label: `${area.name}\n${area.area.toFixed(0)} m²`,
               id: `green-area-label-${area.id}`
             })
           )
@@ -1750,7 +1908,7 @@ export function MapEditor({
         if (area.centroid) {
           allLabels.push(
             turf.point(area.centroid.geometry.coordinates, {
-              label: `${area.name}\n${area.area.toFixed(0)} mÂ²`,
+              label: `${area.name}\n${area.area.toFixed(0)} m²`,
               id: `parking-area-label-${area.id}`
             })
           )
@@ -1761,7 +1919,7 @@ export function MapEditor({
         if (area.centroid) {
           allLabels.push(
             turf.point(area.centroid.geometry.coordinates, {
-              label: `${area.name}\n${area.area.toFixed(0)} mÂ²`,
+              label: `${area.name}\n${area.area.toFixed(0)} m²`,
               id: `buildable-area-label-${area.id}`
             })
           )
@@ -1771,7 +1929,7 @@ export function MapEditor({
         if (area.centroid) {
           allLabels.push(
             turf.point(area.centroid.geometry.coordinates, {
-              label: `${area.name}\n(${area.type})\n${area.area.toFixed(0)} mÂ²`,
+              label: `${area.name}\n(${area.type})\n${area.area.toFixed(0)} m²`,
               id: `utility-area-label-${area.id}`
             })
           )
@@ -1947,7 +2105,7 @@ export function MapEditor({
         type: 'Feature',
         geometry: plot.centroid.geometry,
         properties: {
-          label: `${plot.name}\n${Math.round(plot.area)} mÂ²`,
+          label: `${plot.name}\n${Math.round(plot.area)} m²`,
         }
       };
 
@@ -1990,198 +2148,39 @@ export function MapEditor({
         allBuildingFootprints.push(feat);
       });
 
-      /*
-      // Green Areas disabled per user request
+      // Green Areas - Uncommented and fixed
       plot.greenAreas.forEach(area => {
-        const areaId = `green-area-${area.id}`;
-        let source = mapInstance.getSource(areaId) as GeoJSONSource;
-        if (source) source.setData(area.geometry);
-        else mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
-     
-        if (!mapInstance.getLayer(areaId)) {
-          mapInstance.addLayer({ id: areaId, type: 'fill', source: areaId, paint: { 'fill-color': '#48bb78', 'fill-opacity': 0.7 } }, LABELS_LAYER_ID);
-        }
-      });
-      */
+        const areaId = area.id; // ID is now deterministic and unique (e.g., green-area-plot-1-0)
 
-      plot.parkingAreas.forEach(area => {
-        const areaId = `parking-area-${area.id}`;
-        let source = mapInstance.getSource(areaId) as GeoJSONSource;
-        if (source) source.setData(area.geometry);
-        else mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
-
-        if (!mapInstance.getLayer(areaId)) {
-          // ... logic to add layer ...
-        } else {
-          // Check if existing layer matches correct type (line), otherwise remove it to re-create
-          const existingRef = mapInstance.getLayer(areaId);
-          if (existingRef && existingRef.type !== 'line') {
-            mapInstance.removeLayer(areaId);
-          }
-        }
-
-        // Re-check after potential removal
-        if (!mapInstance.getLayer(areaId)) {
-          const isBasement = (area.type === 'Basement');
-
-          if (isBasement) {
-            // Render Basement as outlined only (dashed) to imply underground
-            mapInstance.addLayer({
-              id: areaId,
-              type: 'line',
-              source: areaId,
-              paint: {
-                'line-color': '#1a202c',
-                'line-width': 2,
-                'line-dasharray': [2, 2],
-                'line-opacity': 0.7
-              }
-            }, LABELS_LAYER_ID);
-          } else {
-            // Render Surface/Podium as Fill - Make it subtle/invisible by default to avoid conflicts
-            // The user complained about "grey thing outside" which is this layer.
-            // We'll make it transparent with a dashed outline, effectively hiding the mass.
-            mapInstance.addLayer({
-              id: areaId,
-              type: 'line',
-              source: areaId,
-              paint: {
-                'line-color': '#4a5568',
-                'line-width': 1,
-                'line-dasharray': [2, 4],
-                'line-opacity': 0.3
-              }
-            }, LABELS_LAYER_ID);
-          }
-        }
-      });
-
-      // Combine existing utilities with ephemeral roads if needed
-      const utilitiesToRender = [...(plot.utilityAreas || [])];
-      const hasRoads = utilitiesToRender.some(u => u.type === 'Roads' || u.type === 'AppRoads' as any);
-
-      if (!hasRoads && plot.geometry) {
-        // Ephemeral Road Generation - DISABLED by user request
-        // Vastu: Roads from North or East
-        // Standard: Road from South
-
-        /* 
-        const bbox = turf.bbox(plot.geometry);
-        const center = turf.center(plot.geometry);
-        const fromDir = (activeProject?.vastuCompliant) ? 'East' : 'South';
-        let startPt: any;
-     
-        if (fromDir === 'East') {
-          // Midpoint of right edge
-          startPt = turf.point([bbox[2], (bbox[1] + bbox[3]) / 2]) as Feature<Point>;
-        } else {
-          // Midpoint of bottom edge
-          startPt = turf.point([(bbox[0] + bbox[2]) / 2, bbox[1]]) as Feature<Point>;
-        }
-     
-        if (startPt && center && (startPt as any).geometry && (center as any).geometry) {
-          // Create simple driveway to building/center
-          const roadLine = turf.lineString([
-            (startPt as any).geometry.coordinates,
-            (center as any).geometry.coordinates
-          ]);
-     
-          // Buffer it to make a Polygon road (width 6m)
-          const roadPoly = turf.buffer(roadLine, 0.003, { units: 'kilometers' }); // 3m radius = 6m width
-     
-          if (roadPoly) {
-            utilitiesToRender.push({
-              id: `ephemeral-road-${plot.id}`,
-              name: 'Access Road',
-              type: 'Roads' as UtilityType,
-              geometry: roadPoly as Feature<Polygon>,
-              centroid: center as Feature<Point>,
-              area: 0,
-              visible: true
-            });
-          }
-        }
-        */
-      }
-
-      utilitiesToRender.forEach(u => {
-        const areaId = `utility-area-${u.id}`;
-        // Add to rendered IDs to prevent removal
+        // CRITICAL: Mark this ID as "rendered" so the cleanup logic doesn't remove it
         renderedIds.add(areaId);
-        renderedIds.add(`utility-area-label-${u.id}`);
-
-        const featureData = {
-          type: 'Feature',
-          geometry: (u.geometry as any).type === 'Feature' ? (u.geometry as any).geometry : u.geometry,
-          properties: {
-            id: u.id,
-            name: u.name,
-            type: u.type,
-            area: u.area
-          }
-        };
 
         let source = mapInstance.getSource(areaId) as GeoJSONSource;
-        if (source) source.setData(featureData as any);
-        else mapInstance.addSource(areaId, { type: 'geojson', data: featureData as any });
 
-        // Determine Color based on Type (using includes for partial matches)
-        let color = '#718096'; // Default Gray
-        const typeStr = (u.type || '').toLowerCase();
+        // Ensure geometry is valid
+        if (!area.geometry) return;
 
-        if (typeStr.includes('stp')) color = '#9C27B0'; // Purple
-        else if (typeStr.includes('wtp') || typeStr.includes('water')) color = '#2196F3'; // Blue
-        else if (typeStr.includes('electrical') || typeStr.includes('electric')) color = '#F44336'; // Red
-        else if (typeStr.includes('fire')) color = '#E91E63'; // Pink
-        else if (typeStr.includes('hvac')) color = '#FF9800'; // Orange
-        else if (typeStr.includes('gas')) color = '#795548'; // Brown
-        else if (typeStr.includes('road')) color = '#546E7A'; // Blue Grey
-
-        const isRoad = u.type === 'Roads' || u.type === 'AppRoads' as any; // Handle potential variants
+        if (source) {
+          source.setData(area.geometry);
+        } else {
+          mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
+        }
 
         if (!mapInstance.getLayer(areaId)) {
-          if (isRoad) {
-            // 2D Flat Rendering for Roads
-            mapInstance.addLayer({
-              id: areaId,
-              type: 'fill',
-              source: areaId,
-              paint: {
-                'fill-color': color,
-                'fill-opacity': 0.9,
-                'fill-outline-color': '#455A64'
-              }
-            }, LABELS_LAYER_ID);
-          } else {
-            // 3D Extrusion for other utilities to ensure visibility
-            mapInstance.addLayer({
-              id: areaId,
-              type: 'fill-extrusion',
-              source: areaId,
-              paint: {
-                'fill-extrusion-color': color,
-                'fill-extrusion-height': 2.5, // 2.5m height
-                'fill-extrusion-opacity': 0.7,
-                'fill-extrusion-base': 0
-              }
-            }, LABELS_LAYER_ID);
-          }
-        } else {
-          // Update paint properties if layer exists
-          const existingLayer = mapInstance.getLayer(areaId);
-          if (existingLayer) {
-            if (isRoad) {
-              if (existingLayer.type === 'fill') {
-                mapInstance.setPaintProperty(areaId, 'fill-color', color);
-              }
-            } else {
-              if (existingLayer.type === 'fill-extrusion') {
-                mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', color);
-              }
+          mapInstance.addLayer({
+            id: areaId,
+            type: 'fill',
+            source: areaId,
+            paint: {
+              'fill-color': '#4ade80', // Revert to Green-400
+              'fill-opacity': 0.5,
+              'fill-outline-color': '#22c55e' // Green-500 border
             }
-          }
+          }, LABELS_LAYER_ID); // Render below labels
         }
       });
+
+
     });
 
     const allBuildingsSourceId = 'all-buildings-footprints';
@@ -2257,7 +2256,11 @@ export function MapEditor({
       // Query specific interactive layers
       // We check for: Buildings (hit layer), Utilities (prefix), Roads
       const features = m.queryRenderedFeatures(e.point).filter(f => {
-        return f.layer && f.layer.id && (f.layer.id === 'all-buildings-hit-layer' || f.layer.id.startsWith('utility-area-'));
+        return f.layer && f.layer.id && (
+          f.layer.id === 'all-buildings-hit-layer' ||
+          f.layer.id.startsWith('utility-area-') ||
+          f.layer.id.startsWith('parking-area-')
+        );
       });
 
       if (features.length > 0) {
@@ -2298,14 +2301,16 @@ export function MapEditor({
             <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${props.floors || 0} Fl • ${Math.round(props.height || 0)}m</div>
             ${dims ? `<div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Size: ${dims}</div>` : ''}
           `;
-        } else if (f.layer?.id.startsWith('utility-area-')) {
-          const typeLabel = props.type || 'Utility';
-          const areaLabel = props.area ? `${Math.round(props.area)} mÂ²` : '';
+        } else if (f.layer?.id.startsWith('utility-area-') || f.layer?.id.startsWith('parking-area-')) {
+          const typeLabel = props.type || (f.layer?.id.startsWith('parking-area-') ? 'Parking' : 'Utility');
+          const areaLabel = props.area ? `${Math.round(props.area)} m²` : '';
+          const capacityLabel = props.capacity ? `<div class="text-xs text-neutral-600">Capacity: ${props.capacity} cars</div>` : '';
 
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || typeLabel}</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">${typeLabel}</div>
-            ${areaLabel ? `<div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${areaLabel}</div>` : ''}
+            ${areaLabel ? `<div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${areaLabel}</div>` : ''}
+            ${capacityLabel}
           `;
         }
 

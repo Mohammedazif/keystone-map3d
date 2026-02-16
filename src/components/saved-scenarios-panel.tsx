@@ -98,6 +98,18 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
                             const thumbnailFeatures = plots.flatMap((p: any) =>
                                 p.buildings ? p.buildings.map((b: any) => b.geometry) : []
                             );
+                            const roadFeatures = plots.flatMap((p: any) =>
+                                (p.utilityAreas || []).filter((u: any) => u.type === 'Roads' || u.name.toLowerCase().includes('road')).map((u: any) => u.geometry)
+                            );
+                            const parkingFeatures = plots.flatMap((p: any) =>
+                                (p.parkingAreas || []).map((pa: any) => pa.geometry)
+                            );
+                            const utilityFeatures = plots.flatMap((p: any) =>
+                                (p.utilityAreas || []).filter((u: any) => u.type !== 'Roads' && !u.name.toLowerCase().includes('road')).map((u: any) => u.geometry)
+                            );
+                            const greenFeatures = plots.flatMap((p: any) =>
+                                (p.greenAreas || []).map((ga: any) => ga.geometry)
+                            );
                             const plotGeometry = plots[0]?.geometry;
                             const setback = plots[0]?.setback || 0;
 
@@ -111,6 +123,10 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
                                     <div className="relative h-32 bg-muted/20 border-b">
                                         <ScenarioThumbnail
                                             features={thumbnailFeatures}
+                                            roadFeatures={roadFeatures}
+                                            parkingFeatures={parkingFeatures}
+                                            utilityFeatures={utilityFeatures}
+                                            greenFeatures={greenFeatures}
                                             plotGeometry={plotGeometry}
                                             setback={setback}
                                             className="w-full h-full !bg-transparent !p-2"

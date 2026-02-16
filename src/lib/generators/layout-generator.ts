@@ -51,6 +51,7 @@ export function generateBuildingLayout(
     buildingPoly: Feature<Polygon | MultiPolygon>,
     params: LayoutParams = {}
 ): { cores: Core[], units: Unit[], entrances: any[], utilities: UtilityArea[], efficiency?: number } {
+    console.log('[Layout Generator] Generating layout with params:', params);
 
     // --- ROTATION WRAPPER START ---
     // If an alignment rotation is provided, we temporarily rotate the building to 0deg (aligned),

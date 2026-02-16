@@ -40,8 +40,17 @@ export interface AlgoParams {
     selectedUtilities?: string[];
     programMix?: any;
     parkingType?: any;
+    parkingTypes?: ('ug' | 'pod' | 'surface' | 'ground' | 'none')[];
     floorHeight?: number;
+    maxAllowedFAR?: number; // Override FAR limit for compliance scaling
+    siteCoverage?: number;
+    seedOffset?: number;
 
+    // Dimensional Constraints
+    minBuildingWidth?: number;
+    maxBuildingWidth?: number;
+    minBuildingLength?: number;
+    maxBuildingLength?: number;
 
     // Multi-Typology & Vastu
     typologies?: string[];
@@ -56,7 +65,7 @@ export interface AlgoParams {
     wingLengthB?: number;
 
     // Seed for pagination/refresh
-    seedOffset?: number;
+    seed?: number;
 
     // Unit Mix Configuration
     unitMix?: UnitTypology[];
@@ -67,12 +76,23 @@ export type LamellaParams = AlgoParams;
 /**
  * Generates regular grid of towers
  */
+/**
+ * Pseudo-random generator for consistent variations
+ */
+function seededRandom(x: number, y: number, seed: number = 0) {
+    const vector = Math.sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453;
+    return vector - Math.floor(vector);
+}
+
 export function generateTowers(
     plotGeometry: Feature<Polygon | MultiPolygon>,
     params: AlgoParams
 ): Feature<Polygon>[] {
     const buildings: Feature<Polygon>[] = [];
-    const { spacing, width, orientation, setback, obstacles } = params;
+    const { spacing, width, orientation, setback, obstacles, minBuildingWidth, maxBuildingWidth, seedOffset = 0 } = params;
+
+    const maxWidth = maxBuildingWidth || width;
+    const minWidth = minBuildingWidth || (maxWidth * 0.7); // Fallback min
 
     // 1. Apply Setback
     // @ts-ignore
@@ -86,19 +106,12 @@ export function generateTowers(
 
     // 2. Create Grid of Points
     // Directional Spacing
-    // Side-to-Side (along orientation) = width + sideSetback
-    // Front-to-Back (perpendicular) = width + frontSetback + rearSetback
-
+    // Use MAX width for stride to avoid overlap
     const sideGap = params.sideSetback ?? params.spacing ?? 6;
     const depthGap = (params.frontSetback ?? 6) + (params.rearSetback ?? 6);
 
-    // If Front/Rear are not specifically set, fallback to spacing or default
-    // preciseDepthGap logic: if user didn't set F/R, maybe just use spacing? 
-    // But we want to enforce the new rule. User said "front and rear setbacks would be applied".
-    // We'll use the specific params if available, else fall back to a reasonable default.
-
-    const strideX = width + sideGap;
-    const strideY = width + depthGap;
+    const strideX = maxWidth + sideGap;
+    const strideY = maxWidth + depthGap;
 
     const center = turf.centroid(validArea);
     const pMin = turf.point([minX, minY]);
@@ -126,8 +139,12 @@ export function generateTowers(
             // @ts-ignore
             const pointLoc = destination(p1, yOffset, orientation + 90, { units: 'meters' as const });
 
+            // Randomize Width for this tower
+            const rand = seededRandom(i, j, seedOffset);
+            const currentWidth = minWidth + (rand * (maxWidth - minWidth));
+
             // Create tower footprint (square)
-            const hw = width / 2;
+            const hw = currentWidth / 2;
             // @ts-ignore
             const c1 = destination(pointLoc, hw * Math.sqrt(2), orientation + 45, { units: 'meters' as const });
             // @ts-ignore
@@ -158,7 +175,7 @@ export function generateTowers(
                     const area = turf.area(intersect);
                     // If at least 50% of the building is inside the setback line, we allow it (clipping handled dynamically)
                     // We use the INTERSECT geometry to ensure it doesn't visually protrude out of the setback line
-                    if (area > (width * width) * 0.5) {
+                    if (area > (currentWidth * currentWidth) * 0.5) {
 
                         // Check GFA Constraints
                         if (params.targetGFA && params.maxFloors) {
@@ -196,7 +213,7 @@ export function generateTowers(
                             clippedPoly.properties = {
                                 type: 'generated',
                                 subtype: 'tower',
-                                width,
+                                width: currentWidth,
                                 area: area
                             };
                             buildings.push(clippedPoly);
@@ -218,7 +235,17 @@ export function generatePerimeter(
     params: AlgoParams
 ): Feature<Polygon>[] {
     const buildings: Feature<Polygon>[] = [];
-    const { width, setback } = params; // width is building depth here
+    // Destructure new params
+    const { width, setback, minBuildingWidth, maxBuildingWidth, seedOffset = 0 } = params;
+
+    // Calculate dynamic width
+    const minW = minBuildingWidth || (width * 0.8);
+    const maxW = maxBuildingWidth || width;
+
+    // Randomize width for this generation instance
+    // Use a fixed seed for the whole perimeter block
+    const rand = seededRandom(1, 1, seedOffset);
+    const currentWidth = minW + (rand * (maxW - minW));
 
     // 1. Apply Setback (Outer boundary)
     // @ts-ignore
@@ -230,7 +257,7 @@ export function generatePerimeter(
 
     // 2. Inner Boundary (Courtyard)
     // @ts-ignore
-    const innerPoly = turf.buffer(outerPoly, -width / 1000, { units: 'kilometers' as const });
+    const innerPoly = turf.buffer(outerPoly, -currentWidth / 1000, { units: 'kilometers' as const });
 
     if (!innerPoly) {
         // Solid block if too small for courtyard
@@ -283,9 +310,18 @@ export function generateLamellas(
     params: AlgoParams
 ): Feature<Polygon>[] {
     const buildings: Feature<Polygon>[] = [];
-    const { spacing, width, orientation, setback, minLength = 10 } = params;
+    const { spacing, width, orientation, setback, minLength = 10, minBuildingWidth, maxBuildingWidth, seedOffset = 0 } = params;
 
-    console.log('[generateLamellas] typology:', params.typology);
+    const minW = minBuildingWidth || (width * 0.8);
+    const maxW = maxBuildingWidth || width;
+
+    // Use a consistent random width for the whole set of lamellas (or could vary per bar)
+    // Let's vary per bar for "organic" look, or consistent for "strict" look?
+    // Consistent is safer for layout.
+    const rand = seededRandom(2, 2, seedOffset);
+    const currentWidth = minW + (rand * (maxW - minW));
+
+    console.log('[generateLamellas] params:', params);
 
     // 1. Apply Setback
     // @ts-ignore
@@ -307,7 +343,7 @@ export function generateLamellas(
     const diagonal = turf.distance(point1, point2, { units: 'kilometers' as const }) * 1000;
     const center = turf.centroid(validArea);
 
-    const stride = width + spacing;
+    const stride = currentWidth + spacing;
     const generationSize = diagonal * 1.5;
 
     // 4. Generate Lines
@@ -320,6 +356,10 @@ export function generateLamellas(
 
     for (let i = -Math.floor(count / 2); i <= Math.ceil(count / 2); i++) {
         const offset = i * stride;
+
+        // Randomize width per bar for variety
+        const rand = seededRandom(i, count, seedOffset);
+        const currentWidth = minW + (rand * (maxW - minW));
 
         // Move perpendicular to orientation (rot + 90)
         // @ts-ignore
@@ -335,7 +375,7 @@ export function generateLamellas(
 
         // Buffer line to create rectangle
         // @ts-ignore
-        const buildingPoly = turf.buffer(line, width / 2 / 1000, { units: 'kilometers', steps: 4 });
+        const buildingPoly = turf.buffer(line, currentWidth / 2 / 1000, { units: 'kilometers', steps: 4 });
 
         if (!buildingPoly) continue;
 

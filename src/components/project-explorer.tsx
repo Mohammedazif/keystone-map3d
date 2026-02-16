@@ -240,7 +240,8 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
     };
 
     // Always render structure even if empty to keep layout stable, or return null if preferred.
-    if (!activeProject && plots.length === 0) return null;
+    // We want to show the explorer structure even if empty to provide guidance
+
 
     const Container = embedded ? 'div' : Card;
 
@@ -287,7 +288,17 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
                         Original content had p-0 on CardContent. */}
                     <ScrollArea className="h-full">
                         <div className="space-y-2 p-3">
-                            {plots.map(plot => <PlotItem key={plot.id} plot={plot} />)}
+                            {plots.length > 0 ? (
+                                plots.map(plot => <PlotItem key={plot.id} plot={plot} />)
+                            ) : (
+                                <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground gap-2">
+                                    <LandPlot className="h-10 w-10 opacity-20" />
+                                    <div className="text-xs max-w-[200px]">
+                                        <p className="font-medium">No plots defined</p>
+                                        <p className="opacity-70">Use the drawing tools to outline your site boundary and begin planning.</p>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </ScrollArea>
                 </div>

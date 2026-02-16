@@ -2,12 +2,13 @@
 'use client';
 
 import { create } from 'zustand';
-import type { Feature, Polygon, Point, FeatureCollection } from 'geojson';
+import type { Feature, Polygon, MultiPolygon, Point, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
 import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
+import { applyPeripheralClearZone } from '@/lib/generators/geometry-utils';
 import { toast } from './use-toast';
 import { useMemo } from 'react';
 import { generateSiteLayout } from '@/ai/flows/ai-site-layout-generator';
@@ -438,26 +439,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
     mapLocation: null,
     actions: {
-        setMapLocation: (location) => set({ mapLocation: location }),
-        loadProjects: async () => {
-            set({ isLoading: true });
-            try {
-                // Determine user - for now fetch all or filter by user if Auth implemented
-                // const userId = useAuthStore.getState().user?.uid;
-                const q = query(collection(db, 'projects')); // Fetch all for now
-                const querySnapshot = await getDocs(q);
-                const projects = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Project));
+        // setMapLocation: Moved to bottom
+        // loadProjects: Moved to bottom
 
-                // Sort by last modified descending
-                projects.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
-
-                set({ projects, isLoading: false });
-            } catch (error) {
-                console.error("Error loading projects:", error);
-                toast({ variant: 'destructive', title: 'Error', description: 'Failed to load projects.' });
-                set({ isLoading: false });
-            }
-        },
         createProject: async (name, totalPlotArea, intendedUse = BuildingIntendedUse.Residential, location, regulationId, greenCertification, vastuCompliant) => {
             console.log('[createProject] Received parameters:');
             console.log('  name:', name);
@@ -531,80 +515,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 return null;
             }
         },
-        deleteProject: async (projectId) => {
-            try {
-                await deleteDoc(doc(db, 'projects', projectId));
-                set(state => ({
-                    projects: state.projects.filter(p => p.id !== projectId),
-                    activeProjectId: state.activeProjectId === projectId ? null : state.activeProjectId,
-                    plots: state.activeProjectId === projectId ? [] : state.plots
-                }));
-                toast({ title: 'Project Deleted' });
-            } catch (error) {
-                console.error("Error deleting project:", error);
-                toast({ variant: 'destructive', title: 'Error', description: 'Failed to delete project.' });
-            }
-        },
-        loadProject: async (projectId) => {
-            set({ isLoading: true });
-            try {
-                const userId = useAuthStore.getState().user?.uid;
-                if (!userId) throw new Error("User not authenticated");
-
-                const projectDoc = await getDoc(doc(db, 'users', userId, 'projects', projectId));
-                if (projectDoc.exists()) {
-                    const projectData = projectDoc.data() as Project;
-                    console.log('📦 Loaded project data from Firestore:', projectData);
-                    console.log('📦 Loaded project data from Firestore:', projectData);
-                    console.log('📍 Project location:', projectData.location);
-                    // Debug Raw Plots Data
-                    if (projectData.plots && projectData.plots.length > 0) {
-                        const p0 = projectData.plots[0];
-                        console.log('🔍 Raw Plot[0] from DB:', {
-                            id: p0.id,
-                            geometryType: typeof p0.geometry,
-                            geometryPreview: typeof p0.geometry === 'string' ? (p0.geometry as string).substring(0, 50) : 'Object/Null'
-                        });
-                    }
-
-                    // Parse plots if they are stored as JSON strings (simplified) or if we need to fetch subcollection
-                    // Assuming plots are stored in the project document as sanitized JSON for now
-                    // In a real app, plots might be a subcollection. Based on 'prepareForFirestore', they are in the doc?
-                    // No, prepareForFirestore creates an array. 
-                    // Let's assume they are in the 'plots' field of the project doc.
-
-                    let loadedPlots: Plot[] = [];
-                    if (projectData.plots) {
-                        loadedPlots = parseFromFirestore(projectData.plots as any);
-                    }
-
-                    // Create the full project object with the ID
-                    const fullProject: Project = {
-                        ...projectData,
-                        id: projectId
-                    };
-
-                    set(state => ({
-                        activeProjectId: projectId,
-                        plots: loadedPlots,
-                        // Add or update the project in the projects array
-                        projects: state.projects.some(p => p.id === projectId)
-                            ? state.projects.map(p => p.id === projectId ? fullProject : p)
-                            : [fullProject, ...state.projects],
-                        isLoading: false,
-                        active: true
-                    }));
-                    console.log(`✅ Project ${projectData.name} loaded with ${loadedPlots.length} plots.`);
-                } else {
-                    toast({ variant: 'destructive', title: 'Error', description: 'Project not found.' });
-                    set({ isLoading: false });
-                }
-            } catch (error) {
-                console.error("Error loading project:", error);
-                toast({ variant: 'destructive', title: 'Error', description: 'Failed to load project.' });
-                set({ isLoading: false });
-            }
-        },
+        // deleteProject: Moved to bottom
+        // loadProject: Moved to bottom
         // saveCurrentProject: Shadowed implementation removed
         saveDesignOption: (name, description) => {
             const { plots, generationParams, designOptions } = get();
@@ -661,7 +573,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }));
         },
 
-        generateScenarios: (plotId: string, params: AlgoParams) => {
+        generateScenarios: async (plotId: string, params: AlgoParams) => {
             const { plots } = get();
             const plotStub = plots.find(p => p.id === plotId);
             if (!plotStub) return;
@@ -697,10 +609,122 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // Advanced Selection & Placement Logic (Vastu + Collision)
                 // ---------------------------------------------------------
 
-                // 1. Prepare Valid Area & Sectors
-                // @ts-ignore
-                const bufferedPlotForSectors = turf.buffer(plotStub.geometry, -p.setback / 1000, { units: 'kilometers' });
-                const validAreaPoly = bufferedPlotForSectors || plotStub.geometry;
+                // ============================================================
+                // SETBACK PIPELINE (Main Setback First)
+                // ============================================================
+                // 1. MAIN SETBACK: Applied to the plot boundary first.
+                //    Result: 'setbackBoundary' (The buildable area limit)
+                // 2. PERIPHERAL ZONES: Applied INSIDE the 'setbackBoundary'.
+                //    Result: Parking/Roads take up the outer ring of the buildable area.
+                // 3. BUILDINGS: Generated in the remaining inner area.
+                //    Note: Generator params for setback will be set to 0 since it's already applied.
+                // ============================================================
+
+                // Helper to ensure we always work with a single Polygon (not MultiPolygon or Collection)
+                const ensurePolygon = (feature: any): Feature<Polygon> | null => {
+                    if (!feature) return null;
+                    if (feature.geometry?.type === 'Polygon') return feature as Feature<Polygon>;
+
+                    if (feature.geometry?.type === 'MultiPolygon') {
+                        // Explode and take largest
+                        const poly = turf.polygon(feature.geometry.coordinates.sort((a: any, b: any) => {
+                            const areaA = turf.area(turf.polygon(a));
+                            const areaB = turf.area(turf.polygon(b));
+                            return areaB - areaA;
+                        })[0]);
+                        return poly;
+                    }
+
+                    if (feature.type === 'FeatureCollection') {
+                        if (feature.features.length === 0) return null;
+                        const sorted = feature.features.sort((a: any, b: any) => turf.area(b) - turf.area(a));
+                        if (sorted[0].geometry.type === 'Polygon') return sorted[0] as Feature<Polygon>;
+                        if (sorted[0].geometry.type === 'MultiPolygon') {
+                            return ensurePolygon(sorted[0]);
+                        }
+                    }
+                    return null;
+                };
+
+                // 1. APPLY MAIN SETBACK (from plot boundary)
+                let setbackBoundary = plotStub.geometry;
+                const mainSetback = p.setback ?? plotStub.setback ?? 0;
+
+                if (mainSetback > 0) {
+                    console.log(`[Debug] Applying Main Setback: ${mainSetback}m`);
+                    // @ts-ignore
+                    const buffered = turf.buffer(plotStub.geometry, -mainSetback / 1000, { units: 'kilometers' });
+                    const cleaned = ensurePolygon(buffered);
+                    if (cleaned) {
+                        setbackBoundary = cleaned;
+                        console.log(`[Debug] Setback boundary area: ${turf.area(setbackBoundary).toFixed(2)}m²`);
+                    } else {
+                        console.warn('[Setback] Main setback resulted in empty geometry');
+                    }
+                } else {
+                    console.log('[Debug] No main setback applied');
+                }
+
+                // 2. PERIPHERAL ZONES (only if Roads/Surface Parking selected)
+                // Applied from the set-back boundary inward
+                const hasPeripheralRoad = params.selectedUtilities?.includes('Roads');
+                const hasSurfaceParking = params.parkingTypes?.includes('surface') || params.parkingTypes?.includes('ground');
+
+                console.log(`[Debug] Utilities: Road=${hasPeripheralRoad}, Parking=${hasSurfaceParking}`);
+
+                let peripheralResult;
+
+                if (hasPeripheralRoad || hasSurfaceParking) {
+                    peripheralResult = applyPeripheralClearZone(setbackBoundary, {
+                        parkingWidth: hasSurfaceParking ? 5 : 0,
+                        roadWidth: hasPeripheralRoad ? 6 : 0
+                    });
+                    console.log(`[Debug] Post-utility buildable area: ${turf.area(peripheralResult.buildableArea).toFixed(2)}m²`);
+                } else {
+                    peripheralResult = {
+                        buildableArea: setbackBoundary,
+                        parkingZone: null,
+                        roadZone: null
+                    };
+                    console.log('[Debug] No peripheral utilities, buildable area remains same');
+                }
+
+                if (!peripheralResult.buildableArea) {
+                    console.error('[generateScenarios] Plot too small for peripheral zones');
+                    return;
+                }
+
+                const peripheralParkingZone = peripheralResult.parkingZone;
+                const peripheralRoadZone = peripheralResult.roadZone;
+                const roadAccessSides = plotStub.roadAccessSides || [];
+
+                // validAreaPoly = area after peripheral zones
+                // Generators will apply Front/Rear/Side setbacks from THIS boundary
+                let validAreaPoly = peripheralResult.buildableArea;
+
+                // 4. FIX DEGENERATE GEOMETRY
+                // This prevents polygon-clipping errors (e.g., "Unable to complete output ring")
+                // especially on small plots or after multiple buffering operations.
+                try {
+                    // @ts-ignore
+                    const cleanedBuffer = turf.buffer(validAreaPoly, 0);
+                    // @ts-ignore
+                    const unkinked = turf.unkinkPolygon(cleanedBuffer);
+
+                    // Use robust cleaner
+                    const finalized = ensurePolygon(unkinked);
+                    if (finalized) validAreaPoly = finalized;
+
+                } catch (e) {
+                    console.error('[Geometry Clean] Failed to clean validAreaPoly:', e);
+                }
+
+                if (!validAreaPoly || turf.area(validAreaPoly) < 10) {
+                    console.warn('[generateScenarios] Resulting buildable area too small or invalid after setbacks');
+                    // We allow it to continue with the tiny area, but generators will likely fail gracefully
+                }
+
+                const bufferedPlotForSectors = validAreaPoly;
                 const bbox = turf.bbox(validAreaPoly); // [minX, minY, maxX, maxY]
                 const [minX, minY, maxX, maxY] = bbox;
 
@@ -787,10 +811,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 const effectiveMaxFootprint = params.maxFootprint ?? regulationMaxFootprint;
                 const effectiveMinFootprint = params.minFootprint ?? 100;
                 const effectiveMaxFloors = params.maxFloors ?? regulationMaxFloors;
+                const effectiveMaxFAR = params.maxAllowedFAR ?? (currentRegulation.geometry.floor_area_ratio?.value || 2.0);
+                const effectiveMaxGFA = params.targetGFA ?? (plotArea * effectiveMaxFAR);
 
                 console.log(`[Compliance] Plot Area: ${plotArea.toFixed(0)}m²`);
-                console.log(`[Compliance] Regulation Defaults: MaxFootprint=${regulationMaxFootprint.toFixed(0)}m², MaxFloors=${regulationMaxFloors}`);
-                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m², MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}`);
+                console.log(`[Compliance] Regulation Defaults: MaxFootprint=${regulationMaxFootprint.toFixed(0)}m², MaxFloors=${regulationMaxFloors}, MaxGFA=${maxGFA.toFixed(0)}m²`);
+                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m², MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}, MaxGFA=${effectiveMaxGFA.toFixed(0)}m²`);
 
                 if (params.maxFootprint) {
                     console.warn(`[Override] User set maxFootprint to ${params.maxFootprint}m² (regulation: ${regulationMaxFootprint.toFixed(0)}m²)`);
@@ -799,8 +825,30 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     console.warn(`[Override] User set maxFloors to ${params.maxFloors} (regulation: ${regulationMaxFloors})`);
                 }
 
+                // FAR SCALING LOGIC
+                // Calculate how many buildings we need to achieve the target GFA
+                const avgBuildingFootprint = (effectiveMaxFootprint + effectiveMinFootprint) / 2;
+                const avgBuildingGFA = avgBuildingFootprint * effectiveMaxFloors;
+                const targetBuildingCount = Math.max(1, Math.ceil(effectiveMaxGFA / avgBuildingGFA));
+
+                console.log(`[FAR Scaling] Target GFA: ${effectiveMaxGFA.toFixed(0)}m², Avg Building GFA: ${avgBuildingGFA.toFixed(0)}m²`);
+                console.log(`[FAR Scaling] Target Building Count: ${targetBuildingCount} buildings to achieve FAR`);
+
                 // Keep track of placed buildings to avoid collision
                 const builtObstacles: Feature<Polygon>[] = [];
+
+                // Add User-Defined Obstacles (Only permanent ones, avoid blocking new generation with stale items)
+                plotStub.utilityAreas?.forEach(ua => {
+                    // Only treat as obstacle if NOT a generated zone that we are about to replace
+                    if (ua.geometry && !ua.id.includes('peripheral') && !ua.name.includes('Generated')) {
+                        builtObstacles.push(ua.geometry as Feature<Polygon>);
+                    }
+                });
+                plotStub.parkingAreas?.forEach(pa => {
+                    if (pa.geometry && !pa.id.includes('peripheral') && !pa.name.includes('Generated')) {
+                        builtObstacles.push(pa.geometry as Feature<Polygon>);
+                    }
+                });
 
                 // Vastu: Protect Brahmasthan (Center)
                 if (p.vastuCompliant) {
@@ -862,16 +910,21 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         minFootprint: effectiveMinFootprint,
                         maxFloors: effectiveMaxFloors,
 
-                        // Dimensional Constraints (Hardcoded for now as per user request)
-                        minBuildingWidth: 20,
-                        maxBuildingWidth: 25,
-                        minBuildingLength: 25,
-                        maxBuildingLength: 55,
+                        // Dimensional Constraints (from UI sliders)
+                        minBuildingWidth: p.minBuildingWidth ?? 20,
+                        maxBuildingWidth: p.maxBuildingWidth ?? 25,
+                        minBuildingLength: p.minBuildingLength ?? 25,
+                        maxBuildingLength: p.maxBuildingLength ?? 55,
 
-                        // Spacing - Use passed param (override), then Global UI param, then regulation, then default (6m)
-                        sideSetback: p.sideSetback ?? p.setback ?? plotStub.regulation?.geometry?.side_setback?.value ?? 6,
-                        frontSetback: p.frontSetback ?? p.setback ?? plotStub.regulation?.geometry?.front_setback?.value ?? 6,
-                        rearSetback: p.rearSetback ?? p.setback ?? plotStub.regulation?.geometry?.rear_setback?.value ?? 6,
+                        // Setbacks: 'setback' value sent to generators depends on context:
+                        // 1. If Peripheral Utilities (Road OR Parking): Treat 'p.frontSetback' as the uniform buffer from the utility edge.
+                        // 2. Otherwise: Main Setback (Step 1) handles the primary void, so 'setback' is 0 unless roadAccessSides exist.
+                        // This allows "Front Setback" slider to act as the "Road/Parking Setback".
+                        setback: (hasPeripheralRoad || hasSurfaceParking) ? (p.frontSetback ?? 0) : 0,
+                        sideSetback: p.sideSetback ?? 0,
+                        // Front setback controls "Road Buffer". If no road/parking, ignore it (is 0) so we stick to Main Setback.
+                        frontSetback: (hasPeripheralRoad || hasSurfaceParking) ? (p.frontSetback ?? 0) : 0,
+                        rearSetback: p.rearSetback ?? 0,
                         roadAccessSides: plotStub.roadAccessSides || [],
 
                         // Optional hints
@@ -882,32 +935,36 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         seed: p.seed ?? 0
                     };
 
+                    console.log(`[generateScenarios] Typology: ${typology}, Index: ${index}`);
+                    console.log(`[generateScenarios] Dimensions -> MinW: ${genParams.minBuildingWidth}, MaxW: ${genParams.maxBuildingWidth}, MinL: ${genParams.minBuildingLength}, MaxL: ${genParams.maxBuildingLength}`);
+                    console.log(`[generateScenarios] Input Params ->`, p);
+
                     switch (typology) {
                         case 'point':
-                            generated = generatePointShapes(plotStub.geometry, genParams);
+                            generated = generatePointShapes(validAreaPoly, genParams);
                             break;
                         case 'slab':
                         case 'plot':
-                            generated = generateSlabShapes(plotStub.geometry, genParams);
+                            generated = generateSlabShapes(validAreaPoly, genParams);
                             break;
                         case 'lshaped':
-                            generated = generateLShapes(plotStub.geometry, genParams);
+                            generated = generateLShapes(validAreaPoly, genParams);
                             break;
                         case 'ushaped':
-                            generated = generateUShapes(plotStub.geometry, genParams);
+                            generated = generateUShapes(validAreaPoly, genParams);
                             break;
                         case 'tshaped':
                             // Fixed: Pass correct params
-                            generated = generateTShapes(plotStub.geometry, genParams);
+                            generated = generateTShapes(validAreaPoly, genParams);
                             break;
                         case 'hshaped':
-                            generated = generateHShapes(plotStub.geometry, genParams);
+                            generated = generateHShapes(validAreaPoly, genParams);
                             break;
                         case 'oshaped':
-                            generated = generatePerimeter(plotStub.geometry, genParams as any);
+                            generated = generatePerimeter(validAreaPoly, genParams as any);
                             break;
                         default:
-                            generated = generatePointShapes(plotStub.geometry, genParams);
+                            generated = generatePointShapes(validAreaPoly, genParams);
                     }
 
                     // CRITICAL FIX: L/U/T/H generators return ALL segments forming the complete shape
@@ -966,11 +1023,15 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     // Use constraints passed in 'p' if available (from specific regulation), otherwise fallback to plotStub
                     const constraintHeight = p.maxBuildingHeight !== undefined ? p.maxBuildingHeight : plotStub.maxBuildingHeight;
 
-                    // Apply regulation height limit if available
+                    // Apply regulation height limit IF user didn't explicitly override it with a higher value
                     if (constraintHeight) {
-                        const regulationMaxFloors = Math.floor(constraintHeight / floorHeight);
-                        maxF = Math.min(maxF, regulationMaxFloors);
-                        console.log(`Regulation height limit: ${constraintHeight}m → max ${regulationMaxFloors} floors`);
+                        const regulationMaxFloorsVal = Math.floor(constraintHeight / floorHeight);
+                        // If user set maxF higher than regulation, we keep user value but log it
+                        if (maxF > regulationMaxFloorsVal) {
+                            console.log(`[Override] Using user maxFloors ${maxF} instead of regulation limit ${regulationMaxFloorsVal}`);
+                        } else {
+                            maxF = Math.min(maxF, regulationMaxFloorsVal);
+                        }
                     }
 
                     // Ensure valid range
@@ -1084,17 +1145,18 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 });
 
                 // Apply FAR constraint if available (prefer passed constraint, then plot default)
-                const effectiveFAR = p.far !== undefined ? p.far : plotStub.far;
+                // Use params.maxAllowedFAR as it now correctly carries the user's truth
+                const effectiveFARConstraint = params.maxAllowedFAR ?? plotStub.far;
 
-                if (effectiveFAR && newBuildings.length > 0) {
+                if (effectiveFARConstraint && newBuildings.length > 0) {
                     const plotArea = turf.area(plotStub.geometry);
                     const totalBuiltArea = newBuildings.reduce((sum, b) => sum + (b.area * b.numFloors), 0);
                     const actualFAR = totalBuiltArea / plotArea;
 
-                    console.log(`FAR Check: Actual=${actualFAR.toFixed(2)}, Limit=${effectiveFAR}`);
+                    console.log(`FAR Check: Actual=${actualFAR.toFixed(2)}, Limit=${effectiveFARConstraint}`);
 
-                    if (actualFAR > effectiveFAR * 1.05) { // Allow 5% tolerance
-                        const scaleFactor = effectiveFAR / actualFAR;
+                    if (actualFAR > effectiveFARConstraint * 1.05) { // Allow 5% tolerance
+                        const scaleFactor = effectiveFARConstraint / actualFAR;
                         console.warn(`FAR exceeded! Scaling building heights by ${(scaleFactor * 100).toFixed(1)}%`);
 
                         // Scale down floor counts proportionally
@@ -1112,12 +1174,16 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
 
                 // --- PARKING GENERATION ---
-                if (params.parkingType && newBuildings.length > 0) {
+                // --- PARKING GENERATION ---
+                // Handle multiple parking types (UG, Podium/Stilt)
+                // Surface parking is handled separately in Peripheral Zone Generation
+                if (params.parkingTypes && params.parkingTypes.length > 0 && newBuildings.length > 0) {
                     newBuildings.forEach((b: Building) => {
                         const parkingArea = b.area || 500;
                         const capacityPerFloor = Math.floor((parkingArea * 0.75) / 12.5);
 
-                        if (params.parkingType === 'ug') {
+                        // Underground Parking (Basements)
+                        if (params.parkingTypes?.includes('ug')) {
                             // Add Basements (Levels -1, -2)
                             b.floors.push({
                                 id: `floor-${b.id}-b1`,
@@ -1137,7 +1203,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 level: -2,
                                 parkingCapacity: capacityPerFloor
                             });
-                        } else if (params.parkingType === 'pod') {
+                        }
+
+                        // Podium/Stilt Parking
+                        if (params.parkingTypes?.includes('pod')) {
                             // Add Stilt (Level 0)
                             b.floors.push({
                                 id: `floor-${b.id}-stilt`,
@@ -1226,9 +1295,42 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 plotClone.greenAreas = [];
                 plotClone.parkingAreas = [];
 
+                // --- PERIPHERAL ZONE GENERATION ---
+                // Add peripheral road zone if "Roads" is selected in utilities
+                if (params.selectedUtilities?.includes('Roads') && peripheralRoadZone) {
+                    const roadUtility: UtilityArea = {
+                        id: `road-peripheral-${crypto.randomUUID()}`,
+                        name: 'Peripheral Road',
+                        type: UtilityType.Roads,
+                        geometry: peripheralRoadZone as Feature<Polygon>,
+                        centroid: turf.centroid(peripheralRoadZone),
+                        area: turf.area(peripheralRoadZone),
+                        visible: true
+                    };
+                    plotClone.utilityAreas = [roadUtility];
+                } else {
+                    plotClone.utilityAreas = [];
+                }
+
+                // Add peripheral parking zone if "surface" parking is selected
+                // Add peripheral parking zone if "surface" parking is selected
+                if (params.parkingTypes?.includes('surface') && peripheralParkingZone) {
+                    const parkingArea: ParkingArea = {
+                        id: `parking-peripheral-${crypto.randomUUID()}`,
+                        name: 'Peripheral Parking',
+                        type: ParkingType.Surface,
+                        geometry: peripheralParkingZone as Feature<Polygon>,
+                        centroid: turf.centroid(peripheralParkingZone),
+                        area: turf.area(peripheralParkingZone),
+                        capacity: Math.floor((turf.area(peripheralParkingZone) * 0.75) / 12.5), // 12.5 m² per car
+                        visible: true
+                    };
+                    plotClone.parkingAreas.push(parkingArea);
+                }
+
                 // --- UTILITY ZONE GENERATION ---
                 console.log('[Utility Debug - generateScenarios] params.selectedUtilities:', params.selectedUtilities);
-                plotClone.utilityAreas = [];
+                // Note: utilityAreas already initialized above with peripheral road if selected
 
                 if (params.selectedUtilities && Array.isArray(params.selectedUtilities) && params.selectedUtilities.length > 0) {
                     const selected = params.selectedUtilities;
@@ -1298,6 +1400,175 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             console.warn("Failed to generate external utility placement", e);
                         }
                     }
+                }
+
+                // ============================================================
+                // AUTOMATIC GREEN AREA GENERATION
+                // Calculate remaining plot area after subtracting all occupied zones
+                // ============================================================
+                try {
+                    console.log('[Green Area] Starting automatic green area calculation');
+
+                    // CLEAR EXISTING GREEN AREAS to prevent accumulation/overlap from previous runs
+                    plotClone.greenAreas = [];
+
+                    // Start with validAreaPoly (respects Setbacks + Peripheral Road/Parking)
+                    // Clean it first to avoid initial topology errors
+                    // @ts-ignore
+                    let remainingGeom: Feature<Polygon | MultiPolygon> | null = validAreaPoly ? turf.cleanCoords(validAreaPoly) : null;
+
+                    if (remainingGeom) {
+                        const initialArea = turf.area(remainingGeom);
+                        console.log(`[Green Area] Initial buildable area: ${initialArea.toFixed(2)}m²`);
+
+                        // NEW ROBUST HELPER: Explode & Subtract
+                        // Handles MultiPolygons and interactions that break standard diff
+                        const robustSubtract = (base: Feature<Polygon | MultiPolygon>, clip: Feature<Polygon | MultiPolygon>, label: string) => {
+                            if (!base || !clip) return base;
+                            try {
+                                const parts: Feature<Polygon>[] = [];
+                                // @ts-ignore
+                                const flattened = turf.flatten(clip);
+                                flattened.features.forEach(f => {
+                                    try {
+                                        // @ts-ignore
+                                        const unkinked = turf.unkinkPolygon(f);
+                                        unkinked.features.forEach(k => parts.push(k));
+                                    } catch { parts.push(f as Feature<Polygon>); }
+                                });
+
+                                console.log(`[RobustSubtract] ${label}: Processing ${parts.length} parts`);
+                                const baseAreaBefore = turf.area(base);
+                                console.log(`[RobustSubtract] Base area before: ${baseAreaBefore.toFixed(1)}m²`);
+
+                                let currentBase = base;
+                                for (let i = 0; i < parts.length; i++) {
+                                    if (!currentBase) break;
+                                    // Small buffer (5cm) ensures we cut INTO the green area, not just touch it or fail precision
+                                    const cutter = turf.buffer(parts[i], 0.05, { units: 'meters' });
+                                    const diff = turf.difference(currentBase, cutter);
+                                    if (diff) {
+                                        const areaBefore = turf.area(currentBase);
+                                        const areaAfter = turf.area(diff);
+                                        console.log(`[RobustSubtract] Part ${i + 1}/${parts.length}: ${areaBefore.toFixed(1)} → ${areaAfter.toFixed(1)} (removed ${(areaBefore - areaAfter).toFixed(1)}m²)`);
+                                        currentBase = diff;
+                                    } else {
+                                        console.warn(`[RobustSubtract] Part ${i + 1}/${parts.length}: diff returned null`);
+                                    }
+                                }
+
+                                const baseAreaAfter = currentBase ? turf.area(currentBase) : 0;
+                                console.log(`[RobustSubtract] ${label} COMPLETE: ${baseAreaBefore.toFixed(1)} → ${baseAreaAfter.toFixed(1)} (total removed: ${(baseAreaBefore - baseAreaAfter).toFixed(1)}m²)`);
+
+                                return currentBase;
+                            } catch (err) {
+                                console.warn(`[Green Area] Failed robust subtract ${label}:`, err);
+                                return null;
+                            }
+                        };
+
+                        // Robust subtraction helper
+                        const safeSubtract = (base: Feature<Polygon | MultiPolygon>, clip: Feature<Polygon | MultiPolygon>, label: string) => {
+                            try {
+                                // 1. Buffer clip (1m) to ensure clean cut & prevent "seeing through walls"
+                                const bufferedClip = turf.buffer(clip, 0.001, { units: 'kilometers' });
+                                // 2. Clean and Truncate to fix precision issues
+                                // @ts-ignore
+                                const cleanClip = turf.cleanCoords(turf.truncate(bufferedClip, { precision: 6 }));
+                                const cutter = ensurePolygon(cleanClip) || clip;
+
+                                // 3. Subtract
+                                /* DEBUG INSPECTION */
+                                const baseArea = turf.area(base);
+                                const clipArea = turf.area(cutter);
+                                // Check intersection
+                                const intersection = turf.intersect(base, cutter);
+                                const intersectArea = intersection ? turf.area(intersection) : 0;
+
+                                console.log(`[Green Area Debug] Subtracting ${label}`);
+                                console.log(`   - Base Area: ${baseArea.toFixed(1)}`);
+                                console.log(`   - Clip Area: ${clipArea.toFixed(1)}`);
+                                console.log(`   - Intersection: ${intersectArea.toFixed(1)} (${intersection ? 'YES' : 'NO'})`);
+
+                                const diff = turf.difference(base, cutter);
+
+                                if (diff) {
+                                    const diffArea = turf.area(diff);
+                                    console.log(`   - Result Area: ${diffArea.toFixed(1)} (Delta: ${(baseArea - diffArea).toFixed(1)})`);
+                                    return diff;
+                                } else {
+                                    console.warn(`[Green Area] ${label} consumed entire remaining area.`);
+                                    return null; // Return null if everything is consumed
+                                }
+                            } catch (err) {
+                                console.warn(`[Green Area] Failed to subtract ${label}:`, err);
+                                // FAILURE FALLBACK: Return NULL to avoid showing a full green block under the building
+                                // It's better to show no green area than a broken overlapping one.
+                                return null;
+                            }
+                        };
+
+                        // 1. Subtract Buildings (Iteratively) - Using Robust Helper
+                        for (const building of plotClone.buildings) {
+                            if (building.geometry && remainingGeom) {
+                                remainingGeom = robustSubtract(remainingGeom, building.geometry, `Building ${building.id}`);
+                            }
+                        }
+
+                        // 2. Subtract Internal Utilities (Iteratively)
+                        for (const utility of plotClone.utilityAreas) {
+                            if (utility.geometry && remainingGeom) {
+                                remainingGeom = robustSubtract(remainingGeom, utility.geometry, `Utility ${utility.name}`);
+                            }
+                        }
+
+                        // Process the final result
+                        if (remainingGeom) {
+                            const finalArea = turf.area(remainingGeom);
+                            console.log(`[Green Area] Final green area: ${finalArea.toFixed(2)}m² (Removed ${initialArea - finalArea}m²)`);
+
+                            const greenPolygons: Feature<Polygon>[] = [];
+
+                            if (remainingGeom.geometry.type === 'Polygon') {
+                                greenPolygons.push(remainingGeom as Feature<Polygon>);
+                            } else if (remainingGeom.geometry.type === 'MultiPolygon') {
+                                // Explode MultiPolygon into individual Polygons
+                                const multiCoords = (remainingGeom.geometry as any).coordinates;
+                                multiCoords.forEach((coords: any) => {
+                                    try {
+                                        greenPolygons.push(turf.polygon(coords));
+                                    } catch (err) {
+                                        console.warn('[Green Area] Failed to convert multipolygon part', err);
+                                    }
+                                });
+                            }
+
+                            // Create GreenArea objects for each valid polygon
+                            greenPolygons.forEach((poly, i) => {
+                                const areaSize = turf.area(poly);
+                                // Filter out tiny slivers (< 10m²)
+                                if (areaSize > 10) {
+                                    // DETERMINISTIC ID: Crucial for Mapbox to update the existing layer instead of stacking duplicates
+                                    const greenArea: GreenArea = {
+                                        id: `green-area-${plotClone.id}-${i}`,
+                                        geometry: poly,
+                                        centroid: turf.centroid(poly),
+                                        area: areaSize,
+                                        name: 'Open Space',
+                                        visible: true
+                                    };
+                                    plotClone.greenAreas.push(greenArea);
+                                }
+                            });
+
+                            console.log(`[Green Area] Created ${greenPolygons.length} green areas after aggressive subtraction.`);
+                        }
+                    } else {
+                        console.warn('[Green Area] No valid buildable area to start from (setbacks might be too large)');
+                    }
+
+                } catch (error) {
+                    console.error('[Green Area] Failed to generate automatic green areas:', error);
                 }
 
                 return { plots: [plotClone] };
@@ -1919,7 +2190,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             });
         },
-        selectObject: (id: string | null, type: SelectedObjectType | null) => {
+        selectObject: (id: string | null, type: SelectableObjectType | null) => {
             get().actions.resetDrawing();
             if (!id || !type) {
                 set({ selectedObjectId: null });
@@ -2121,7 +2392,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
             }));
         },
-        deleteObject: (plotId: string, objectId: string, type: SelectedObjectType) => {
+        deleteObject: (plotId: string, objectId: string, type: SelectableObjectType) => {
             const { selectedObjectId } = get();
             const wasSelected = selectedObjectId?.id === objectId;
             set(produce(draft => {
@@ -3138,7 +3409,12 @@ const useProjectData = () => {
 
         const consumedPlotArea = plots.reduce((acc, p) => acc + p.area, 0);
 
-        const far = selectedPlot?.regulation?.geometry?.floor_area_ratio?.value ?? 1.8;
+        const geomRegs = selectedPlot?.regulation?.geometry;
+        const far = Number(
+            geomRegs?.['floor_area_ratio']?.value ||
+            geomRegs?.['max_far']?.value ||
+            geomRegs?.['fsi']?.value
+        ) || 1.8;
 
         if (!project) {
             return {

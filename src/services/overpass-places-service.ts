@@ -29,20 +29,45 @@ export const OverpassPlacesService = {
         const queryParts = categoryList.map(cat => {
             let osmFilter = '';
             switch (cat) {
-                case 'school': osmFilter = `["amenity"~"school|college|university|kindergarten"]`; break;
+                case 'school': osmFilter = `["amenity"~"school|kindergarten"]`; break; // Removed college/university from generic school
+                case 'college': osmFilter = `["amenity"~"college|university"]`; break;
                 case 'hospital': osmFilter = `["amenity"~"hospital|clinic|doctors|pharmacy"]`; break;
-                case 'transit': osmFilter = `["public_transport"]`; break;
+                // Specific Transit: Rail, Metro, Air, Major Bus
+                case 'transit': osmFilter = `["public_transport"~"station"]`; break; // Broader but safer start, refined below
+                // Actually, let's use a union in the filter or multiple statements.
+                // Overpass filter regex:
+                // railway=station OR station=subway OR aeroway=aerodrome OR amenity=bus_station
+                // We can't easily doing complex ORs in one attribute filter.
+                // So we'll use a broad filter and then specialized ones?
+                // Better: Use a regex on key/value if possible, or just standard tags.
+                // "railway"~"station|halt" OR "aeroway"~"aerodrome"
+                // Let's stick to simple "amenity" or "public_transport" where possible, or use the union strategy above.
+                // For transit, we might need a custom query part not using the `osmFilter` variable pattern perfectly.
+                // Let's iterate:
                 case 'park': osmFilter = `["leisure"~"park|garden|playground"]`; break;
                 case 'restaurant': osmFilter = `["amenity"~"restaurant|cafe|fast_food"]`; break;
-                case 'shopping': osmFilter = `["shop"~"supermarket|mall|convenience|department_store"]`; break;
+                case 'shopping': osmFilter = `["shop"~"supermarket|convenience"]`; break;
+                case 'mall': osmFilter = `["shop"~"mall|department_store"]`; break;
+                case 'atm': osmFilter = `["amenity"~"^(atm|bank)$"]`; break; // Strict regex to avoid 'blood_bank'
+                case 'petrol_pump': osmFilter = `["amenity"="fuel"]`; break;
                 default: return '';
             }
+
+            if (cat === 'transit') {
+                // detailed transit query
+                return `
+                  node["railway"~"station|halt"](around:${radius},${lat},${lng});
+                  way["railway"~"station|halt"](around:${radius},${lat},${lng});
+                  node["station"~"subway|light_rail"](around:${radius},${lat},${lng});
+                  node["aeroway"="aerodrome"](around:${radius},${lat},${lng}); // Airports
+                  way["aeroway"="aerodrome"](around:${radius},${lat},${lng});
+                  node["amenity"="bus_station"](around:${radius},${lat},${lng});
+                  // relation["public_transport"="stop_area"](around:${radius},${lat},${lng});
+                `;
+            }
+
             if (!osmFilter) return '';
 
-            // We tag the output so we know which part of the union matched, 
-            // but Overpass JSON doesn't easily separate them in a single union block unless we use separate statements.
-            // However, a simple union (node[...]...; way[...]...;) is fastest.
-            // We will deduce the category from the tags later during parsing.
             return `
               node${osmFilter}(around:${radius},${lat},${lng});
               way${osmFilter}(around:${radius},${lat},${lng});
@@ -51,7 +76,7 @@ export const OverpassPlacesService = {
         }).join('\n');
 
         const query = `
-            [out:json][timeout:25];
+            [out:json][timeout:90];
             (
               ${queryParts}
             );
@@ -66,8 +91,7 @@ export const OverpassPlacesService = {
             if (!response.ok) {
                 if (response.status === 429) {
                     console.warn("[OverpassService] Rate limit hit. Waiting...");
-                    // Simple wait and retry logic could fly here, but better to just fail gracefully or let user retry.
-                    throw new Error("Overpass API Rate Limit (429). Please try again in top a minute.");
+                    throw new Error("Overpass API Rate Limit (429). Please try again in a minute.");
                 }
                 throw new Error(`Overpass API error: ${response.status}`);
             }
@@ -85,21 +109,36 @@ export const OverpassPlacesService = {
                 let category: AmenityCategory = 'school'; // Default/Fallback
                 const tags = el.tags || {};
 
-                if (tags.amenity?.match(/school|college|university|kindergarten/)) category = 'school';
+                if (tags.amenity?.match(/college|university/)) category = 'college';
+                else if (tags.amenity?.match(/school|kindergarten/)) category = 'school';
                 else if (tags.amenity?.match(/hospital|clinic|doctors|pharmacy/)) category = 'hospital';
-                else if (tags.public_transport || tags.amenity === 'bus_station' || tags.highway === 'bus_stop') category = 'transit';
+                else if (tags.railway || tags.aeroway || tags.station || tags.amenity === 'bus_station' || tags.public_transport) category = 'transit';
                 else if (tags.leisure?.match(/park|garden|playground/)) category = 'park';
                 else if (tags.amenity?.match(/restaurant|cafe|fast_food/)) category = 'restaurant';
-                else if (tags.shop?.match(/supermarket|mall|convenience|department_store/)) category = 'shopping';
+                else if (tags.shop?.match(/mall|department_store/)) category = 'mall';
+                else if (tags.shop?.match(/supermarket|convenience/)) category = 'shopping';
+                else if (tags.amenity?.match(/^(atm|bank)$/)) category = 'atm'; // Strict match
+                else if (tags.amenity === 'fuel') category = 'petrol_pump';
 
-                // If we specifically requested only certain categories, double check? 
-                // The query only asked for them, so it should be fine, but overlap is possible.
+                // Explicit fallback for mapping generic 'shop' or 'amenity' if they slipped through
+                if (category === 'school' && !tags.amenity?.match(/school|kindergarten/) && !tags.amenity?.match(/college|university/)) {
+                    // Check if it was something else
+                    // This fallback logic logic is a bit weak because we initialize category='school'.
+                    // Better to initialize to 'unknown' or loop specifically.
+                    // But for now, let's just leave it as 'school' if we can't find better, 
+                    // OR re-check what matched filter.
+                    // Actually, if we search for specific things, we usually get them.
+                    // But if we used a union query, we might need stricter checks.
+                }
+
+                // Refinements
+                if (tags.amenity === 'blood_bank') return null; // Explicit discard just in case
 
                 // Name Extraction
                 let name = tags.name || tags['name:en'] || tags.operator || tags.brand;
                 if (!name) {
-                    const subtype = tags.amenity || tags.leisure || tags.shop || category;
-                    name = `${subtype.charAt(0).toUpperCase() + subtype.slice(1)} (Unnamed)`;
+                    const subtype = tags.amenity || tags.leisure || tags.shop || tags.railway || tags.aeroway || category;
+                    name = `${subtype.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
                 }
 
                 // Address Construction

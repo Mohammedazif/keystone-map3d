@@ -12,17 +12,21 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Loader2, MapPin, Bus, School, Hospital, TreePine, ShoppingBag, Utensils, LocateFixed, Navigation } from 'lucide-react';
+import { Loader2, MapPin, Bus, School, Hospital, TreePine, ShoppingBag, Utensils, LocateFixed, Navigation, GraduationCap, Fuel, Building2, Landmark, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
-const AMENITY_CATEGORIES: { id: AmenityCategory; label: string; icon: React.ReactNode }[] = [
-    { id: 'transit', label: 'Transit', icon: <Bus className="h-4 w-4" /> },
-    { id: 'school', label: 'Education', icon: <School className="h-4 w-4" /> },
-    { id: 'hospital', label: 'Healthcare', icon: <Hospital className="h-4 w-4" /> },
-    { id: 'park', label: 'Parks & Recreation', icon: <TreePine className="h-4 w-4" /> },
-    { id: 'shopping', label: 'Shopping', icon: <ShoppingBag className="h-4 w-4" /> },
-    { id: 'restaurant', label: 'Food & Dining', icon: <Utensils className="h-4 w-4" /> },
+const AMENITY_CATEGORIES: { id: AmenityCategory; label: string; icon: React.ReactNode; color: string }[] = [
+    { id: 'transit', label: 'Transit', icon: <Bus className="h-4 w-4" />, color: '#2196F3' },
+    { id: 'school', label: 'Schools', icon: <School className="h-4 w-4" />, color: '#FF9800' },
+    { id: 'college', label: 'Colleges & Universities', icon: <GraduationCap className="h-4 w-4" />, color: '#FF5722' },
+    { id: 'hospital', label: 'Healthcare', icon: <Hospital className="h-4 w-4" />, color: '#F44336' },
+    { id: 'park', label: 'Parks & Recreation', icon: <TreePine className="h-4 w-4" />, color: '#4CAF50' },
+    { id: 'shopping', label: 'Supermarkets', icon: <ShoppingBag className="h-4 w-4" />, color: '#9C27B0' },
+    { id: 'mall', label: 'Malls', icon: <Building2 className="h-4 w-4" />, color: '#673AB7' },
+    { id: 'restaurant', label: 'Food & Dining', icon: <Utensils className="h-4 w-4" />, color: '#FFEB3B' },
+    { id: 'atm', label: 'ATMs & Banks', icon: <Landmark className="h-4 w-4" />, color: '#009688' },
+    { id: 'petrol_pump', label: 'Petrol Pumps', icon: <Fuel className="h-4 w-4" />, color: '#607D8B' },
 ];
 
 export function LocationConnectivityPanel() {
@@ -108,7 +112,7 @@ export function LocationConnectivityPanel() {
             // Extract all category IDs
             const allCategories = AMENITY_CATEGORIES.map(c => c.id);
 
-            const results = await OverpassPlacesService.searchNearby(center, allCategories);
+            const results = await OverpassPlacesService.searchNearby(center, allCategories, 2000);
 
             actions.setLocationData(results);
             toast({ title: 'Scan Complete', description: `Found ${results.length} amenities nearby.` });
@@ -162,6 +166,15 @@ export function LocationConnectivityPanel() {
                     <Button
                         variant="outline"
                         size="icon"
+                        title="Clear All Amenities"
+                        onClick={() => actions.setLocationData([])}
+                        disabled={existingAmenities.length === 0}
+                    >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="icon"
                         title="Return to Plot"
                         onClick={() => {
                             if (center) {
@@ -205,7 +218,9 @@ export function LocationConnectivityPanel() {
                                 <AccordionItem key={category.id} value={category.id} className="border rounded-lg px-3">
                                     <AccordionTrigger className="hover:no-underline py-3">
                                         <div className="flex items-center gap-2">
-                                            {category.icon}
+                                            <div className="flex items-center justify-center w-6 h-6 rounded-full bg-muted" style={{ color: category.color, backgroundColor: `${category.color}15` }}>
+                                                {category.icon}
+                                            </div>
                                             <span>{category.label}</span>
                                             {isLoading ? (
                                                 <Loader2 className="ml-2 h-3 w-3 animate-spin text-muted-foreground" />

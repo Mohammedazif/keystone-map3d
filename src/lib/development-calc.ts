@@ -26,9 +26,15 @@ export function calculateDevelopmentStats(
 ): DevelopmentStats {
 
     // 1. Max Permissible Built-Up Area
-    // Default to FAR 1.5 if not found in regulations, just to output something safe
-    const far = plot.far || plot.regulation?.geometry?.floor_area_ratio?.value || 1.5;
-    const maxBuiltUpArea = plot.area * far;
+    // Fetch FAR from plot.far (user override) or regulation
+    const far = plot.far || plot.regulation?.geometry?.floor_area_ratio?.value;
+
+    if (!far) {
+        console.warn('[calculateDevelopmentStats] No FAR found in plot or regulation. Using minimal default of 1.0');
+    }
+
+    const effectiveFAR = far || 1.0; // Minimal fallback only if truly missing
+    const maxBuiltUpArea = plot.area * effectiveFAR;
 
     // 2. Classify Areas & Deductions
     // Core Area: Mandatory non-negotiable (Lifts, Stairs, Shafts)

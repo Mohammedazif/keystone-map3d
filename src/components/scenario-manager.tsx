@@ -113,7 +113,19 @@ export function ScenarioContent() {
                                         {/* Left: Thumbnail */}
                                         <div className="w-1/3 bg-muted/20 p-2 border-r flex items-center justify-center">
                                             <ScenarioThumbnail
-                                                features={option.data.plots.flatMap((p: any) => p.buildings.map((b: any) => b.geometry))}
+                                                features={option.data.plots.flatMap((p: any) => p.buildings ? p.buildings.map((b: any) => b.geometry) : [])}
+                                                roadFeatures={option.data.plots.flatMap((p: any) =>
+                                                    (p.utilityAreas || []).filter((u: any) => u.type === 'Roads' || u.name.toLowerCase().includes('road')).map((u: any) => u.geometry)
+                                                )}
+                                                parkingFeatures={option.data.plots.flatMap((p: any) =>
+                                                    (p.parkingAreas || []).map((pa: any) => pa.geometry)
+                                                )}
+                                                utilityFeatures={option.data.plots.flatMap((p: any) =>
+                                                    (p.utilityAreas || []).filter((u: any) => u.type !== 'Roads' && !u.name.toLowerCase().includes('road')).map((u: any) => u.geometry)
+                                                )}
+                                                greenFeatures={option.data.plots.flatMap((p: any) =>
+                                                    (p.greenAreas || []).map((ga: any) => ga.geometry)
+                                                )}
                                                 plotGeometry={option.data.plots[0]?.geometry}
                                                 setback={option.data.plots[0]?.setback || 0}
                                                 className="w-full h-full !bg-transparent !p-0"
@@ -175,7 +187,7 @@ export function ScenarioContent() {
                             onKeyDown={(e) => e.key === 'Enter' && handleSave()}
                         />
                         <Button size="sm" onClick={handleSave} disabled={!newScenarioName}>Save</Button>
-                        <Button size="sm" variant="ghost" size="icon" onClick={() => setIsCreating(false)}><Trash2 className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="icon" onClick={() => setIsCreating(false)}><Trash2 className="h-4 w-4" /></Button>
                     </div>
                 ) : (
                     <div className="flex gap-2">

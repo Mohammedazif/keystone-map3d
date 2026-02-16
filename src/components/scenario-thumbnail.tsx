@@ -4,13 +4,17 @@ import { Feature, Polygon, MultiPolygon } from 'geojson';
 
 interface ScenarioThumbnailProps {
     features: Feature<Polygon | MultiPolygon>[];
+    roadFeatures?: Feature<Polygon | MultiPolygon>[];
+    parkingFeatures?: Feature<Polygon | MultiPolygon>[];
+    utilityFeatures?: Feature<Polygon | MultiPolygon>[];
+    greenFeatures?: Feature<Polygon | MultiPolygon>[];
     plotGeometry?: Feature<Polygon>;
     setback?: number;
     className?: string;
 }
 
-export function ScenarioThumbnail({ features, plotGeometry, setback = 0, className }: ScenarioThumbnailProps) {
-    const { viewBox, plotPath, setbackPath, buildingPaths } = useMemo(() => {
+export function ScenarioThumbnail({ features, roadFeatures, parkingFeatures, utilityFeatures, greenFeatures, plotGeometry, setback = 0, className }: ScenarioThumbnailProps) {
+    const { viewBox, plotPath, setbackPath, roadPaths, parkingPaths, utilityPaths, greenPaths, buildingPaths } = useMemo(() => {
         // Calculate bounding box - use plot if available, otherwise use buildings
         const geometryForBbox = plotGeometry ? [plotGeometry, ...features] : features;
 
@@ -65,6 +69,50 @@ export function ScenarioThumbnail({ features, plotGeometry, setback = 0, classNa
             }
         }
 
+        // Render roads
+        const roadPaths = (roadFeatures || []).map((f, i) => {
+            if (!f.geometry) return null;
+            const coordinates = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+            return coordinates.map((polyCoords: any, j: number) => {
+                const d = createPath(polyCoords[0]);
+                // Road style: Solid lines (schematic boundary)
+                return <path key={`road-${i}-${j}`} d={d} className="fill-none stroke-foreground/40 stroke-[0.8]" />;
+            });
+        });
+
+        // Render parking
+        const parkingPaths = (parkingFeatures || []).map((f, i) => {
+            if (!f.geometry) return null;
+            const coordinates = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+            return coordinates.map((polyCoords: any, j: number) => {
+                const d = createPath(polyCoords[0]);
+                // Parking style: Dashed lines
+                return <path key={`parking-${i}-${j}`} d={d} className="fill-none stroke-blue-500/40 stroke-[0.6] stroke-dasharray-2" />;
+            });
+        });
+
+        // Render other utilities (STP, WTP, etc.)
+        const utilityPaths = (utilityFeatures || []).map((f, i) => {
+            if (!f.geometry) return null;
+            const coordinates = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+            return coordinates.map((polyCoords: any, j: number) => {
+                const d = createPath(polyCoords[0]);
+                // Utility style: thin solid colored line
+                return <path key={`utility-${i}-${j}`} d={d} className="fill-none stroke-amber-500/40 stroke-[0.5]" />;
+            });
+        });
+
+        // Render green areas
+        const greenPaths = (greenFeatures || []).map((f, i) => {
+            if (!f.geometry) return null;
+            const coordinates = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+            return coordinates.map((polyCoords: any, j: number) => {
+                const d = createPath(polyCoords[0]);
+                // Green style: dashed green line
+                return <path key={`green-${i}-${j}`} d={d} className="fill-none stroke-emerald-500/40 stroke-[0.6] stroke-dasharray-2" />;
+            });
+        });
+
         // Render buildings
         const buildingPaths = features.map((f, i) => {
             if (!f.geometry) return null;
@@ -79,15 +127,19 @@ export function ScenarioThumbnail({ features, plotGeometry, setback = 0, classNa
             });
         });
 
-        return { viewBox: "0 0 100 100", plotPath, setbackPath, buildingPaths };
+        return { viewBox: "0 0 100 100", plotPath, setbackPath, roadPaths, parkingPaths, utilityPaths, greenPaths, buildingPaths };
 
-    }, [features, plotGeometry, setback]);
+    }, [features, roadFeatures, parkingFeatures, utilityFeatures, greenFeatures, plotGeometry, setback]);
 
     return (
         <div className={`aspect-video bg-muted/30 rounded-md overflow-hidden p-2 flex items-center justify-center ${className}`}>
             {(features.length > 0 || plotGeometry) ? (
                 <svg viewBox="0 0 100 100" className="w-full h-full">
                     {plotPath}
+                    {roadPaths}
+                    {parkingPaths}
+                    {utilityPaths}
+                    {greenPaths}
                     {setbackPath}
                     {buildingPaths}
                 </svg>
