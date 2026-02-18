@@ -4,19 +4,29 @@ import { Button } from '@/components/ui/button';
 import { useBuildingStore, type DrawingObjectType } from '@/hooks/use-building-store';
 import { useToast } from '@/hooks/use-toast';
 import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route } from 'lucide-react';
+import { Slider } from './ui/slider';
+import { Label } from './ui/label';
 import React from 'react';
 import { AiGeneratorModal } from './ai-generator-modal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { AiMassingModal } from './ai-massing-modal';
+import { produce } from 'immer';
 
 export function DrawingToolbar() {
-    const { actions, drawingState, plots, selectedObjectId } = useBuildingStore(s => ({
+    const { actions, drawingState, plots, selectedObjectId, drawingPoints } = useBuildingStore(s => ({
         actions: s.actions,
         drawingState: s.drawingState,
         plots: s.plots,
-        selectedObjectId: s.selectedObjectId
+        selectedObjectId: s.selectedObjectId,
+        drawingPoints: s.drawingPoints
     }));
     const { toast } = useToast();
+
+    const setRoadWidth = (width: number) => {
+        useBuildingStore.setState(produce(draft => {
+            draft.drawingState.roadWidth = width;
+        }));
+    };
 
     const handleToolClick = (tool: DrawingObjectType) => {
         if (tool !== 'Plot' && plots.length === 0) {
@@ -28,7 +38,18 @@ export function DrawingToolbar() {
             return;
         }
 
-        const activePlotId = plots.length > 0 ? plots.sort((a, b) => new Date(b.id.split('-')[1]).getTime() - new Date(a.id.split('-')[1]).getTime())[0].id : null;
+        let activePlotId = null;
+        if (selectedObjectId?.type === 'Plot') {
+            activePlotId = selectedObjectId.id;
+        } else if (plots.length > 0) {
+            // Sort to find the most recently created plot as a fallback
+            activePlotId = [...plots].sort((a, b) => {
+                const bTime = b.id.includes('-') ? parseInt(b.id.split('-')[1]) : 0;
+                const aTime = a.id.includes('-') ? parseInt(a.id.split('-')[1]) : 0;
+                return bTime - aTime;
+            })[0].id;
+        }
+
         actions.startDrawing(tool, activePlotId);
     }
 
@@ -47,7 +68,31 @@ export function DrawingToolbar() {
     if (isFeasibilityPanelOpen) return null;
 
     return (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2">
+            {drawingState.objectType === 'Road' && drawingState.isDrawing && (
+                <div className="bg-background/90 backdrop-blur-sm p-4 rounded-lg border border-border shadow-lg w-64 animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3">
+                    <div className="flex justify-between items-center">
+                        <Label className="text-sm font-medium">Road Width</Label>
+                        <span className="text-sm font-bold text-primary">{drawingState.roadWidth}m</span>
+                    </div>
+                    <Slider
+                        value={[drawingState.roadWidth]}
+                        min={3}
+                        max={30}
+                        step={0.5}
+                        onValueChange={(vals) => setRoadWidth(vals[0])}
+                    />
+                    {drawingPoints.length >= 2 && (
+                        <Button
+                            className="w-full mt-1"
+                            size="sm"
+                            onClick={() => window.dispatchEvent(new CustomEvent('finishRoad'))}
+                        >
+                            Done
+                        </Button>
+                    )}
+                </div>
+            )}
             <div className="flex gap-2 bg-background/80 backdrop-blur-sm p-2 rounded-lg border border-border shadow-md">
                 <TooltipProvider>
                     {tools.map(tool => (
@@ -67,8 +112,8 @@ export function DrawingToolbar() {
                             </TooltipContent>
                         </Tooltip>
                     ))}
-                    <div className="h-10 border-l border-border mx-2"></div>
-                    <Tooltip>
+                    {/* <div className="h-10 border-l border-border mx-2"></div> */}
+                    {/* <Tooltip>
                         <TooltipTrigger asChild>
                             <div><AiGeneratorModal /></div>
                         </TooltipTrigger>
@@ -83,7 +128,7 @@ export function DrawingToolbar() {
                         <TooltipContent side="top">
                             <p>AI Massing Generator (3D)</p>
                         </TooltipContent>
-                    </Tooltip>
+                    </Tooltip> */}
                 </TooltipProvider>
             </div>
         </div>

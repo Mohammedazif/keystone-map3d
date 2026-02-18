@@ -361,7 +361,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             sideSetback,
             maxAllowedFAR: targetFAR,
             siteCoverage,
-            seedOffset
+            seedOffset,
+            vastuCompliant: projectData?.vastuCompliant || false
         };
 
         // Increment seed offset for NEXT generation (Simulation of "Refresh")

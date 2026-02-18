@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
 import { useSelectedBuilding, useProjectData, useBuildingStore } from '@/hooks/use-building-store';
-import { AreaChart, Scale, Building, Car, CheckCircle, AlertTriangle, ShieldCheck, DollarSign, LocateFixed, ChevronUp, ChevronDown, Compass } from 'lucide-react';
+import { AreaChart, Scale, Building, Car, CheckCircle, AlertTriangle, ShieldCheck, DollarSign, LocateFixed, ChevronUp, ChevronDown, Compass, DoorOpen } from 'lucide-react';
 import { useDevelopmentMetrics } from '@/hooks/use-development-metrics';
 import { useRegulations } from '@/hooks/use-regulations';
 import { useProjectEstimates } from '@/hooks/use-project-estimates';
@@ -14,6 +14,8 @@ import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 import { Switch } from './ui/switch';
 import { Label } from './ui/label';
+import { generateVastuGates } from '@/lib/vastu-gate-generator';
+import * as turf from '@turf/turf';
 
 function MetricsTab() {
     const building = useSelectedBuilding();
@@ -59,6 +61,31 @@ function FeasibilityTab() {
 
     const uiState = useBuildingStore(state => state.uiState);
     const toggleVastuCompass = useBuildingStore(state => state.actions.toggleVastuCompass);
+    const plots = useBuildingStore(state => state.plots);
+    const actions = useBuildingStore(state => state.actions);
+    const [isGeneratingGates, setIsGeneratingGates] = useState(false);
+    const [gatesGenerated, setGatesGenerated] = useState(false);
+
+    const handleSuggestVastuGates = () => {
+        if (!plots || plots.length === 0) return;
+        setIsGeneratingGates(true);
+        try {
+            plots.forEach(plot => {
+                if (!plot.geometry) return;
+                const bbox = turf.bbox(plot.geometry);
+                const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+                const newGates = generateVastuGates(plot.geometry, center, plot.roadAccessSides || []);
+                if (newGates.length > 0) {
+                    // Remove existing auto-generated gates (standard and Vastu), keep manual ones
+                    const existingEntries = (plot.entries || []).filter(e => !e.name?.toLowerCase().includes('gate'));
+                    actions.updatePlot(plot.id, { entries: [...existingEntries, ...newGates] });
+                }
+            });
+            setGatesGenerated(true);
+        } finally {
+            setIsGeneratingGates(false);
+        }
+    };
 
     const { estimates, isLoading: isLoadingEstimates } = useProjectEstimates(activeProject, metrics);
 
@@ -121,13 +148,30 @@ function FeasibilityTab() {
             ],
             // Special Control for Vastu
             control: (
-                <div className="flex items-center space-x-2 mt-2 pt-2 border-t border-border/50">
-                    <Switch
-                        id="vastu-compass"
-                        checked={uiState.showVastuCompass}
-                        onCheckedChange={toggleVastuCompass}
-                    />
-                    <Label htmlFor="vastu-compass" className="text-xs">Show Shakti Chakra Overlay</Label>
+                <div className="space-y-2 mt-2 pt-2 border-t border-border/50">
+                    <div className="flex items-center space-x-2">
+                        <Switch
+                            id="vastu-compass"
+                            checked={uiState.showVastuCompass}
+                            onCheckedChange={toggleVastuCompass}
+                        />
+                        <Label htmlFor="vastu-compass" className="text-xs">Show Shakti Chakra Overlay</Label>
+                    </div>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full text-xs gap-1.5 border-amber-500/50 text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30"
+                        onClick={handleSuggestVastuGates}
+                        disabled={isGeneratingGates}
+                    >
+                        <DoorOpen className="h-3.5 w-3.5" />
+                        {gatesGenerated ? '✓ Vastu Gates Applied' : 'Suggest Vastu Gates (N3/N4, E3/E4, S3/S4, W3/W4)'}
+                    </Button>
+                    {gatesGenerated && (
+                        <p className="text-xs text-muted-foreground text-center">
+                            Gates placed at N3/N4, E3/E4, S3/S4, W3/W4 boundaries
+                        </p>
+                    )}
                 </div>
             )
         }] : []),

@@ -18,7 +18,8 @@ import {
     Ghost,
     Eye,
     EyeOff,
-    Leaf
+    Leaf,
+    DoorOpen
 } from 'lucide-react';
 import { useBuildingStore } from '@/hooks/use-building-store';
 import { Button } from '@/components/ui/button';
@@ -43,7 +44,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
 
     const isPlotSelected = selectedObjectId?.type === 'Plot' && selectedObjectId.id === plot.id;
 
-    const renderObject = (obj: any, type: 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea') => {
+    const renderObject = (obj: any, type: 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea' | 'EntryPoint') => {
         let Icon;
         switch (type) {
             case 'Building': Icon = Building2; break;
@@ -51,6 +52,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
             case 'ParkingArea': Icon = Car; break;
             case 'BuildableArea': Icon = LandPlot; break;
             case 'UtilityArea': Icon = Zap; break;
+            case 'EntryPoint': Icon = DoorOpen; break;
             default: Icon = Building2;
         }
 
@@ -205,6 +207,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                         </React.Fragment>
                     ))}
                     {plot.greenAreas.map(g => renderObject(g, 'GreenArea'))}
+                    {(plot.entries || []).map(e => renderObject(e, 'EntryPoint'))}
                     {plot.parkingAreas.map(p => renderObject(p, 'ParkingArea'))}
                     {plot.utilityAreas.map(u => renderObject(u, 'UtilityArea'))}
 

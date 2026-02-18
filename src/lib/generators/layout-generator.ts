@@ -1,7 +1,8 @@
 
 import * as turf from '@turf/turf';
-import { Feature, Polygon, MultiPolygon } from 'geojson';
-import { Building, Core, Unit, UnitTypology, UtilityArea, UtilityType } from '../types';
+import { Feature, Polygon, MultiPolygon, Point } from 'geojson';
+import { Building, Core, Unit, UnitTypology, UtilityArea, UtilityType, EntryPoint } from '../types';
+import { generateVastuGates } from '../vastu-gate-generator';
 
 interface LayoutParams {
     minUnitSize?: number; // sqm, e.g. 50
@@ -42,6 +43,61 @@ function darkenColor(hex: string): string {
     const g = Math.max(0, ((num >> 8) & 0xFF) - 25);
     const b = Math.max(0, (num & 0xFF) - 25);
     return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+}
+
+/**
+ * Helper: Create a rotated rectangle polygon.
+ * @param center Centroid of the rectangle
+ * @param widthWidth in meters
+ * @param height Height in meters
+ * @param bearing Bearing in degrees (0 = north, clockwise)
+ */
+function createRotatedRect(center: Feature<Point>, width: number, height: number, bearing: number = 0): Feature<Polygon> {
+    const wHalf = width / 2;
+    const hHalf = height / 2;
+
+    // Create a 0-degree oriented rectangle around origin [0,0] then translate/rotate
+    // Actually simpler to just use turf.destination to find corners
+
+    // Corners relative to center at 0 bearing:
+    // NW: [-w/2, +h/2], NE: [+w/2, +h/2], SE: [+w/2, -h/2], SW: [-w/2, -h/2]
+
+    const corners = [
+        { dist: Math.sqrt(wHalf ** 2 + hHalf ** 2), angle: bearing + Math.atan2(-wHalf, hHalf) * 180 / Math.PI }, // NW
+        { dist: Math.sqrt(wHalf ** 2 + hHalf ** 2), angle: bearing + Math.atan2(wHalf, hHalf) * 180 / Math.PI },  // NE
+        { dist: Math.sqrt(wHalf ** 2 + hHalf ** 2), angle: bearing + Math.atan2(wHalf, -hHalf) * 180 / Math.PI }, // SE
+        { dist: Math.sqrt(wHalf ** 2 + hHalf ** 2), angle: bearing + Math.atan2(-wHalf, -hHalf) * 180 / Math.PI }, // SW
+    ];
+
+    const ring = corners.map(c => turf.destination(center, c.dist, c.angle, { units: 'meters' }).geometry.coordinates);
+    ring.push(ring[0]); // Close polygon
+
+    return turf.polygon([ring as any]);
+}
+
+/**
+ * Helper: Determine the dominant orientation (bearing) of a plot.
+ * Usually based on the longest edge.
+ */
+function getPlotOrientation(plotPoly: Feature<Polygon>): number {
+    try {
+        const coords = plotPoly.geometry.coordinates[0];
+        let maxLen = -1;
+        let dominantBearing = 0;
+
+        for (let i = 0; i < coords.length - 1; i++) {
+            const p1 = turf.point(coords[i]);
+            const p2 = turf.point(coords[i + 1]);
+            const len = turf.distance(p1, p2, { units: 'meters' });
+            if (len > maxLen) {
+                maxLen = len;
+                dominantBearing = turf.bearing(p1, p2);
+            }
+        }
+        return dominantBearing;
+    } catch (e) {
+        return 0;
+    }
 }
 
 /**
@@ -497,7 +553,7 @@ export function generateBuildingLayout(
             const grid = turf.squareGrid(bbox, gridSizeM, gridOptions);
 
             let unitsCreated = 0;
-            grid.features.forEach((cell) => {
+            grid.features.forEach((cell: Feature<Polygon>) => {
                 if (unitsCreated >= targetCount) return; // Stop when we have enough of this type
 
                 try {
@@ -646,113 +702,665 @@ export function generateBuildingLayout(
 }
 
 /**
- * Generates site utilities (STP, WTP, Water Tank) based on Vastu or logical placement.
+ * Determines Utility Size and Placement based on Vastu or User Logic
+ * NOW: Uses deterministic, calculation-based sizing and placement
  */
+interface UtilityDef {
+    type: UtilityType;
+    name: string;
+    area: number; // m2
+    color: string;
+    height: number;
+}
+
+/**
+ * Calculate corner reservation zones for utilities (to be avoided by buildings)
+ * This should be called BEFORE building generation when Vastu is enabled
+ */
+export function calculateUtilityReservationZones(
+    plotPoly: Feature<Polygon>,
+    vastuCompliant: boolean = false
+): Feature<Polygon>[] {
+    if (!vastuCompliant) return [];
+
+    const reservationZones: Feature<Polygon>[] = [];
+    const bbox = turf.bbox(plotPoly);
+    const minX = bbox[0];
+    const minY = bbox[1];
+    const maxX = bbox[2];
+    const maxY = bbox[3];
+
+    // Reserve approximately 35m x 35m in each required corner (Increased to 35m to ensure gap)
+    // This is a rough estimate - actual utilities will be placed within these zones
+    const reserveSize = 35; // meters
+    const wPerDeg = 111320;
+    const hPerDeg = 110540;
+    const reserveSizeDegX = reserveSize / wPerDeg;
+    const reserveSizeDegY = reserveSize / hPerDeg;
+
+    // NE Corner - Water (UGT)
+    const neZone = turf.bboxPolygon([
+        maxX - reserveSizeDegX,
+        maxY - reserveSizeDegY,
+        maxX,
+        maxY
+    ]);
+    reservationZones.push(neZone);
+
+    // SE Corner - Electrical/Fire
+    const seZone = turf.bboxPolygon([
+        maxX - reserveSizeDegX,
+        minY,
+        maxX,
+        minY + reserveSizeDegY
+    ]);
+    reservationZones.push(seZone);
+
+    // NW Corner - STP/WTP/Waste
+    const nwZone = turf.bboxPolygon([
+        minX,
+        maxY - reserveSizeDegY,
+        minX + reserveSizeDegX,
+        maxY
+    ]);
+    reservationZones.push(nwZone);
+
+    console.log(`[Utility Reservation] Created ${reservationZones.length} corner zones for Vastu utilities`);
+    return reservationZones;
+}
+
 export function generateSiteUtilities(
     plotPoly: Feature<Polygon>,
-    buildings: any[], // detailed shape validation done inside
-    vastuCompliant: boolean = false
-): any[] {
+    buildings: any[], // Array of building features containing units
+    vastuCompliant: boolean = false,
+    obstacles: Feature<Polygon>[] = [] // Roads, Parking, etc.
+): { utilities: any[], buildings: any[] } {
     const utilities: any[] = [];
-    const bbox = turf.bbox(plotPoly); // [minX, minY, maxX, maxY]
-    const minX = bbox[0], minY = bbox[1], maxX = bbox[2], maxY = bbox[3];
-    const midX = (minX + maxX) / 2;
-    const midY = (minY + maxY) / 2;
+    const minX = turf.bbox(plotPoly)[0];
+    const minY = turf.bbox(plotPoly)[1];
+    const maxX = turf.bbox(plotPoly)[2];
+    const maxY = turf.bbox(plotPoly)[3];
 
-    // Define Quadrant BBoxes
-    const qNE = [midX, midY, maxX, maxY]; // Top-Right
-    const qNW = [minX, midY, midX, maxY]; // Top-Left
-    const qSE = [midX, minY, maxX, midY]; // Bottom-Right
-    const qSW = [minX, minY, midX, midY]; // Bottom-Left (Avoid for utilities in Vastu)
+    // --- 1. CALCULATE DEMAND ---
 
-    // Helper to find a valid spot in a quadrant
-    const findSpotInQuadrant = (quadBBox: number[], utilSize = 6): Feature<Polygon> | null => {
-        // Try random spots in quadrant
-        for (let i = 0; i < 15; i++) {
-            const w = (utilSize / 111320); // deg approx
-            const h = (utilSize / 110540);
+    // Estimate population
+    let totalUnits = 0;
+    buildings.forEach(b => {
+        if (b.properties && b.properties.units && Array.isArray(b.properties.units)) {
+            totalUnits += b.properties.units.length;
+        } else {
+            // Estimate based on area if units not populated yet
+            try {
+                // Handle various input shapes (Feature or Geometry)
+                let area = 0;
+                if (b.type === 'Feature' || b.type === 'Polygon' || b.type === 'MultiPolygon') {
+                    area = turf.area(b);
+                } else if (b.geometry) {
+                    area = turf.area(b.geometry);
+                }
 
-            // Random pos within quadrant (with margin)
-            const x = quadBBox[0] + Math.random() * (quadBBox[2] - quadBBox[0] - w);
-            const y = quadBBox[1] + Math.random() * (quadBBox[3] - quadBBox[1] - h);
+                if (area > 0) {
+                    const floors = (b.properties && b.properties.floors) ? b.properties.floors : 5;
+                    totalUnits += Math.floor(area / 80) * floors;
+                }
+            } catch (e) {
+                console.warn('[Utility Generator] Error calculating building area for unit estimate:', e);
+            }
+        }
+    });
 
-            const poly = turf.bboxPolygon([x, y, x + w, y + h]);
+    if (totalUnits === 0) totalUnits = 50; // Safety baseline
 
-            // 1. Must be inside Plot
-            // @ts-ignore
-            if (!turf.booleanContains(plotPoly, poly)) continue;
+    // Assumptions
+    const avgPersonsPerUnit = 4; // Standard assumption
+    const population = totalUnits * avgPersonsPerUnit;
+    const waterDemandPerPerson = 135; // LPCD
+    const totalWaterDemand = population * waterDemandPerPerson; // Liters/Day
 
-            // 2. Must NOT intersect Buildings
-            let overlap = false;
-            for (const b of buildings) {
-                // @ts-ignore
-                if (turf.booleanOverlap(poly, b.geometry) || turf.booleanIntersects(poly, b.geometry)) {
-                    overlap = true;
+    // --- 2. SIZING UTILITIES ---
+
+    // STP (Sewage Treatment Plant)
+    // Formula: C_stp = (P * 135) * 0.8 / 1000 (KLD)
+    const stpCapacityKLD = (population * 135 * 0.8) / 1000;
+    const stpArea = Math.max(9, Math.ceil(stpCapacityKLD * 1.0)); // 1.0 sqm per KLD
+
+    // UGT (Underground Water Tank)
+    // Formula: Volume = TDD = Population * 135
+    const ugtVolume = (population * 135) / 1000; // m3
+    const ugtArea = Math.max(15, Math.ceil(ugtVolume / 2.5)); // Min 15m2, 2.5m depth
+
+    // WTP (Water Treatment Plant)
+    // Formula: C_wtp = P * 135 * 1.1 / 1000
+    const wtpCapacityKLD = (population * 135 * 1.1) / 1000;
+    const wtpArea = Math.max(6, Math.ceil(wtpCapacityKLD * 0.4));
+
+    // OWC (Organic Waste Converter)
+    // Formula: Capacity = Total Units * 0.5 kg/day
+    const owcCapacityKg = totalUnits * 0.5;
+    const owcArea = Math.max(6, Math.ceil(owcCapacityKg / 40));
+
+    // DG Set (Diesel Generator)
+    // Formula: KVA = (Essential Load * 0.8) / (0.9 * 0.8)
+    // Essential Load = 3kW * No of units
+    const essentialLoad = 3 * totalUnits;
+    const dgKVA = (essentialLoad * 0.8) / (0.9 * 0.8);
+    const dgArea = Math.max(9, Math.ceil(dgKVA * 0.08));
+
+    // Electrical Room / Transformer
+    const transformerArea = 12;
+    const electricalRoomArea = 8;
+
+    // Gas Bank
+    const gasArea = 8;
+
+    // Fire Pump Room (SE)
+    const firePumpRoomArea = Math.max(15, Math.ceil(population * 0.01));
+
+    // Admin / Security Office (SW)
+    const adminBlockArea = Math.max(20, Math.ceil(population * 0.02));
+
+    console.log(`[Utility Generator] Units: ${totalUnits}, Pop: ${population}, Demand: ${totalWaterDemand}L`);
+    console.log(`[Utility Sizes] STP: ${stpArea}m², UGT: ${ugtArea}m², DG: ${dgArea}m²`);
+
+    // --- 3. GROUPING & PLACEMENT ZONES ---
+
+    const groupNE: UtilityDef[] = [];
+    const groupSE: UtilityDef[] = [];
+    const groupNW: UtilityDef[] = [];
+    const groupSW: UtilityDef[] = [];
+
+    const plotOrientation = getPlotOrientation(plotPoly);
+
+    if (vastuCompliant) {
+        // VASTU LOGIC
+        // NE: Water (Elements: Water, Divine)
+        groupNE.push({ type: UtilityType.Water, name: 'UGT (Water)', area: ugtArea, color: '#4FC3F7', height: 0.5 }); // Underground
+
+        // SE: Fire / Electrical (Element: Fire)
+        groupSE.push({ type: UtilityType.Electrical, name: 'Transformer Yard', area: transformerArea, color: '#FF9800', height: 3 });
+        groupSE.push({ type: UtilityType.Electrical, name: 'DG Set', area: dgArea, color: '#FFB74D', height: 2.5 });
+        groupSE.push({ type: UtilityType.Gas, name: 'Gas Bank', area: gasArea, color: '#F48FB1', height: 2 });
+        groupSE.push({ type: UtilityType.Fire, name: 'Fire Pump Room', area: firePumpRoomArea, color: '#FF5722', height: 2.5 }); // Strictly SE
+
+        // NW: Waste
+        groupNW.push({ type: UtilityType.STP, name: 'STP Plant', area: stpArea, color: '#BA68C8', height: 0.5 });
+        groupNW.push({ type: UtilityType.SolidWaste, name: 'OWC (Waste)', area: owcArea, color: '#8D6E63', height: 2 });
+        // WTP also in NW (Water processing/Waste related)
+        groupNW.push({ type: UtilityType.WTP, name: 'WTP Plant', area: wtpArea, color: '#29B6F6', height: 3 });
+
+        // SW: Heavy / Earth / Admin
+        // Vastu: Admin/Security in SW (Earth element, Owner's Cabin)
+        groupSW.push({ type: UtilityType.Admin, name: 'Admin / Security', area: adminBlockArea, color: '#FDD835', height: 3 }); // Yellow for Earth
+
+    } else {
+        // NON-VASTU / USER DEFINED LOGIC
+        // Corner 1 (NE): Water + Fire
+        groupNE.push({ type: UtilityType.Water, name: 'UGT (Water)', area: ugtArea, color: '#4FC3F7', height: 0.5 });
+        groupNE.push({ type: UtilityType.Fire, name: 'Fire Tank', area: 50, color: '#F44336', height: 2 }); // Separate fire tank if customized
+
+        // Corner 2 (SE): Electrical
+        groupSE.push({ type: UtilityType.Electrical, name: 'Electrical Cluster', area: transformerArea + dgArea + electricalRoomArea, color: '#FF9800', height: 3 });
+
+        // Corner 3 (NW): STP + OWC
+        groupNW.push({ type: UtilityType.STP, name: 'STP + WTP', area: stpArea + wtpArea, color: '#BA68C8', height: 0.5 });
+        groupNW.push({ type: UtilityType.SolidWaste, name: 'OWC', area: owcArea, color: '#8D6E63', height: 2 });
+
+        // Corner 4 (SW): Gas + Others
+        groupSW.push({ type: UtilityType.Gas, name: 'Gas Bank', area: gasArea, color: '#F48FB1', height: 2 });
+    }
+
+    // --- 3. PLACEMENT ALGORITHM ---
+
+    const placeGroupInCorner = (group: UtilityDef[], corner: 'NE' | 'SE' | 'SW' | 'NW'): UtilityDef[] => {
+        const failedItems: UtilityDef[] = [];
+        if (group.length === 0) return [];
+
+        // Constants for placement
+        const margin = 1.5; // Reduced from 3m for compact layout
+        const gap = 1.0; // Reduced from 2m for compact layout
+        const wPerDeg = 111320;
+        const hPerDeg = 110540;
+
+        // Determine Corner Coordinates (BBox)
+        let cornerX = 0, cornerY = 0;
+        let growX = 0, growY = 0; // Direction for packing: 1 or -1
+
+        if (corner === 'NE') { cornerX = maxX; cornerY = maxY; growX = -1; growY = -1; }
+        if (corner === 'SE') { cornerX = maxX; cornerY = minY; growX = -1; growY = 1; }
+        if (corner === 'SW') { cornerX = minX; cornerY = minY; growX = 1; growY = 1; }
+        if (corner === 'NW') { cornerX = minX; cornerY = maxY; growX = 1; growY = -1; }
+
+        console.log(`[Utility Debug] Placing in ${corner}: bbox=[${minX}, ${minY}, ${maxX}, ${maxY}], corner=[${cornerX}, ${cornerY}]`);
+
+        // Find Valid Start Point (March inward from corner towards centroid)
+        const plotCentroid = turf.centroid(plotPoly);
+        const centerCoords = plotCentroid.geometry.coordinates;
+        let currentPoint = turf.point([cornerX, cornerY]);
+
+        // Safety Break
+        let steps = 0;
+        const maxSteps = 1000; // 1000 meters max search inward (Increased for large plots)
+
+        // March Inward Loop
+        // @ts-ignore
+        while (!turf.booleanPointInPolygon(currentPoint, plotPoly) && steps < maxSteps) {
+            // Move 1 meter towards centroid
+            const bearing = turf.bearing(currentPoint, plotCentroid);
+            currentPoint = turf.destination(currentPoint, 1, bearing, { units: 'meters' });
+            steps++;
+        }
+
+        if (steps >= maxSteps) {
+            console.warn(`[Utility Debug] Could not find valid start point for corner ${corner}`);
+            return group; // Skip this group if no valid point found
+        }
+
+        // Apply Margin inward
+        const bearing = turf.bearing(currentPoint, plotCentroid);
+        currentPoint = turf.destination(currentPoint, margin, bearing, { units: 'meters' });
+
+        let [cursorX, cursorY] = currentPoint.geometry.coordinates;
+
+        // Packing Strategy:
+        // Attempt to place items in a row along X (Width).
+        // If row is full or blocked, move to next row (Y).
+
+        // Grid Search Strategy: Scans nearest valid spots to the corner
+        // 0 to 50m range in both X and Y directions
+
+        group.forEach(util => {
+            let placed = false;
+            let bestDist = Infinity;
+            let bestPoly: Feature<Polygon> | null = null;
+
+            const side = Math.sqrt(util.area);
+            const uW = side;
+            const uH = side;
+            const uWDeg = uW / wPerDeg;
+            const uHDeg = uH / hPerDeg;
+
+            // Search range: 0 to 40 (steps) roughly covering 0-120m
+            // Step size approx 3m
+            const maxSteps = 40;
+            const stepM = 3;
+
+            for (let i = 0; i < maxSteps; i++) {
+                for (let j = 0; j < maxSteps; j++) {
+                    if (placed) break; // Optimization if we decided to break early (not used for best-fit logic but valid here)
+
+                    // Calculate offsets based on Grow direction
+                    // growX=1 means we want to interact with higher X (move Right)
+                    // We start at corner and move INWARD.
+
+                    const offsetX = i * stepM / wPerDeg * growX;
+                    const offsetY = j * stepM / hPerDeg * growY;
+
+                    // Define Candidate Poly (Top-Left anchor relative to scan)
+                    // Original logic: x1 is Start, x2 is Start + Width
+                    // We need to ensure we shift FROM the cursor
+
+                    const originX = cursorX + offsetX;
+                    const originY = cursorY + offsetY;
+
+                    // Use rotated rectangle helper!
+                    const poly = createRotatedRect(turf.point([originX, originY]), uW, uH, plotOrientation);
+
+                    // 1. BOUNDARY CHECK
+                    let inside = false;
+                    try {
+                        // Use a strictly buffered safe zone (-1.0m) to enforce the requested setback
+                        // @ts-ignore
+                        const safeContainer = turf.buffer(plotPoly, -1.0, { units: 'meters' }) || plotPoly;
+                        // @ts-ignore
+                        inside = turf.booleanContains(safeContainer, poly);
+                    } catch (e) { }
+
+                    if (!inside) continue;
+
+                    // 2. PRE-CALCULATE BUFFERED POLY (Ensure Gap)
+                    let bufferedPoly;
+                    try {
+                        // Use consistent gap of 1.0m for all checks
+                        // @ts-ignore
+                        bufferedPoly = turf.buffer(poly, 1.0, { units: 'meters' });
+                    } catch (e) { bufferedPoly = poly; }
+                    const checkPoly = bufferedPoly || poly;
+
+                    // 3. OBSTACLE CHECK (Roads, Parking, etc) - Use BUFFERED to ensure gap
+                    let obstacleOverlap = false;
+                    for (const obst of obstacles) {
+                        try {
+                            if (obst && obst.geometry) {
+                                // Check against buffered/gapped geometry
+                                // @ts-ignore
+                                if (turf.booleanIntersects(checkPoly, obst.geometry)) { obstacleOverlap = true; break; }
+                            }
+                        } catch (e) { }
+                    }
+
+                    if (obstacleOverlap) continue;
+
+                    // 4. EXISTING BUILDING CHECK - Use BUFFERED
+                    let buildingOverlap = false;
+                    for (const b of buildings) {
+                        try {
+                            if (b && b.geometry && b.visible !== false) {
+                                // Check against buffered/gapped geometry
+                                // @ts-ignore
+                                if (turf.booleanIntersects(checkPoly, b.geometry)) { buildingOverlap = true; break; }
+                            }
+                        } catch (e) { }
+                    }
+
+                    // FORCE RESOLVE: If overlapping building at PRIORITY CORNER spot
+                    if (buildingOverlap) {
+                        // Priority range increased to 10 steps to ensure Vastu spot
+                        const isHighPriority = (i <= 10 && j <= 10);
+
+                        if (isHighPriority) {
+                            // Identify colliders
+                            const colliding = buildings.filter(b => b.visible !== false && turf.booleanIntersects(checkPoly, b.geometry));
+
+                            for (const b of colliding) {
+                                if (!b.geometry) continue;
+
+                                // Helper: Validate if a geometry works (Fits in plot, clears utility, no building clashes)
+                                const isValidCandidate = (geo: any) => {
+                                    try {
+                                        // 1. Must be inside Plot - REMOVED: Since we rely on Resize (Scale) in place, 
+                                        // we assume original building was valid. strict check against 'plotPoly' (which might be innerSetback) 
+                                        // would incorrectly flag buildings in the setback as invalid.
+                                        // if (!turf.booleanContains(plotPoly, geo)) return false;
+
+                                        // 2. Must NOT overlap the Utility (+Gap) we are trying to place
+                                        // @ts-ignore
+                                        if (turf.booleanIntersects(geo, checkPoly)) return false;
+
+                                        // 3. Must NOT overlap OTHER buildings
+                                        for (const other of buildings) {
+                                            if (other.id === b.id || other.visible === false) continue;
+                                            // @ts-ignore
+                                            if (turf.booleanIntersects(geo, other.geometry)) return false;
+                                        }
+                                        return true;
+                                    } catch (e) { return false; }
+                                };
+
+                                let resolved = false;
+
+                                // STRATEGY 1: RESIZE (Shrink)
+                                try {
+                                    const bbox = turf.bbox(b);
+                                    // @ts-ignore
+                                    const w = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[1]]), { units: 'meters' });
+                                    // @ts-ignore
+                                    const h = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[0], bbox[3]]), { units: 'meters' });
+
+                                    if (w > 20 && h > 20) { // Only shrink if reasonable size
+                                        const scales = [0.9, 0.8, 0.7, 0.65, 0.6]; // Try more aggressive reduction (down to 60%)
+                                        for (const s of scales) {
+                                            // @ts-ignore
+                                            const scaled = turf.transformScale(b, s);
+                                            if (isValidCandidate(scaled.geometry)) {
+                                                b.geometry = scaled.geometry;
+                                                console.log(`[Utility Force] Shrunk building ${b.id} by factor ${s} to fit`);
+                                                resolved = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } catch (e) { console.warn('Resize failed', e); }
+
+                                if (resolved) continue;
+
+                                // STRATEGY 2: REMOVE (Last Resort - Move Removed to prevent overlaps)
+                                b.visible = false;
+                                console.log(`[Utility Force] Removing building ${b.id} (Resize failed)`);
+                            }
+                            // Assume resolved
+                            buildingOverlap = false;
+                        }
+                    }
+
+                    if (buildingOverlap) continue;
+
+                    // 4. UTILITY CHECK - Strict (with gap)
+                    let utilityOverlap = false;
+                    let bufferedCandidate;
+                    try {
+                        // Check against buffered candidate to ensure gap
+                        // @ts-ignore
+                        bufferedCandidate = turf.buffer(poly, gap, { units: 'meters' });
+                    } catch (e) { bufferedCandidate = poly; }
+
+                    for (const u of utilities) {
+                        try {
+                            // Check direct overlap (Critical)
+                            // @ts-ignore
+                            if (turf.booleanIntersects(poly, u.geometry)) { utilityOverlap = true; break; }
+
+                            // Check gap overlap
+                            // @ts-ignore
+                            if (bufferedCandidate && turf.booleanIntersects(bufferedCandidate, u.geometry)) { utilityOverlap = true; break; }
+                        } catch (e) { }
+                    }
+                    if (utilityOverlap) continue;
+
+                    // VALID SPOT FOUND
+                    // Logic: We want the one closest to the corner (i=0, j=0)
+                    // Since we iterate i,j from 0..Max, the first one we find is roughly the best "corner-most"
+                    // However, diagonal (1,1) might be better than (0,5).
+                    // Let's settle for first valid for now (greedy), or minimize i+j.
+
+                    // Greedy approach:
+                    utilities.push({
+                        id: `util-${util.type.toLowerCase()}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+                        name: util.name,
+                        type: util.type,
+                        geometry: poly as Feature<Polygon>,
+                        area: util.area,
+                        centroid: turf.centroid(poly),
+                        visible: true,
+                        color: util.color
+                    });
+
+                    console.log(`[Utility Debug] ✓ Placed ${util.name} in ${corner} (Grid ${i},${j})`);
+                    placed = true;
+
+                    // Update cursor for next utility in group? 
+                    // No, for next utility we should check collisions with THIS utility, so we can restart scan.
+                    // But we don't want to stack them exactly on top of the search path.
+                    // The 'utilityOverlap' check handles this. We just continue loop.
                     break;
                 }
+                if (placed) break;
             }
-            if (overlap) continue;
 
-            // 3. Must NOT intersect existing utilities
-            for (const u of utilities) {
-                // @ts-ignore
-                if (turf.booleanDisjoint(poly, u.geometry) === false) { overlap = true; break; }
+            if (!placed) {
+                console.warn(`[Utility] Could not place ${util.name} in ${corner} after grid search.`);
+                failedItems.push(util);
             }
-            if (overlap) continue;
-
-            return poly as Feature<Polygon>;
-        }
-        return null;
+        });
+        return failedItems;
     };
 
-    // Configuration
-    // Vastu: Tank->NE, STP->NW, WTP->SE
-    // Non-Vastu: Group them in service corners (Rear/Side) -> usually NW/SE/SW. SW is fine if not Vastu.
+    // Execute Placement (Primary Vastu Directions)
+    // We capture failures to attempt secondary (acceptable) directions
+    const failedNE = placeGroupInCorner(groupNE, 'NE');
+    const failedSE = placeGroupInCorner(groupSE, 'SE');
+    const failedNW = placeGroupInCorner(groupNW, 'NW'); // STP/OWC/WTP might fail here
+    const failedSW = placeGroupInCorner(groupSW, 'SW');
 
-    // 1. Water Tank (Underground)
-    let tankQuad = vastuCompliant ? qNE : qNW;
-    const tankPoly = findSpotInQuadrant(tankQuad, 5); // 5x5m
-    if (tankPoly) {
-        utilities.push({
-            id: `util-tank-${Date.now()}`,
-            name: 'Water Tank (UG)',
-            type: 'Water Tank',
-            geometry: tankPoly,
-            area: 25,
-            centroid: turf.centroid(tankPoly),
-            visible: true
+    // --- FAILOVER LOGIC (Strict Vastu Compliance) ---
+
+    // 1. STP / WTP / OWC: Best = NW, Good = SE. Avoid = NE.
+    // If NW failed, try SE.
+    const retrySE: UtilityDef[] = [];
+    failedNW.forEach(u => {
+        if (['STP', 'WTP', 'OWC'].some(t => u.type.includes(t) || u.name.includes(t))) {
+            console.log(`[Utility Failover] Moving ${u.name} from NW to SE (Acceptable Direction)`);
+            retrySE.push(u);
+        }
+    });
+
+    if (retrySE.length > 0) {
+        placeGroupInCorner(retrySE, 'SE');
+    }
+
+    return { utilities, buildings };
+}
+
+/**
+ * Generates entry and exit points for the site.
+ * Logic:
+ * 1. If Vastu is enabled: Place gates in the auspicious zones (N3, N4, E3, E4, S3, S4, W3, W4)
+ *    that intersect with the plot boundary on sides with road access.
+ * 2. If Vastu is disabled: Place gates where internal roads intersect with the external plot boundary.
+ */
+export function generateSiteGates(
+    plotPoly: Feature<Polygon | MultiPolygon>,
+    vastuCompliant: boolean = false,
+    roadAccessSides: string[] = [],
+    internalRoads: Feature<Polygon | MultiPolygon>[] = [],
+    existingBuildings: Building[] = []
+): EntryPoint[] {
+    const gates: EntryPoint[] = [];
+
+    // Auto-detect road sides from plot bbox if not provided
+    let sides = roadAccessSides.length > 0 ? roadAccessSides : ['N', 'S', 'E', 'W'];
+    console.log(`[Gates] Using road access sides: ${sides.join(', ')} (auto=${roadAccessSides.length === 0})`);
+
+    // Get plot boundary coordinates
+    const bbox = turf.bbox(plotPoly);
+    const [minX, minY, maxX, maxY] = bbox;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    // Get the plot boundary ring for finding the closest point on boundary
+    let coords: number[][] = [];
+    try {
+        const geom = plotPoly.type === 'Feature' ? plotPoly.geometry : plotPoly;
+        if (geom.type === 'Polygon') {
+            coords = (geom as Polygon).coordinates[0];
+        } else if (geom.type === 'MultiPolygon') {
+            coords = (geom as MultiPolygon).coordinates[0][0];
+        }
+    } catch (e) {
+        console.warn('[Gates] Could not extract coordinates');
+        return [];
+    }
+
+    if (coords.length < 4) return [];
+
+    // Helper: find the point on the plot boundary closest to a target point
+    const findClosestBoundaryPoint = (targetLng: number, targetLat: number): [number, number] => {
+        const targetPt = turf.point([targetLng, targetLat]);
+        const plotLine = turf.polygonToLine(plotPoly);
+        const snapped = turf.nearestPointOnLine(plotLine as any, targetPt);
+        return snapped.geometry.coordinates as [number, number];
+    };
+
+    // Helper: Check if a point collides with any existing building (with buffer)
+    const isColliding = (point: [number, number]): boolean => {
+        const pt = turf.point(point);
+        // Add 5m buffer around gate point for safety
+        const buffer = turf.buffer(pt, 5, { units: 'meters' });
+
+        return existingBuildings.some(b => {
+            // Use building geometry for collision check
+            // @ts-ignore
+            return turf.booleanOverlap(buffer, b.geometry) || turf.booleanContains(b.geometry, pt) || turf.booleanPointInPolygon(pt, b.geometry);
+        });
+    };
+
+    // Helper: Find a valid non-colliding position near target point
+    const findValidPosition = (targetLng: number, targetLat: number): [number, number] | null => {
+        let bestPos = findClosestBoundaryPoint(targetLng, targetLat);
+
+        if (!existingBuildings || existingBuildings.length === 0) return bestPos;
+
+        if (!isColliding(bestPos)) return bestPos;
+
+        // If colliding, search along boundary in both directions
+        const plotLine = turf.polygonToLine(plotPoly);
+        const lineLength = turf.length(plotLine as any, { units: 'meters' });
+        const step = 5; // Search every 5 meters
+        const maxSearch = 50; // Search up to 50m in each direction
+
+        const startPt = turf.point(bestPos);
+        // @ts-ignore
+        const startDist = turf.nearestPointOnLine(plotLine as any, startPt).properties.location;
+
+        for (let d = step; d <= maxSearch; d += step) {
+            // Check forward
+            const fwdDist = (startDist + d) % lineLength;
+            const fwdPt = turf.along(plotLine as any, fwdDist, { units: 'meters' });
+            const fwdPos = fwdPt.geometry.coordinates as [number, number];
+            if (!isColliding(fwdPos)) return fwdPos;
+
+            // Check backward
+            let backDist = (startDist - d);
+            if (backDist < 0) backDist += lineLength;
+            const backPt = turf.along(plotLine as any, backDist, { units: 'meters' });
+            const backPos = backPt.geometry.coordinates as [number, number];
+            if (!isColliding(backPos)) return backPos;
+        }
+
+        console.warn('[Gates] Could not find non-colliding position for gate, defaulting to collision');
+        return bestPos;
+    };
+
+    // Vastu-compliant gate placement targets specific angular sectors
+    // Non-Vastu just places gates at the midpoint of each road-facing side
+    const sideTargets: Record<string, [number, number]> = {
+        'N': [cx, maxY],             // North midpoint
+        'S': [cx, minY],             // South midpoint
+        'E': [maxX, cy],             // East midpoint
+        'W': [minX, cy],             // West midpoint
+    };
+
+    if (vastuCompliant) {
+        console.log(`[Gate Generator] Vastu mode enabled. Sides: ${sides.join(', ')}`);
+        // Use the dedicated Vastu Gate Generator for precise ray-casting
+        const center: [number, number] = [cx, cy];
+        const newGates = generateVastuGates(plotPoly as Feature<Polygon>, center, sides);
+
+        // Add collision checking for the generated gates
+        newGates.forEach(g => {
+            // Check if the generated position collides with buildings
+            // If so, try to find a valid position nearby
+            let pos = g.position;
+            if (isColliding(pos)) {
+                const validPos = findValidPosition(pos[0], pos[1]);
+                if (validPos) {
+                    pos = validPos;
+                } else {
+                    return; // Skip if no valid position found
+                }
+            }
+
+            gates.push({
+                ...g,
+                position: pos
+            });
+        });
+    } else {
+        // Non-Vastu: place at side midpoints
+        sides.forEach(side => {
+            const target = sideTargets[side];
+            if (!target) return;
+            const pos = findValidPosition(target[0], target[1]);
+            if (!pos) return;
+
+            gates.push({
+                id: `gate-side-${side}-${Math.random().toString(36).substr(2, 5)}`,
+                type: 'Both',
+                position: pos,
+                name: `${side} Gate`
+            });
         });
     }
 
-    // 2. STP (Sewage)
-    let stpQuad = vastuCompliant ? qNW : qSE; // Vastu: NW or SE (NW preferred for septic). Non-Vastu: SE (Low point?)
-    const stpPoly = findSpotInQuadrant(stpQuad, 8); // 8x8m larger
-    if (stpPoly) {
-        utilities.push({
-            id: `util-stp-${Date.now()}`,
-            name: 'STP Plant',
-            type: 'STP', // Matches color purple
-            geometry: stpPoly,
-            area: 64,
-            centroid: turf.centroid(stpPoly),
-            visible: true
-        });
-    }
-
-    // 3. WTP (Water Treatment)
-    let wtpQuad = vastuCompliant ? qSE : qSW; // Vastu: SE (Fire corner/Pumps). Non-Vastu: Any
-    const wtpPoly = findSpotInQuadrant(wtpQuad, 6);
-    if (wtpPoly) {
-        utilities.push({
-            id: `util-wtp-${Date.now()}`,
-            name: 'WTP Plant',
-            type: 'WTP', // Matches color blue
-            geometry: wtpPoly,
-            area: 36,
-            centroid: turf.centroid(wtpPoly),
-            visible: true
-        });
-    }
-
-    return utilities;
+    console.log(`[Gates] Successfully generated ${gates.length} gates`);
+    return gates;
 }

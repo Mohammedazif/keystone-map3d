@@ -1292,6 +1292,25 @@ export function generateSlabShapes(
         }
     }
 
+    // FALLBACK: If Strategy 2 (Heavy) is too strict and found no edges, relax to global min
+    if (validEdges.length === 0 && strategy === 2) {
+        console.log(`[SlabGen] Strategy 2 (Heavy) found no edges >= ${strategyMinLength}m. Relaxing to ${minBuildingLength}m...`);
+        strategyMinLength = minBuildingLength;
+
+        for (let i = 0; i < coords.length - 1; i++) {
+            const p1 = turf.point(coords[i]);
+            const p2 = turf.point(coords[i + 1]);
+            const length = turf.distance(p1, p2, { units: 'meters' });
+            if (length >= strategyMinLength) {
+                validEdges.push({
+                    edge: turf.lineString([coords[i], coords[i + 1]]),
+                    length,
+                    bearing: turf.bearing(p1, p2)
+                });
+            }
+        }
+    }
+
     console.log(`[Debug SlabGen] Valid Edges Found: ${validEdges.length} (Min Length: ${strategyMinLength}m)`);
 
     // DIVERSITY: Shuffle edge order based on seed for different layouts

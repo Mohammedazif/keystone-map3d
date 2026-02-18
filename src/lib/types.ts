@@ -115,6 +115,11 @@ export enum UtilityType {
   Fire = 'Fire',
   Gas = 'Gas',
   Roads = 'Roads',
+  OWC = 'OWC',
+  DGSet = 'DG Set',
+  RainwaterHarvesting = 'Rainwater Harvesting',
+  SolidWaste = 'Solid Waste',
+  Admin = 'Admin',
 }
 
 export interface UtilityArea {
@@ -138,6 +143,7 @@ export interface EntryPoint {
   type: 'Entry' | 'Exit' | 'Both';
   position: [number, number]; // [lng, lat]
   name?: string;
+  color?: string;
 }
 
 export interface Plot {
@@ -442,7 +448,7 @@ export type GenerateZonesOutput = z.infer<typeof GenerateZonesOutputSchema>;
 
 export type DrawingObjectType = 'Plot' | 'Zone' | 'Building' | 'Road';
 
-export type SelectableObjectType = 'Plot' | 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea' | 'Label';
+export type SelectableObjectType = 'Plot' | 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea' | 'Label' | 'EntryPoint';
 
 
 // Admin Panel Types

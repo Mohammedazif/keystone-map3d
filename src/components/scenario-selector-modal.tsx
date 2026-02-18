@@ -129,6 +129,9 @@ export function ScenarioSelectorModal() {
                                         greenFeatures={scenario.plots.flatMap((p: any) =>
                                             (p.greenAreas || []).map((ga: any) => ga.geometry)
                                         )}
+                                        entryPoints={scenario.plots.flatMap((p: any) =>
+                                            (p.entries || [])
+                                        )}
                                         plotGeometry={scenario.plots[0]?.geometry}
                                         setback={scenario.plots[0]?.setback || 0}
                                         className="w-full h-full !bg-transparent !p-2"

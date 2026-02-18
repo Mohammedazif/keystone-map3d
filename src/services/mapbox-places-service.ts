@@ -156,6 +156,45 @@ export const MapboxPlacesService = {
             console.error(`[MapboxPlacesService] Error searching ${category}:`, error);
             return [];
         }
+    },
+
+    /**
+     * Fetch road geometries around a center point using Mapbox Tilequery API.
+     * Reliable for all map styles as it queries the underlying data directly.
+     * @param center [lng, lat]
+     * @param radius Search radius in meters
+     */
+    async fetchRoads(center: [number, number], radius: number = 200): Promise<any[]> {
+        if (!MAPBOX_ACCESS_TOKEN) return [];
+
+        const url = `https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/${center[0]},${center[1]}.json?` +
+            `radius=${radius}&` +
+            `limit=50&` +
+            `layers=road&` +
+            `geometry=polygon&` + // Request full geometry (LineStrings/Polygons) instead of Points
+            `access_token=${MAPBOX_ACCESS_TOKEN}`;
+
+        console.log(`[MapboxPlaces] Tilequery URL:`, url);
+        console.log(`[MapboxPlaces] Center: [${center[0]}, ${center[1]}], Radius: ${radius}m`);
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Mapbox API error: ${response.status}`);
+
+            const data = await response.json();
+            console.log(`[MapboxPlaces] Tilequery raw response:`, data);
+
+            const roads = data.features || [];
+            console.log(`[MapboxPlaces] Tilequery found ${roads.length} roads.`);
+            if (roads.length > 0) {
+                console.log(`[MapboxPlaces] Sample road:`, roads[0]);
+            }
+
+            return roads;
+        } catch (error) {
+            console.error(`[MapboxPlaces] Road fetch failed:`, error);
+            return [];
+        }
     }
 };
 

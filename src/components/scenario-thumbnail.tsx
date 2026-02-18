@@ -2,19 +2,27 @@ import { useMemo } from 'react';
 import * as turf from '@turf/turf';
 import { Feature, Polygon, MultiPolygon } from 'geojson';
 
+interface EntryPoint {
+    id: string;
+    type: 'Entry' | 'Exit' | 'Both';
+    position: [number, number];
+    name?: string;
+}
+
 interface ScenarioThumbnailProps {
     features: Feature<Polygon | MultiPolygon>[];
     roadFeatures?: Feature<Polygon | MultiPolygon>[];
     parkingFeatures?: Feature<Polygon | MultiPolygon>[];
     utilityFeatures?: Feature<Polygon | MultiPolygon>[];
     greenFeatures?: Feature<Polygon | MultiPolygon>[];
+    entryPoints?: EntryPoint[];
     plotGeometry?: Feature<Polygon>;
     setback?: number;
     className?: string;
 }
 
-export function ScenarioThumbnail({ features, roadFeatures, parkingFeatures, utilityFeatures, greenFeatures, plotGeometry, setback = 0, className }: ScenarioThumbnailProps) {
-    const { viewBox, plotPath, setbackPath, roadPaths, parkingPaths, utilityPaths, greenPaths, buildingPaths } = useMemo(() => {
+export function ScenarioThumbnail({ features, roadFeatures, parkingFeatures, utilityFeatures, greenFeatures, entryPoints, plotGeometry, setback = 0, className }: ScenarioThumbnailProps) {
+    const { viewBox, plotPath, setbackPath, roadPaths, parkingPaths, utilityPaths, greenPaths, buildingPaths, gatePaths } = useMemo(() => {
         // Calculate bounding box - use plot if available, otherwise use buildings
         const geometryForBbox = plotGeometry ? [plotGeometry, ...features] : features;
 
@@ -127,9 +135,20 @@ export function ScenarioThumbnail({ features, roadFeatures, parkingFeatures, uti
             });
         });
 
-        return { viewBox: "0 0 100 100", plotPath, setbackPath, roadPaths, parkingPaths, utilityPaths, greenPaths, buildingPaths };
+        // Render gates (entry/exit points)
+        const gatePaths = (entryPoints || []).map((gate, i) => {
+            const { x, y } = toSVG(gate.position);
+            return (
+                <g key={`gate-${i}`}>
+                    <circle cx={x} cy={y} r="2" className="fill-red-500 stroke-red-700 stroke-[0.5]" />
+                    <circle cx={x} cy={y} r="1" className="fill-white" />
+                </g>
+            );
+        });
 
-    }, [features, roadFeatures, parkingFeatures, utilityFeatures, greenFeatures, plotGeometry, setback]);
+        return { viewBox: "0 0 100 100", plotPath, setbackPath, roadPaths, parkingPaths, utilityPaths, greenPaths, buildingPaths, gatePaths };
+
+    }, [features, roadFeatures, parkingFeatures, utilityFeatures, greenFeatures, entryPoints, plotGeometry, setback]);
 
     return (
         <div className={`aspect-video bg-muted/30 rounded-md overflow-hidden p-2 flex items-center justify-center ${className}`}>
@@ -142,6 +161,7 @@ export function ScenarioThumbnail({ features, roadFeatures, parkingFeatures, uti
                     {greenPaths}
                     {setbackPath}
                     {buildingPaths}
+                    {gatePaths}
                 </svg>
             ) : (
                 <span className="text-xs text-muted-foreground">No Preview</span>

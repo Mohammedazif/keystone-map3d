@@ -31,30 +31,67 @@ export function applyPeripheralClearZone(
     roadZone: Feature<Polygon | MultiPolygon> | null;
 } {
     try {
-        const totalClearance = config.parkingWidth + config.roadWidth; // 11m total
+        const totalClearance = config.parkingWidth + config.roadWidth; // e.g. 11m
+
+        // Clean input geometry first
+        // @ts-ignore
+        const cleanedPlot = turf.cleanCoords(plotGeometry);
 
         // Create the buildable area by buffering inward
-        const buildable = turf.buffer(plotGeometry, -totalClearance / 1000, { units: 'kilometers' });
+        // @ts-ignore
+        const buildable = turf.buffer(cleanedPlot, -totalClearance / 1000, { units: 'kilometers' });
 
+        // Validate buildable area
         if (!buildable || turf.area(buildable) < 100) {
-            console.warn('[applyPeripheralClearZone] Buildable area too small or vanished after 11m clearance');
+            console.warn('[applyPeripheralClearZone] Buildable area too small or vanished after clearance');
             return { buildableArea: null, parkingZone: null, roadZone: null };
         }
 
-        // Create parking zone (outer ring: 0-5m from boundary)
-        const parkingOuter = plotGeometry;
-        const parkingInner = turf.buffer(plotGeometry, -config.parkingWidth / 1000, { units: 'kilometers' });
+        // Ensure buildable area is valid polygon
+        // @ts-ignore
+        const buildablePoly = turf.unkinkPolygon(buildable).features.reduce((largest, current) => {
+            return turf.area(current) > turf.area(largest) ? current : largest;
+        }).geometry;
+
+        // Re-wrap as Feature
+        const buildableFeature = turf.polygon(buildablePoly.coordinates);
+
+        // Create parking zone (outer ring: 0-Xm from boundary)
+        const parkingOuter = cleanedPlot;
+        // @ts-ignore
+        const parkingInnerRaw = turf.buffer(cleanedPlot, -config.parkingWidth / 1000, { units: 'kilometers' });
+
+        let parkingInner = parkingInnerRaw;
+        // Clean parking inner if valid
+        if (parkingInner) {
+            // @ts-ignore
+            const piPoly = turf.unkinkPolygon(parkingInner).features.reduce((largest, current) => {
+                return turf.area(current) > turf.area(largest) ? current : largest;
+            }).geometry;
+            parkingInner = turf.polygon(piPoly.coordinates);
+        }
+
         const parkingZone = parkingInner ? turf.difference(parkingOuter, parkingInner) : null;
 
-        // Create road zone (middle ring: 5-11m from boundary)
+        // Create road zone (middle ring: X-Ym from boundary)
+        // Note: roadOuter IS parkingInner
         const roadOuter = parkingInner;
-        const roadInner = buildable;
+        const roadInner = buildableFeature;
+
+        // Verify roadInner is strictly inside roadOuter
         const roadZone = roadOuter && roadInner ? turf.difference(roadOuter, roadInner) : null;
 
+        // Final Sanity Check: Road zone should not be larger than the plot itself (implied)
+        // And certainly not larger than the buildable area if it's a ring
+        if (roadZone && turf.area(roadZone) > turf.area(cleanedPlot) * 0.9) {
+            console.warn('[applyPeripheralClearZone] Road zone seemingly covers entire plot, discarding');
+            return { buildableArea: buildableFeature, parkingZone: parkingZone as Feature<Polygon>, roadZone: null };
+        }
+
         return {
-            buildableArea: buildable as Feature<Polygon | MultiPolygon>,
-            parkingZone: parkingZone as Feature<Polygon | MultiPolygon> | null,
-            roadZone: roadZone as Feature<Polygon | MultiPolygon> | null
+            buildableArea: buildableFeature as Feature<Polygon>,
+            parkingZone: parkingZone as Feature<Polygon> | null,
+            roadZone: roadZone as Feature<Polygon> | null
         };
     } catch (error) {
         console.error('[applyPeripheralClearZone] Error:', error);

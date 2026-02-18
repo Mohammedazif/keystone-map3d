@@ -172,6 +172,67 @@ export const OverpassPlacesService = {
             console.error(`[OverpassService] Search failed:`, error);
             throw error; // Re-throw to let UI handle it
         }
+    },
+
+    /**
+     * Fetch road geometries within a bounding box.
+     * Useful when map vector tiles are not accessible (e.g. Standard Style).
+     * @param bbox [minX, minY, maxX, maxY] (SW, NE)
+     */
+    async fetchRoads(bbox: [number, number, number, number]): Promise<any[]> {
+        const [minX, minY, maxX, maxY] = bbox;
+        // Overpass expects (south, west, north, east)
+        const query = `
+            [out:json][timeout:25];
+            way["highway"](${minY},${minX},${maxY},${maxX});
+            out geom;
+        `;
+
+        // Multiple Overpass servers for redundancy
+        const servers = [
+            'https://overpass-api.de/api/interpreter',
+            'https://lz4.overpass-api.de/api/interpreter',
+            'https://overpass.kumi.systems/api/interpreter'
+        ];
+
+        console.log(`[OverpassService] Fetching roads in bbox...`);
+
+        for (let i = 0; i < servers.length; i++) {
+            const url = `${servers[i]}?data=${encodeURIComponent(query)}`;
+
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    console.warn(`[OverpassService] Server ${i + 1} failed: ${response.status}`);
+                    continue; // Try next server
+                }
+
+                const data = await response.json();
+                const ways = data.elements.filter((el: any) => el.type === 'way' && el.geometry);
+
+                console.log(`[OverpassService] Found ${ways.length} roads.`);
+
+                // Convert to GeoJSON-like LineStrings for Turf
+                return ways.map((way: any) => ({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: way.geometry.map((g: any) => [g.lon, g.lat])
+                    },
+                    properties: way.tags || {}
+                }));
+            } catch (error) {
+                console.warn(`[OverpassService] Server ${i + 1} error:`, error);
+                if (i === servers.length - 1) {
+                    // Last server failed
+                    console.error(`[OverpassService] All servers failed`);
+                    return [];
+                }
+                // Try next server
+            }
+        }
+
+        return [];
     }
 };
 

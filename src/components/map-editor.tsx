@@ -14,6 +14,7 @@ import { useRegulations } from '@/hooks/use-regulations';
 import { generateBuildingTexture } from '@/lib/texture-generator';
 import { WindStreamlineLayer } from '@/lib/wind-streamline-layer';
 import { Amenity } from '@/services/mapbox-places-service';
+import { OverpassPlacesService } from '@/services/overpass-places-service';
 
 
 declare global {
@@ -81,9 +82,10 @@ export function MapEditor({
 
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [styleLoaded, setStyleLoaded] = useState(false);
-  // Threebox loaded state removed
+  const [isThreeboxLoaded, setIsThreeboxLoaded] = useState(false);
   const [isTerrainEnabled, setIsTerrainEnabled] = useState(false); // Terrain OFF by default
   const markers = useRef<Marker[]>([]);
+  const vastuObjectsRef = useRef<any[]>([]);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); // Default primary color
   const hasNavigatedRef = useRef(false); // Track if we've navigated in this component instance
@@ -98,6 +100,7 @@ export function MapEditor({
   const selectedObjectId = useBuildingStore(s => s.selectedObjectId);
   const isLoading = useBuildingStore(s => s.isLoading);
   const plots = useBuildingStore(s => s.plots);
+  const tempScenarios = useBuildingStore(s => s.tempScenarios); // Add tempScenarios selector
   const mapCommand = useBuildingStore(s => s.mapCommand);
   const uiState = useBuildingStore(s => s.uiState);
   const componentVisibility = useBuildingStore(s => s.componentVisibility);
@@ -128,6 +131,15 @@ export function MapEditor({
     }
   }, []);
 
+  // Compute effective plots to render (Scenario Preview vs Actual)
+  const plotsRendering = useMemo(() => {
+    // FIX: Do not show temporary scenarios on the map immediately.
+    // The user wants to see them only after selecting one.
+    // const scenarioPlots = (tempScenarios || []).flatMap(s => s.plots);
+    // return scenarioPlots.length > 0 ? scenarioPlots : plots;
+    return plots;
+  }, [plots]);
+
   const closePolygon = useCallback(async () => {
     const { drawingPoints, drawingState } = getStoreState();
     if (drawingPoints.length < 3 || !drawingState.isDrawing) return;
@@ -149,16 +161,31 @@ export function MapEditor({
 
   }, [actions, getStoreState, toast]);
 
+  const finishRoad = useCallback(async () => {
+    const { drawingPoints, drawingState } = getStoreState();
+    if (drawingPoints.length < 2 || !drawingState.isDrawing || drawingState.objectType !== 'Road') return;
+
+    const lineFeature = turf.lineString(drawingPoints);
+    const success = actions.finishDrawing(lineFeature);
+
+    if (!success) {
+      toast({
+        title: 'Drawing Error',
+        description: 'Could not create the road. Ensure it intersects a plot boundary.',
+      });
+    }
+  }, [actions, getStoreState, toast]);
+
   const handleMapClick = useCallback(
     (e: mapboxgl.MapLayerMouseEvent) => {
       if (!map.current || !map.current.isStyleLoaded()) return;
 
-      const { drawingState, drawingPoints, plots } = getStoreState();
+      const { drawingState, drawingPoints } = getStoreState();
 
       if (drawingState.isDrawing) {
         const coords: [number, number] = [e.lngLat.lng, e.lngLat.lat];
 
-        if (drawingPoints.length > 2) {
+        if (drawingState.objectType !== 'Road' && drawingPoints.length > 2) {
           const firstPoint = drawingPoints[0];
           const clickPoint: LngLatLike = { lng: e.lngLat.lng, lat: e.lngLat.lat };
           const firstMapPoint: LngLatLike = { lng: firstPoint[0], lat: firstPoint[1] };
@@ -173,7 +200,7 @@ export function MapEditor({
       } else {
         // Logic for selecting objects on the map
         const allMapLayers = map.current.getStyle().layers.map(l => l.id);
-        const clickableLayers = plots.flatMap(p =>
+        const clickableLayers = plotsRendering.flatMap(p =>
           [
             `plot-base-${p.id}`,
             ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
@@ -197,13 +224,13 @@ export function MapEditor({
 
           if (layerId.startsWith('plot-base-')) {
             const plotId = layerId.replace('plot-base-', '');
-            if (plots.some(p => p.id === plotId)) {
+            if (plotsRendering.some(p => p.id === plotId)) {
               actions.selectObject(plotId, 'Plot');
             }
           } else if (layerId.startsWith('building-floor-fill-')) {
             const buildingId = layerId.split('-').pop();
             if (!buildingId) return;
-            for (const plot of plots) {
+            for (const plot of plotsRendering) {
               if (plot.buildings.some(b => b.id === buildingId)) {
                 actions.selectObject(buildingId, 'Building');
                 break;
@@ -211,7 +238,7 @@ export function MapEditor({
             }
           } else if (layerId.startsWith('buildable-area-')) {
             const buildableAreaId = layerId.replace('buildable-area-', '');
-            for (const plot of plots) {
+            for (const plot of plotsRendering) {
               if (plot.buildableAreas.some(b => b.id === buildableAreaId)) {
                 actions.selectObject(buildableAreaId, 'BuildableArea');
                 break;
@@ -230,30 +257,49 @@ export function MapEditor({
         }
       }
     },
-    [closePolygon, actions, getStoreState, plots]
+    [closePolygon, actions, getStoreState, plotsRendering]
   );
 
   const handleMouseMove = useCallback((e: mapboxgl.MapLayerMouseEvent) => {
     if (!map.current || !map.current.isStyleLoaded()) return;
-    const { drawingState, drawingPoints, plots } = getStoreState();
+    const { drawingState, drawingPoints } = getStoreState();
 
     if (drawingState.isDrawing) {
       map.current.getCanvas().style.cursor = 'crosshair';
-      if (drawingPoints.length > 2) {
-        const firstPoint = drawingPoints[0];
-        const hoverPoint: LngLatLike = { lng: e.lngLat.lng, lat: e.lngLat.lat };
-        const firstMapPoint: LngLatLike = { lng: firstPoint[0], lat: firstPoint[1] };
-        const pixelDist = map.current?.project(hoverPoint).dist(map.current.project(firstMapPoint));
-        if (pixelDist && pixelDist < 15) {
-          map.current.getCanvas().style.cursor = 'pointer';
+      if (drawingPoints.length > 0) {
+        if (drawingState.objectType === 'Road' && drawingPoints.length >= 1) {
+          // Interactive Road Preview: All points so far + mouse position
+          const mousePoint: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+          const previewPoints = [...drawingPoints, mousePoint];
+          const line = turf.lineString(previewPoints);
+          const buffered = turf.buffer(line, (drawingState.roadWidth / 2), { units: 'meters' });
+
+          const outlineSource = map.current.getSource(DRAWING_OUTLINE_SOURCE_ID) as GeoJSONSource;
+          const roadFillSource = map.current.getSource('drawing-road-fill') as GeoJSONSource;
+
+          if (outlineSource) outlineSource.setData(turf.featureCollection([line]));
+          if (roadFillSource && buffered) roadFillSource.setData(turf.featureCollection([buffered]));
+        } else if (drawingPoints.length > 2) {
+          const firstPoint = drawingPoints[0];
+          const hoverPoint: LngLatLike = { lng: e.lngLat.lng, lat: e.lngLat.lat };
+          const firstMapPoint: LngLatLike = { lng: firstPoint[0], lat: firstPoint[1] };
+          const pixelDist = map.current?.project(hoverPoint).dist(map.current.project(firstMapPoint));
+          if (pixelDist && pixelDist < 15) {
+            map.current.getCanvas().style.cursor = 'pointer';
+          }
         }
       }
     } else {
       const allMapLayers = map.current.getStyle().layers.map(l => l.id);
-      const hoverableLayers = plots.flatMap(p =>
+      const hoverableLayers = plotsRendering.flatMap(p =>
         [
           `plot-base-${p.id}`,
           ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
+          `buildable-area-${p.buildableAreas.map(b => b.id).join(',')}`, // Bug in original? Fix here?
+          // Original was: ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
+          // Wait, I should match the original logic exactly unless I want to fix bugs.
+          // Original:
+          // ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
           ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
           ...p.greenAreas.map(g => `green-area-${g.id}`),
           ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
@@ -269,7 +315,7 @@ export function MapEditor({
       }
     }
   },
-    [getStoreState]
+    [getStoreState, plotsRendering]
   );
 
   const locateUser = useCallback(() => {
@@ -301,6 +347,15 @@ export function MapEditor({
         actions.resetDrawing();
       }
 
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (drawingState.objectType === 'Road') {
+          finishRoad();
+        } else if (drawingPoints.length >= 3) {
+          closePolygon();
+        }
+      }
+
       if (event.key === 'z' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         actions.undoLastPoint();
@@ -323,29 +378,28 @@ export function MapEditor({
         map.current.resize();
       }
     }
-    window.addEventListener('locateUser', handleLocate);
-    window.addEventListener('closePolygon', handleCloseEvent);
-    window.addEventListener('resizeMap', handleResize);
-
-    return () => {
-      window.removeEventListener('locateUser', handleLocate);
-      window.removeEventListener('closePolygon', handleCloseEvent);
-      window.removeEventListener('resizeMap', handleResize);
-    };
-  }, [locateUser, closePolygon]);
-
-  useEffect(() => {
     const handleFlyTo = (event: Event) => {
       if (!map.current) return;
       const customEvent = event as CustomEvent;
       const { center, zoom } = customEvent.detail;
       map.current.flyTo({ center, zoom: zoom || 16, essential: true });
     }
+    const handleFinishRoad = () => finishRoad();
+
+    window.addEventListener('locateUser', handleLocate);
+    window.addEventListener('closePolygon', handleCloseEvent);
+    window.addEventListener('finishRoad', handleFinishRoad);
+    window.addEventListener('resizeMap', handleResize);
     window.addEventListener('flyTo', handleFlyTo);
+
     return () => {
+      window.removeEventListener('locateUser', handleLocate);
+      window.removeEventListener('closePolygon', handleCloseEvent);
+      window.removeEventListener('finishRoad', handleFinishRoad);
+      window.removeEventListener('resizeMap', handleResize);
       window.removeEventListener('flyTo', handleFlyTo);
     };
-  }, []);
+  }, [locateUser, closePolygon, finishRoad]);
 
   // Initialize Map
   useEffect(() => {
@@ -373,7 +427,7 @@ export function MapEditor({
 
     mapInstance.on('load', () => {
       onMapReady?.();
-      mapInstance.addControl(new mapboxgl.NavigationControl(), 'top-right');
+      mapInstance.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
 
       // GENERATE & ADD TEXTURES
       const buildingTypes = ['Residential', 'Commercial', 'Institutional', 'Mixed Use', 'Industrial', 'Hospitality'];
@@ -389,19 +443,15 @@ export function MapEditor({
       // Terrain & Atmosphere Configuration
       mapInstance.setMaxPitch(85); // Allow looking up easier in mountains
 
-      // NOTE: Terrain disabled per user request for "flat" plot
-      /*
-      // Add terrain source
+      // Add terrain source (used by the toggle button)
       mapInstance.addSource('mapbox-dem', {
         'type': 'raster-dem',
         'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
         'tileSize': 512,
         'maxzoom': 14
       });
-
-      // add the DEM source as a terrain layer (OFF by default, user can toggle)
-      mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
-      */
+      // Start with flat terrain
+      mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 0 });
 
       // Add Sky Layer for better horizon context in 3D
       mapInstance.addLayer({
@@ -531,99 +581,261 @@ export function MapEditor({
     }
   }, [isMapLoaded, plots, activeProject, activeProjectId, actions]);
 
-  // Automatic Road Detection
+  // Keep a stable ref to plots so road detection doesn't re-register on every plot update
+  const plotsRef = useRef(plots);
+  useEffect(() => { plotsRef.current = plots; }, [plots]);
+
+  // Track in-flight road detections to prevent redundant toasts/requests
+  const pendingRoadDetections = useRef<Set<string>>(new Set());
+
+  // Automatic Road Detection — only registers once per map load
   useEffect(() => {
-    if (!map.current || !isMapLoaded || plots.length === 0) return;
+    if (!map.current || !isMapLoaded) return;
 
     const detectRoads = () => {
-      // Small debounce to prevent thrashing during pan/zoom
       if (map.current?.isMoving()) return;
 
-      plots.forEach(plot => {
-        // Skip if already detected to save performance (optional, or re-detect on move?)
-        // For now, let's re-detect to be robust 
+      plotsRef.current.forEach(plot => {
         if (!plot.geometry || !plot.visible) return;
 
-        // Get plot bbox in pixels
-        const bbox = turf.bbox(plot.geometry);
-        const [minX, minY, maxX, maxY] = bbox;
+        // "Fetch Once" Logic: Skip if already detected or currently in flight
+        if (plot.roadAccessSides !== undefined || pendingRoadDetections.current.has(plot.id)) return;
 
-        // Convert real coords to screen pixels
-        const sw = map.current!.project([minX, minY]);
-        const ne = map.current!.project([maxX, maxY]);
+        pendingRoadDetections.current.add(plot.id);
+        console.log(`[Road Debug] Detecting roads for Plot ${plot.id} using Source Query...`);
 
-        // Add 30px buffer to look for roads around the plot
-        const buffer = 30;
-        const queryBox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
-          [Math.min(sw.x, ne.x) - buffer, Math.min(sw.y, ne.y) - buffer],
-          [Math.max(sw.x, ne.x) + buffer, Math.max(sw.y, ne.y) + buffer]
-        ];
-
-        // Query map features
-        const features = map.current!.queryRenderedFeatures(queryBox, {
-          // Filter by known Mapbox road layers (standard style)
-          filter: ['any',
-            ['in', 'class', 'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'street', 'minor', 'road'],
-            ['in', 'highway', 'residential', 'service', 'track', 'footway']
-          ]
+        // Use querySourceFeatures to get raw vector data from 'composite' source
+        // This bypasses style visibility/layer naming issues in Mapbox Standard
+        const roadFeatures = map.current!.querySourceFeatures('composite', {
+          sourceLayer: 'road'
         });
 
-        // Filter results specifically for road-like layers
-        // Mapbox Standard/Streets use 'road-label', 'road-primary', etc.
-        const roadFeatures = features.filter(f => {
-          const id = f.layer?.id.toLowerCase();
-          return id && (id.includes('road') || id.includes('street') || id.includes('way')) && !id.includes('label');
+        // Filter roads that are close to the plot
+        // We need to check intersection with the plot's expanded bounding box
+        const searchPoly = turf.buffer(plot.geometry as any, 0.05, { units: 'kilometers' }); // 50m buffer
+
+        const relevantRoads = roadFeatures.filter(f => {
+          // Geometry must be LineString or MultiLineString
+          if (f.geometry.type !== 'LineString' && f.geometry.type !== 'MultiLineString') return false;
+
+          // Check intersection with our buffered plot
+          // Note: features from querySourceFeatures might be split across tiles, causing duplicates
+          // But for detection, duplicates are acceptable.
+          return turf.booleanIntersects(searchPoly as any, f as any);
         });
 
-        if (roadFeatures.length > 0) {
-          // Determine Direction
-          // Simple heuristic: Where is the road relative to plot centroid?
-          const center = turf.centroid(plot.geometry);
-          const [cx, cy] = center.geometry.coordinates;
+        if (plots[0] === plot) {
+          const style = map.current!.getStyle();
+          console.log(`[Road Debug] Style Sources:`, Object.keys(style.sources));
+          if ((style as any).imports) {
+            console.log(`[Road Debug] Style Imports:`, (style as any).imports.map((i: any) => i.id));
+          }
+          console.log(`[Road Debug] Found ${roadFeatures.length} total roads in viewport.`);
+          console.log(`[Road Debug] Found ${relevantRoads.length} roads near plot.`);
+        }
+
+        // determineAccessSides helper (Strict Proximity)
+        const determineAccessSides = (features: any[]) => {
+          const bbox = turf.bbox(plot.geometry);
+          const [minX, minY, maxX, maxY] = bbox;
+
+          // Define 4 edge lines of the plot bounding box
+          const nLine = turf.lineString([[minX, maxY], [maxX, maxY]]);
+          const sLine = turf.lineString([[minX, minY], [maxX, minY]]);
+          const eLine = turf.lineString([[maxX, minY], [maxX, maxY]]);
+          const wLine = turf.lineString([[minX, minY], [minX, maxY]]);
+
+          // Create detection zones (20m buffer around each edge)
+          // Note: using 0.025 km = 25m to be safe but precise
+          const bufferDist = 0.025;
+          const nZone = turf.buffer(nLine, bufferDist, { units: 'kilometers' });
+          const sZone = turf.buffer(sLine, bufferDist, { units: 'kilometers' });
+          const eZone = turf.buffer(eLine, bufferDist, { units: 'kilometers' });
+          const wZone = turf.buffer(wLine, bufferDist, { units: 'kilometers' });
 
           const accessSides = new Set<string>();
 
-          roadFeatures.forEach(rf => {
-            // Get nearest point on road using turf (expensive loop?)
-            // Cheaper: Look at feature bounding box or vertices
-            // Even cheaper: Check if road bbox intersects with N/S/E/W quadrants relative to center
-            const rBbox = turf.bbox(rf);
-
-            // If road overlaps or is close to North side (y > cy)
-            if (rBbox[3] > cy + (maxY - minY) * 0.4) accessSides.add('N');
-            // South (y < cy)
-            if (rBbox[1] < cy - (maxY - minY) * 0.4) accessSides.add('S');
-            // East (x > cx)
-            if (rBbox[2] > cx + (maxX - minX) * 0.4) accessSides.add('E');
-            // West (x < cx)
-            if (rBbox[0] < cx - (maxX - minX) * 0.4) accessSides.add('W');
+          features.forEach(rf => {
+            // Check intersection with each zone
+            // turf.booleanIntersects handles LineString vs Polygon (Zone)
+            // We cast to 'any' to avoid some strict typing issues with turf/geojson versions if mismatched
+            if (turf.booleanIntersects(rf as any, nZone as any)) accessSides.add('N');
+            if (turf.booleanIntersects(rf as any, sZone as any)) accessSides.add('S');
+            if (turf.booleanIntersects(rf as any, eZone as any)) accessSides.add('E');
+            if (turf.booleanIntersects(rf as any, wZone as any)) accessSides.add('W');
           });
 
-          // Update Plot if changed
-          const newSides = Array.from(accessSides);
-          const oldSides = plot.roadAccessSides || [];
+          return Array.from(accessSides);
+        };
 
-          // Shallow compare
-          const hasChanged = newSides.length !== oldSides.length || !newSides.every(s => oldSides.includes(s));
+        if (relevantRoads.length > 0) {
+          const newSides = determineAccessSides(relevantRoads);
+          const oldSides: string[] = plot.roadAccessSides || [];
 
+          if (plots[0] === plot) console.log(`[Road Debug] Detected Sides (Local):`, newSides);
+
+          const hasChanged = newSides.length !== oldSides.length || !newSides.every((s: string) => oldSides.includes(s));
           if (hasChanged && newSides.length > 0) {
-            console.log(`ðŸ›£ï¸ Detected Road Access for ${plot.name}:`, newSides);
+            console.log(`🛣️  Detected Road Access for ${plot.name}:`, newSides);
             actions.updatePlot(plot.id, { roadAccessSides: newSides });
             toast({
               title: "Road Access Detected",
               description: `Identified roads on: ${newSides.join(', ')} side(s).`
             });
           }
+          pendingRoadDetections.current.delete(plot.id);
+        } else {
+          if (plots[0] === plot) console.log(`[Road Debug] No local roads found. Trying Overpass API...`);
+
+          // Fallback: Use Overpass API with retry logic
+          const searchArea = turf.buffer(plot.geometry as any, 0.1, { units: 'kilometers' }); // 100m buffer
+          const searchBbox = turf.bbox(searchArea);
+
+          OverpassPlacesService.fetchRoads(searchBbox as [number, number, number, number])
+            .then(osmRoads => {
+              const newSides = osmRoads.length > 0 ? determineAccessSides(osmRoads) : [];
+              const oldSides: string[] = plot.roadAccessSides || [];
+              const hasChanged = newSides.length !== oldSides.length || !newSides.every((s: string) => oldSides.includes(s));
+
+              console.log(`[Road Debug] Overpass returned ${osmRoads.length} roads. Access:`, newSides);
+
+              // Save result (IMPORTANT: Save even if empty to prevent re-fetch loop)
+              actions.updatePlot(plot.id, { roadAccessSides: newSides });
+
+              if (hasChanged && newSides.length > 0) {
+                toast({
+                  title: "Road Access Detected",
+                  description: `Identified roads on: ${newSides.join(', ')} side(s).`
+                });
+              } else {
+                console.log(`[Road Debug] Overpass result unchanged or empty. Saved.`);
+              }
+            })
+            .catch(err => console.error("[Road Debug] Overpass failed:", err))
+            .finally(() => {
+              pendingRoadDetections.current.delete(plot.id);
+            });
         }
       });
     };
 
     map.current.on('idle', detectRoads);
-    // return () => map.current?.off('idle', detectRoads); // Cleanup?
-    // Note: React effects run often, we likely need to debounce this or only run once per plot load.
-    // For now, 'idle' is good as it runs after tiles load.
+    return () => { map.current?.off('idle', detectRoads); };
+    // Only re-register when map loads — plots are read via plotsRef to avoid re-registering on every plot update
+  }, [isMapLoaded, actions]);
 
-  }, [isMapLoaded, plots, actions]);
+  useEffect(() => {
+    if (!isMapLoaded || !isThreeboxLoaded || !map.current) return;
+
+    const mapInstance = map.current;
+
+    if (mapInstance.getLayer('custom-threebox-layer')) return;
+
+    // Initialize Threebox
+    mapInstance.addLayer({
+      id: 'custom-threebox-layer',
+      type: 'custom',
+      renderingMode: '3d',
+      slot: 'middle',
+      onAdd: function (map, mbxContext) {
+        if (window.tb) return;
+
+        // @ts-ignore
+        if (window.Threebox) {
+          // @ts-ignore
+          window.tb = new window.Threebox(map, mbxContext, {
+            defaultLights: true,
+            passiveRendering: false
+          });
+
+          if (window.tb.renderer) {
+            window.tb.renderer.autoClear = false;
+            window.tb.renderer.autoClearColor = false;
+            window.tb.renderer.autoClearDepth = false;
+            window.tb.renderer.autoClearStencil = false;
+
+            const gl = window.tb.renderer.getContext();
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+            gl.depthMask(true);
+            gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.BACK);
+
+            // Shadows setup
+            window.tb.renderer.shadowMap.enabled = true;
+            window.tb.renderer.shadowMap.type = window.THREE.PCFSoftShadowMap;
+          }
+
+          console.log('Threebox initialized with shared depth buffer');
+        }
+      },
+      render: function (gl, matrix) {
+        if (window.tb) {
+          try {
+            window.tb.update();
+          } catch (e) {
+            // Suppress repeating errors
+          }
+        }
+      },
+    });
+
+  }, [isMapLoaded, isThreeboxLoaded]);
+
+  // Vastu Compass Rendering
+  useEffect(() => {
+    if (!window.tb || !isMapLoaded) return;
+
+    // 1. Cleanup existing objects using our kept references
+    vastuObjectsRef.current.forEach(obj => {
+      try {
+        window.tb.remove(obj);
+      } catch (e) {
+        console.warn('Failed to remove Vastu object', e);
+      }
+    });
+    vastuObjectsRef.current = [];
+
+    // 2. Add if enabled
+    if (uiState?.showVastuCompass && plots.length > 0) {
+      const THREE = window.tb.THREE || window.THREE;
+      if (!THREE) return;
+
+      plots.forEach(plot => {
+        // Calculate bbox center for accurate positioning
+        const bbox = turf.bbox(plot.geometry);
+        const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+
+        // Radius: Make it fit within plot
+        const r = Math.sqrt(plot.area / Math.PI) * 0.5;
+
+        const compassGroup = createShaktiChakraGroup(THREE, r);
+        const compassName = 'vastu-compass-group';
+        compassGroup.name = `${compassName}-${plot.id}`;
+
+        // Get elevation at center
+        let elevation = 0;
+        if (map.current?.queryTerrainElevation) {
+          elevation = map.current.queryTerrainElevation({ lng: center[0], lat: center[1] }) || 0;
+        }
+
+        // @ts-ignore
+        const tbObj = window.tb.Object3D({
+          obj: compassGroup,
+          units: 'meters',
+          anchor: 'center'
+        }).setCoords([center[0], center[1], elevation + 0.5]);
+
+        tbObj.name = compassGroup.name;
+
+        window.tb.add(tbObj);
+        vastuObjectsRef.current.push(tbObj);
+      });
+      window.tb.repaint();
+    } else {
+      window.tb.repaint();
+    }
+  }, [uiState?.showVastuCompass, plots, isMapLoaded]);
 
 
 
@@ -993,6 +1205,10 @@ export function MapEditor({
     // Helper to manage Three.js lights
     const updateThreeLights = (azimuth: number, altitude: number, enabled: boolean) => {
       if (!window.tb) return;
+
+      const THREE = window.tb.THREE || window.THREE;
+      if (!THREE) return;
+
       const scene = window.tb.world; // Use world as root
       if (!scene) return;
 
@@ -1000,7 +1216,7 @@ export function MapEditor({
       let lightGroup = scene.getObjectByName(LIGHT_GROUP_NAME);
 
       if (!lightGroup) {
-        lightGroup = new window.tb.THREE.Group();
+        lightGroup = new THREE.Group();
         lightGroup.name = LIGHT_GROUP_NAME;
         scene.add(lightGroup);
       }
@@ -1026,7 +1242,7 @@ export function MapEditor({
         const y = dist * -1 * Math.cos(azimuth) * Math.cos(altitude);
         const z = dist * Math.sin(altitude);
 
-        const sunLight = new window.tb.THREE.DirectionalLight(0xffffff, 1.5);
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
         sunLight.position.set(x, y, z);
         sunLight.target.position.set(0, 0, 0);
         sunLight.castShadow = true;
@@ -1044,7 +1260,7 @@ export function MapEditor({
         lightGroup.add(sunLight.target);
 
         // Ambient
-        const ambient = new window.tb.THREE.AmbientLight(0x404040, 0.4);
+        const ambient = new THREE.AmbientLight(0x404040, 0.4);
         lightGroup.add(ambient);
 
       } else {
@@ -1130,11 +1346,7 @@ export function MapEditor({
 
   }, [isSimulatorEnabled, solarDate, isMapLoaded]);
 
-  const vastuObjectsRef = useRef<any[]>([]);
 
-  // Vastu Compass Rendering
-  // Legacy Vastu Compass (Three.js) Removed
-  // Can be reimplemented with Markers or GL Layers in future.
 
 
   const buildingProps = useMemo(() =>
@@ -1161,9 +1373,29 @@ export function MapEditor({
       });
 
       const outlineSource = mapInstance.getSource(DRAWING_OUTLINE_SOURCE_ID) as GeoJSONSource;
-      let outlineData: Feature<LineString> | FeatureCollection = turf.featureCollection([]);
-      if (drawingPoints.length > 1) {
-        outlineData = turf.lineString(drawingPoints);
+      const roadFillSource = mapInstance.getSource('drawing-road-fill') as GeoJSONSource;
+      let outlineData: any = turf.featureCollection([]);
+      let roadFillData: any = turf.featureCollection([]);
+
+      if (drawingPoints.length > 0) {
+        if (drawingState.objectType === 'Road') {
+          // Road Preview: Show centerline + buffered fill separately
+          if (drawingPoints.length === 1) {
+            outlineData = turf.featureCollection([
+              turf.point(drawingPoints[0])
+            ]);
+          } else if (drawingPoints.length >= 2) {
+            const line = turf.lineString(drawingPoints);
+            const buffered = turf.buffer(line, (drawingState.roadWidth / 2), { units: 'meters' });
+            outlineData = turf.featureCollection([line]); // Only centerline for outline layer
+            roadFillData = turf.featureCollection(buffered ? [buffered] : []); // Buffered polygon for fill
+          }
+        } else {
+          // Standard Polygon/Point Preview
+          if (drawingPoints.length > 1) {
+            outlineData = turf.lineString(drawingPoints);
+          }
+        }
       }
 
       if (outlineSource) {
@@ -1174,10 +1406,29 @@ export function MapEditor({
           id: DRAWING_OUTLINE_LAYER_ID,
           type: 'line',
           source: DRAWING_OUTLINE_SOURCE_ID,
-          paint: { 'line-color': '#F5A623', 'line-width': 3, 'line-dasharray': [2, 1] },
+          paint: { 'line-color': '#F5A623', 'line-width': 2, 'line-dasharray': [2, 1] },
+        });
+      }
+
+      // Road fill preview layer
+      if (roadFillSource) {
+        roadFillSource.setData(roadFillData);
+      } else if (drawingState.objectType === 'Road') {
+        mapInstance.addSource('drawing-road-fill', { type: 'geojson', data: roadFillData });
+        mapInstance.addLayer({
+          id: 'drawing-road-fill-layer',
+          type: 'fill',
+          source: 'drawing-road-fill',
+          paint: { 'fill-color': '#546E7A', 'fill-opacity': 0.6, 'fill-outline-color': '#F5A623' },
         });
       }
     } else {
+      if (mapInstance.getLayer('drawing-road-fill-layer')) {
+        mapInstance.removeLayer('drawing-road-fill-layer');
+      }
+      if (mapInstance.getSource('drawing-road-fill')) {
+        mapInstance.removeSource('drawing-road-fill');
+      }
       if (mapInstance.getLayer(DRAWING_OUTLINE_LAYER_ID)) {
         mapInstance.removeLayer(DRAWING_OUTLINE_LAYER_ID);
       }
@@ -1310,6 +1561,35 @@ export function MapEditor({
 
       // --- RENDER UTILITIES & PARKING FIRST (Bottom Layer) ---
 
+      // 0. Green Areas (Moved to Bottom Layer)
+      plot.greenAreas.forEach(area => {
+        const areaId = area.id;
+        renderedIds.add(areaId);
+
+        let source = mapInstance.getSource(areaId) as GeoJSONSource;
+
+        if (!area.geometry) return;
+
+        if (source) {
+          source.setData(area.geometry);
+        } else {
+          mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
+        }
+
+        if (!mapInstance.getLayer(areaId)) {
+          mapInstance.addLayer({
+            id: areaId,
+            type: 'fill',
+            source: areaId,
+            paint: {
+              'fill-color': '#4ade80',
+              'fill-opacity': 0.5,
+              'fill-outline-color': '#22c55e'
+            }
+          }, LABELS_LAYER_ID);
+        }
+      });
+
       // 1. Parking Areas (Surface & Basements)
       plot.parkingAreas.forEach(area => {
         const areaId = `parking-area-${area.id}`;
@@ -1427,10 +1707,27 @@ export function MapEditor({
               source: areaId,
               paint: {
                 'fill-color': color,
-                'fill-opacity': 0.9,
-                'fill-outline-color': '#455A64'
+                'fill-opacity': 0.8,
+                'fill-outline-color': '#2c3e50'
               }
             }, LABELS_LAYER_ID);
+
+            // Add a dashed centerline for finished roads
+            const centerlineId = `${areaId}-centerline`;
+            renderedIds.add(centerlineId);
+            if (!mapInstance.getLayer(centerlineId)) {
+              mapInstance.addLayer({
+                id: centerlineId,
+                type: 'line',
+                source: areaId,
+                paint: {
+                  'line-color': '#ffffff',
+                  'line-width': 1,
+                  'line-dasharray': [5, 5],
+                  'line-opacity': 0.5
+                }
+              }, LABELS_LAYER_ID);
+            }
           } else {
             // 3D Extrusion for others
             mapInstance.addLayer({
@@ -1946,14 +2243,15 @@ export function MapEditor({
     // Consolidate footprints
     const allBuildingFootprints: Feature<Polygon>[] = [];
 
-    plots.forEach(plot => {
+    plotsRendering.forEach(plot => {
       const plotId = plot.id;
       // Debug Rendering
-      if (plots.length > 0 && plot === plots[0]) {
+      if (plotsRendering.length > 0 && plot === plotsRendering[0]) {
         console.log(`[MapEditor] Rendering Plot ${plotId}`, {
           geometryType: plot.geometry?.type,
           hasCoordinates: !!(plot.geometry as any)?.coordinates,
-          isSelected: plotId === selectedObjectId?.id
+          isSelected: plotId === selectedObjectId?.id,
+          entriesCount: plot.entries?.length || 0 // Added entries debug
         });
       }
 
@@ -2148,39 +2446,87 @@ export function MapEditor({
         allBuildingFootprints.push(feat);
       });
 
-      // Green Areas - Uncommented and fixed
-      plot.greenAreas.forEach(area => {
-        const areaId = area.id; // ID is now deterministic and unique (e.g., green-area-plot-1-0)
+      // --- RENDER ENTRY/EXIT GATES ---
+      console.log(`[MapEditor] Rendering gates for plot ${plot.id}`, plot.entries);
+      if (plot.entries && plot.entries.length > 0) {
+        const gateSourceId = `gates-${plot.id}`;
+        const gateCircleLayerId = `gates-circle-${plot.id}`;
+        const gateLabelLayerId = `gates-label-${plot.id}`;
 
-        // CRITICAL: Mark this ID as "rendered" so the cleanup logic doesn't remove it
-        renderedIds.add(areaId);
+        renderedIds.add(gateSourceId);
+        renderedIds.add(gateCircleLayerId);
+        // renderedIds.add(gateLabelLayerId);
 
-        let source = mapInstance.getSource(areaId) as GeoJSONSource;
+        // Create GeoJSON feature collection from gates
+        const gateFeatures = plot.entries.map(entry => ({
+          type: 'Feature' as const,
+          geometry: {
+            type: 'Point' as const,
+            coordinates: entry.position
+          },
+          properties: {
+            id: entry.id,
+            name: entry.name || entry.type,
+            type: entry.type,
+            color: entry.color || (entry.type === 'Entry' ? '#10b981' : entry.type === 'Exit' ? '#ef4444' : '#3b82f6')
+          }
+        }));
 
-        // Ensure geometry is valid
-        if (!area.geometry) return;
+        const gateCollection = {
+          type: 'FeatureCollection' as const,
+          features: gateFeatures
+        };
 
-        if (source) {
-          source.setData(area.geometry);
+        // Add or update source
+        let gateSource = mapInstance.getSource(gateSourceId) as GeoJSONSource;
+        if (gateSource) {
+          gateSource.setData(gateCollection as any);
         } else {
-          mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry });
+          mapInstance.addSource(gateSourceId, {
+            type: 'geojson',
+            data: gateCollection as any
+          });
         }
 
-        if (!mapInstance.getLayer(areaId)) {
+        // Add circle layer for gate markers
+        if (!mapInstance.getLayer(gateCircleLayerId)) {
           mapInstance.addLayer({
-            id: areaId,
-            type: 'fill',
-            source: areaId,
+            id: gateCircleLayerId,
+            type: 'circle',
+            source: gateSourceId,
             paint: {
-              'fill-color': '#4ade80', // Revert to Green-400
-              'fill-opacity': 0.5,
-              'fill-outline-color': '#22c55e' // Green-500 border
+              'circle-radius': 12,
+              'circle-color': ['get', 'color'],
+              'circle-stroke-width': 3,
+              'circle-stroke-color': '#ffffff',
+              'circle-opacity': 0.9
             }
-          }, LABELS_LAYER_ID); // Render below labels
+          });
         }
-      });
 
-
+        // Add label layer for gate names
+        /*
+        if (!mapInstance.getLayer(gateLabelLayerId)) {
+          mapInstance.addLayer({
+            id: gateLabelLayerId,
+            type: 'symbol',
+            source: gateSourceId,
+            layout: {
+              'text-field': ['get', 'name'],
+              'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+              'text-size': 11,
+              'text-offset': [0, 2],
+              'text-anchor': 'top'
+            },
+            paint: {
+              'text-color': '#ffffff',
+              'text-halo-color': '#000000',
+              'text-halo-width': 2
+            }
+          });
+        }
+        */
+      }
     });
 
     const allBuildingsSourceId = 'all-buildings-footprints';
@@ -2216,7 +2562,7 @@ export function MapEditor({
     if (currentStyle && currentStyle.layers) {
       currentStyle.layers.forEach(layer => {
         const layerId = layer.id;
-        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('util-') || layerId.startsWith('utility-area-') || layerId.startsWith('core-') || layerId.startsWith('unit-') || layerId.startsWith('electrical-') || layerId.startsWith('hvac-');
+        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('util-') || layerId.startsWith('utility-area-') || layerId.startsWith('core-') || layerId.startsWith('unit-') || layerId.startsWith('electrical-') || layerId.startsWith('hvac-') || layerId.startsWith('gates-');
 
         if (isManagedByPlots && !renderedIds.has(layerId) && layerId !== LABELS_LAYER_ID) {
           if (mapInstance.getLayer(layerId)) mapInstance.removeLayer(layerId);
@@ -2226,7 +2572,7 @@ export function MapEditor({
 
     if (currentStyle && currentStyle.sources) {
       Object.keys(currentStyle.sources).forEach(sourceId => {
-        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('util-') || sourceId.startsWith('utility-area-') || sourceId.startsWith('core-') || sourceId.startsWith('unit-') || sourceId.startsWith('electrical-') || sourceId.startsWith('hvac-');
+        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('util-') || sourceId.startsWith('utility-area-') || sourceId.startsWith('core-') || sourceId.startsWith('unit-') || sourceId.startsWith('electrical-') || sourceId.startsWith('hvac-') || sourceId.startsWith('gates-');
 
         if (isManagedByPlots && !renderedIds.has(sourceId) && sourceId !== LABELS_SOURCE_ID) {
           const style = mapInstance.getStyle();
@@ -2239,7 +2585,7 @@ export function MapEditor({
       mapInstance.triggerRepaint();
     }
 
-  }, [plots, isMapLoaded, selectedObjectId, primaryColor, isLoading, activeProject, styleLoaded, uiState.ghostMode, componentVisibility]);
+  }, [plots, tempScenarios, plotsRendering, isMapLoaded, selectedObjectId, primaryColor, isLoading, activeProject, styleLoaded, uiState.ghostMode, componentVisibility]);
 
   // HOVER TOOLTIP EFFECT
   useEffect(() => {
@@ -2259,7 +2605,8 @@ export function MapEditor({
         return f.layer && f.layer.id && (
           f.layer.id === 'all-buildings-hit-layer' ||
           f.layer.id.startsWith('utility-area-') ||
-          f.layer.id.startsWith('parking-area-')
+          f.layer.id.startsWith('parking-area-') ||
+          f.layer.id.startsWith('gates-circle-')
         );
       });
 
@@ -2312,6 +2659,10 @@ export function MapEditor({
             ${areaLabel ? `<div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${areaLabel}</div>` : ''}
             ${capacityLabel}
           `;
+        } else if (f.layer?.id.startsWith('gates-circle-')) {
+          html = `
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || 'Gate'}</div>
+          `;
         }
 
         if (html) {
@@ -2335,11 +2686,18 @@ export function MapEditor({
 
   return (
     <div className="relative w-full h-full">
-      {/* Threebox Script Removed */}
+      <Script
+        src="https://cdn.jsdelivr.net/gh/jscastro76/threebox@v.2.2.2/dist/threebox.min.js"
+        strategy="afterInteractive"
+        onLoad={() => {
+          console.log('Threebox script loaded');
+          setIsThreeboxLoaded(true);
+        }}
+      />
       <div ref={mapContainer} className="w-full h-full" />
 
       {/* Terrain Toggle Button */}
-      <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-1">
+      <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-1 flex items-center gap-1">
         <button
           onClick={() => {
             const newStatus = !isTerrainEnabled;
@@ -2348,16 +2706,42 @@ export function MapEditor({
               // Toggle Terrain
               map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': newStatus ? 1.0 : 0.0 });
               // Trigger repaint to update building elevations
-              // window.tb.repaint(); // Removed
-              // Force React re-render or effect re-run if needed for building height updates? 
-              // Actually the building effect depends on 'isTerrainEnabled' if we add it to dependency
+              if (window.tb) window.tb.repaint();
             }
           }}
-          className={`p-2 rounded-sm text-xs font-medium transition-colors ${isTerrainEnabled ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
+          className={`p-2 h-9 rounded-sm text-xs font-medium transition-colors ${isTerrainEnabled ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
           title="Toggle 3D Terrain"
         >
-          {isTerrainEnabled ? 'â›°ï¸ Terrain ON' : 'Analytic Flat'}
+          {isTerrainEnabled ? '⛰️ Terrain ON' : 'Analytic Flat'}
         </button>
+
+        <div className="h-6 w-[1px] bg-border mx-1" />
+
+        <div className="flex gap-0.5">
+          {[
+            { label: 'N', angle: 0 },
+            { label: 'E', angle: 90 },
+            { label: 'S', angle: 180 },
+            { label: 'W', angle: 270 }
+          ].map(dir => (
+            <button
+              key={dir.label}
+              onClick={() => {
+                if (map.current) {
+                  map.current.easeTo({
+                    bearing: dir.angle,
+                    duration: 1000,
+                    essential: true
+                  });
+                }
+              }}
+              className="w-9 h-9 flex items-center justify-center rounded-sm text-xs font-bold hover:bg-muted transition-colors text-muted-foreground hover:text-primary"
+              title={`Rotate to ${dir.label}`}
+            >
+              {dir.label}
+            </button>
+          ))}
+        </div>
       </div>
 
     </div >

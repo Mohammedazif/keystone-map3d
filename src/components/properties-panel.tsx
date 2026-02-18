@@ -473,7 +473,12 @@ function ZoneProperties() {
                 </div>
             )}
 
-            <p className='text-sm text-muted-foreground text-center p-4'>This is a 2D area. You can use the AI generator to populate it or draw buildings inside.</p>
+            <div className="p-3 bg-secondary rounded-md space-y-2 text-sm mt-4">
+                <div className="flex justify-between">
+                    <span className="text-muted-foreground">Footprint Area:</span>
+                    <span className="font-mono">{object.area.toFixed(2)} m²</span>
+                </div>
+            </div>
         </div>
     );
 }
@@ -523,8 +528,20 @@ function InternalUtilityProperties() {
                     <span className="text-muted-foreground">Structure Height</span>
                     <span className="font-mono">{isElectrical ? "3.0m" : "2.0m"}</span>
                 </div>
-                <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded text-xs text-muted-foreground mt-2">
-                    This is an automatically generated MEP component based on building typology.
+                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md space-y-2 mt-4">
+                    <h5 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Utility Specs</h5>
+                    <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Service Logic</span>
+                        <span className="font-medium">Direct Feed</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Redundancy</span>
+                        <span className="font-medium">N+1 Config</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Units Served</span>
+                        <span className="font-medium">{building.floors.length * 4} Units</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -587,6 +604,51 @@ function ParkingFloorProperties() {
     )
 }
 
+function EntryPointProperties() {
+    const { actions, selectedObjectId, plots } = useBuildingStore();
+    if (!selectedObjectId || selectedObjectId.type !== 'EntryPoint') return null;
+
+    let entry: any = null;
+    for (const p of plots) {
+        entry = p.entries.find(e => e.id === selectedObjectId.id);
+        if (entry) break;
+    }
+
+    if (!entry) return null;
+
+    return (
+        <div className="space-y-4 pt-4">
+            <div>
+                <Label htmlFor="gate-name" className="text-sm font-medium text-muted-foreground">Gate Name</Label>
+                <Input
+                    id="gate-name"
+                    value={entry.name || ''}
+                    placeholder={`${entry.type} Gate`}
+                    onChange={(e) => actions.updateObject(entry.id, 'EntryPoint', { name: e.target.value })}
+                />
+            </div>
+            <div>
+                <Label htmlFor="gate-color" className="text-sm font-medium text-muted-foreground">Gate Color</Label>
+                <div className="flex gap-2 items-center mt-1">
+                    <Input
+                        id="gate-color"
+                        type="color"
+                        className="w-12 h-8 p-1 cursor-pointer"
+                        value={entry.color || (entry.type === 'Entry' ? '#10b981' : entry.type === 'Exit' ? '#ef4444' : '#3b82f6')}
+                        onChange={(e) => actions.updateObject(entry.id, 'EntryPoint', { color: e.target.value })}
+                    />
+                    <span className="text-xs text-muted-foreground font-mono uppercase">{entry.color || 'Default'}</span>
+                </div>
+            </div>
+            <div className="p-3 bg-secondary rounded-md space-y-2 text-sm mt-4">
+                <div className="flex justify-between">
+                    <span className="text-muted-foreground">Type:</span>
+                    <span className="font-semibold">{entry.type}</span>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function getSelectionDetails(selectedObjectId: { type: string, id: string } | null, plots: any[]) {
     if (!selectedObjectId) return { name: 'Properties', type: '' };
@@ -597,6 +659,14 @@ function getSelectionDetails(selectedObjectId: { type: string, id: string } | nu
     if (type === 'Plot') {
         const plot = plots.find(p => p.id === id);
         name = plot?.name;
+    } else if (type === 'EntryPoint') {
+        for (const plot of plots) {
+            const entry = plot.entries.find(e => e.id === id);
+            if (entry) {
+                name = entry.name || `${entry.type} Gate`;
+                break;
+            }
+        }
     } else {
         for (const plot of plots) {
             if (type === 'Building') {
@@ -662,6 +732,7 @@ export function PropertiesPanel() {
                 {(selectedObjectId.type === 'GreenArea' || selectedObjectId.type === 'ParkingArea' || selectedObjectId.type === 'BuildableArea' || selectedObjectId.type === 'UtilityArea') && <ZoneProperties />}
                 {(selectedObjectId.type as string) === 'Utility' && <InternalUtilityProperties />}
                 {(selectedObjectId.type as string) === 'Parking' && <ParkingFloorProperties />}
+                {selectedObjectId.type === 'EntryPoint' && <EntryPointProperties />}
             </CardContent>
         </Card>
     );
