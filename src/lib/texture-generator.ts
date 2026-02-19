@@ -1,87 +1,70 @@
-export type BuildingTextureType = 'Residential' | 'Commercial' | 'Institutional' | 'Mixed Use' | 'Industrial' | 'Hospitality';
+export type BuildingTextureType = 'Residential' | 'Commercial' | 'Institutional' | 'Mixed Use' | 'Industrial' | 'Hospitality' | 'Public';
 
 /**
- * Generates a procedural window pattern texture for buildings.
- * Returns ImageData that can be added to Mapbox via map.addImage().
+ * Generates a vertical mullion strip texture for buildings.
+ * All types share the same approach (glass tint + white vertical lines)
+ * to look consistent from all angles including top-down/roof view.
+ * Columns and strip width vary per type for visual differentiation.
  */
 export function generateBuildingTexture(type: BuildingTextureType, baseColor: string): ImageData | null {
     const canvas = document.createElement('canvas');
-    const size = 128; // Texture size (should be power of 2 for better performance usually, but Mapbox handles it)
+    const size = 128;
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
     if (!ctx) return null;
 
-    // Fill Background with the base color (tinted slightly lighter or darker for glass contrast)
+    // Config per type: [columns, mullionWidth, glassTintAlpha, centerDivider]
+    let cols = 4;
+    let mullionWidth = 2;
+    let glassTintAlpha = 0.4;
+    let centerDividerWidth = 0; // 0 = no center divider
+
+    switch (type) {
+        case 'Residential':
+            cols = 4; mullionWidth = 2; glassTintAlpha = 0.4; centerDividerWidth = 8;
+            break;
+        case 'Commercial':
+            cols = 6; mullionWidth = 1; glassTintAlpha = 0.45; centerDividerWidth = 0;
+            break;
+        case 'Hospitality':
+            cols = 3; mullionWidth = 3; glassTintAlpha = 0.38; centerDividerWidth = 6;
+            break;
+        case 'Institutional':
+        case 'Public':
+            cols = 4; mullionWidth = 2; glassTintAlpha = 0.35; centerDividerWidth = 0;
+            break;
+        case 'Industrial':
+            cols = 3; mullionWidth = 4; glassTintAlpha = 0.30; centerDividerWidth = 0;
+            break;
+        case 'Mixed Use':
+            cols = 5; mullionWidth = 2; glassTintAlpha = 0.40; centerDividerWidth = 5;
+            break;
+        default:
+            cols = 4; mullionWidth = 2; glassTintAlpha = 0.40; centerDividerWidth = 0;
+    }
+
+    // Base building color
     ctx.fillStyle = baseColor;
     ctx.fillRect(0, 0, size, size);
 
-    // Configure Window Style based on Type
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; // Slab/Frame color
-    ctx.lineWidth = 2;
+    // Glass tint overlay
+    ctx.fillStyle = `rgba(200, 240, 255, ${glassTintAlpha})`;
+    ctx.fillRect(0, 0, size, size);
 
-    // Common Grid Logic
-    // We want to simulate floors and windows.
-    // Since we map this texture to a wall, it will repeat.
-
-    // Draw Windows based on type
-    if (type === 'Residential') {
-        // Residential: Vertical Mullions Only (Slabs provide horizontal lines)
-        const cols = 4; // 4 windows per chunk
-        const colW = size / cols;
-        const pad = 2;
-
-        ctx.fillStyle = 'rgba(200, 240, 255, 0.4)'; // Glass tint
-
-        // Fill background with glass
-        ctx.fillRect(0, 0, size, size);
-
-        // Draw Vertical Mullions
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'; // White mullion
-        for (let c = 0; c <= cols; c++) {
-            const x = c * colW;
-            ctx.fillRect(x - 1, 0, 2, size); // 2px wide vertical line
-        }
-
-        // Optional: Add some random vertical variation for "balcony dividers"
-        ctx.fillStyle = 'rgba(200, 200, 200, 0.3)';
-        ctx.fillRect(size / 2 - 4, 0, 8, size); // Thicker center divider
-
-    } else if (type === 'Commercial') {
-        // Commercial: Sleek vertical glass strips
-        ctx.fillStyle = 'rgba(200, 230, 255, 0.6)';
-        ctx.fillRect(0, 0, size, size);
-
-        const cols = 4;
-        const colW = size / cols;
-
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; // Subtle vertical lines
-        ctx.lineWidth = 1;
-
-        // Vertical lines only
-        for (let c = 0; c <= cols; c++) {
-            ctx.beginPath();
-            ctx.moveTo(c * colW, 0);
-            ctx.lineTo(c * colW, size);
-            ctx.stroke();
-        }
-
-    } else {
-        // Institutional: Simple vertical grid
-        ctx.fillStyle = 'rgba(220, 230, 240, 0.5)';
-        ctx.fillRect(0, 0, size, size);
-
-        const cols = 4;
-        const colW = size / cols;
-
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-        for (let c = 0; c < cols; c++) {
-            ctx.fillRect(c * colW, 0, 1, size);
-        }
+    // Vertical mullion lines
+    const colW = size / cols;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    for (let c = 0; c <= cols; c++) {
+        const x = Math.round(c * colW);
+        ctx.fillRect(x - Math.floor(mullionWidth / 2), 0, mullionWidth, size);
     }
 
-    // Add a slight noise or gradient for realism? (Optional, skipping for perf)
+    // Optional center accent divider (thicker, slightly different opacity)
+    if (centerDividerWidth > 0) {
+        ctx.fillStyle = 'rgba(200, 200, 200, 0.30)';
+        ctx.fillRect(size / 2 - Math.floor(centerDividerWidth / 2), 0, centerDividerWidth, size);
+    }
 
     return ctx.getImageData(0, 0, size, size);
 }

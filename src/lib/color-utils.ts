@@ -46,5 +46,10 @@ export const BUILDING_MATERIALS = {
         baseHue: 0, // Metric for grey
         saturation: 0,
         baseLightness: 40,
+    },
+    [BuildingIntendedUse.Hospitality]: {
+        baseHue: 300, // Magenta/Purple
+        saturation: 50,
+        baseLightness: 60,
     }
 };

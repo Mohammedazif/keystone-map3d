@@ -38,7 +38,8 @@ export interface AlgoParams {
     commercialPercent?: number;
     landUse?: string; // e.g. 'residential', 'commercial'
     selectedUtilities?: string[];
-    programMix?: any;
+    programMix?: { residential: number; commercial: number; institutional: number; hospitality: number; };
+    allocationMode?: 'floor' | 'plot'; // 'floor' = vertical stacking, 'plot' = building-wise distribution
     parkingType?: any;
     parkingTypes?: ('ug' | 'pod' | 'surface' | 'ground' | 'none')[];
     floorHeight?: number;
@@ -275,7 +276,7 @@ export function generatePerimeter(
             ? block.geometry.coordinates.map((c: any) => turf.polygon(c))
             : [block as Feature<Polygon>];
 
-        geoms.forEach(geom => {
+        geoms.forEach((geom: Feature<Polygon>) => {
             const area = turf.area(geom);
 
             // Check GFA Constraints

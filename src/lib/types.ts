@@ -14,6 +14,7 @@ export enum BuildingIntendedUse {
   Industrial = 'Industrial',
   Public = 'Public',
   Utility = 'Utility',
+  Hospitality = 'Hospitality',
 }
 
 
@@ -35,6 +36,7 @@ export interface Floor {
   height: number;
   color: string;
   type?: 'General' | 'Utility' | 'Parking';
+  intendedUse?: BuildingIntendedUse; // Per-floor use type (for mixed-use vertical stacking)
   utilityType?: UtilityType;
   parkingType?: ParkingType;
   parkingCapacity?: number;
@@ -64,6 +66,8 @@ export interface Building {
   baseHeight?: number;
   utilities?: UtilityType[]; // Utilities contained within this building
   internalUtilities?: UtilityArea[]; // Generated internal utility zones (HVAC, Electrical)
+  // Stored mix allocation so floor adjustments preserve the original ratio
+  programMix?: { residential: number; commercial: number; hospitality: number; institutional: number };
 }
 
 export interface GreenArea {

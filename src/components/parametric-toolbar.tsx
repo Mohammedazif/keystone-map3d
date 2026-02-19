@@ -1,6 +1,7 @@
 'use client';
 
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -126,15 +127,17 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         residential: 100,
         commercial: 0,
         institutional: 0,
-        openSpace: 0
+        hospitality: 0
     });
 
+    const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('floor'); // New Allocation Mode
     const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'STP', 'WTP', 'Electrical', 'HVAC', 'Water']);
 
     // Constraints
     const [regulationMaxFloors, setRegulationMaxFloors] = useState(60);
     const [maxAllowedHeight, setMaxAllowedHeight] = useState(100);
     const [regulationMaxFAR, setRegulationMaxFAR] = useState(4.0);
+    const [regulationMaxCoverage, setRegulationMaxCoverage] = useState(1.0);
 
     // Compliance Overrides (optional - will use regulation defaults if not set)
     const [maxFootprintOverride, setMaxFootprintOverride] = useState<number | undefined>(undefined);
@@ -145,13 +148,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
 
     // Update mix when land use changes
-    // Update mix when land use changes
     useEffect(() => {
-        if (landUse === 'residential') setProgramMix({ residential: 100, commercial: 0, institutional: 0, openSpace: 0 });
-        else if (landUse === 'commercial') setProgramMix({ residential: 0, commercial: 100, institutional: 0, openSpace: 0 });
-        else if (landUse === 'institutional') setProgramMix({ residential: 0, commercial: 0, institutional: 100, openSpace: 0 });
-        // Mixed use keeps current or defaults to 50/50? Let's leave it manual or default
-        else if (landUse === 'mixed') setProgramMix({ residential: 40, commercial: 40, institutional: 10, openSpace: 10 });
+        if (landUse === 'residential') setProgramMix({ residential: 100, commercial: 0, institutional: 0, hospitality: 0 });
+        else if (landUse === 'commercial') setProgramMix({ residential: 0, commercial: 100, institutional: 0, hospitality: 0 });
+        else if (landUse === 'institutional') setProgramMix({ residential: 0, commercial: 0, institutional: 100, hospitality: 0 });
+        else if (landUse === 'mixed') setProgramMix({ residential: 40, commercial: 40, institutional: 10, hospitality: 10 });
     }, [landUse]);
 
     // Derive the truly selected plot based on user selection
@@ -284,6 +285,22 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                     setTargetFAR(far);
                 }
             }
+
+            // Coverage - Try multiple possible field names
+            const coverageValue = geomRegs['max_ground_coverage']?.value
+                || geomRegs['ground_coverage']?.value
+                || geomRegs['coverage']?.value;
+
+            if (coverageValue !== undefined) {
+                const cv = Number(coverageValue);
+                if (!isNaN(cv) && cv > 0) {
+                    // Convert % to decimal
+                    const decimalCoverage = cv / 100;
+                    setRegulationMaxCoverage(decimalCoverage);
+                    // Cap siteCoverage if current value exceeds regulation
+                    setSiteCoverage(prev => Math.min(prev, decimalCoverage));
+                }
+            }
         }
     }, [selectedPlot?.id, selectedPlot?.regulation]); // Re-run if plot or regulations change
 
@@ -337,8 +354,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             parkingType: selectedParking[0], // Legacy support
             parkingTypes: selectedParking,
             parkingRatio,
-            minFootprint: minFootprintOverride, // Compliance override
-            maxFootprint: maxFootprintOverride, // Compliance override (optional)
+            // minFootprint: minFootprintOverride,
+            // maxFootprint: maxFootprintOverride,
             minSCR: scrRange[0],
             maxSCR: scrRange[1],
             gridOrientation,
@@ -354,6 +371,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             floorHeight,
             landUse,
             programMix, // Single instance
+            allocationMode, // Pass allocation mode
             selectedUtilities,
             setback,
             frontSetback,
@@ -599,40 +617,109 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             </div>
 
                             {/* Program Allocations (Hidden for single use unless mixed) */}
-                            {landUse !== 'residential' && landUse !== 'commercial' && landUse !== 'institutional' && (
+                            {landUse === 'mixed' && (
                                 <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
-                                    <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Allocation (Total: {
-                                        programMix.residential + programMix.commercial + programMix.institutional + programMix.openSpace
-                                    }%)</Label>
-
                                     <div className="space-y-2">
-                                        <div className="space-y-1">
-                                            <div className="flex justify-between text-[10px]">
-                                                <span>Residential</span>
-                                                <span>{programMix.residential}%</span>
+                                        {/* Program Mix */}
+                                        <div className="space-y-3 pt-1 mt-2">
+                                            <div className="flex justify-between items-center">
+                                                <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Mix Allocation</Label>
+                                                <Badge
+                                                    variant="outline"
+                                                    className={cn("text-[9px] h-4",
+                                                        programMix.residential + programMix.commercial + programMix.institutional + programMix.hospitality !== 100
+                                                            ? "text-red-500 border-red-200"
+                                                            : "text-green-600 border-green-200"
+                                                    )}
+                                                >
+                                                    Total: {programMix.residential + programMix.commercial + programMix.institutional + programMix.hospitality}%
+                                                </Badge>
                                             </div>
-                                            <Slider value={[programMix.residential]} max={100} step={5} onValueChange={([v]) => setProgramMix(prev => ({ ...prev, residential: v }))} className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3" />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="flex justify-between text-[10px]">
-                                                <span>Commercial</span>
-                                                <span>{programMix.commercial}%</span>
+
+                                            {/* Allocation Mode Toggle */}
+                                            <div className="grid grid-cols-2 gap-1 bg-muted/30 p-1 rounded-md">
+                                                <button
+                                                    onClick={() => setAllocationMode('floor')}
+                                                    className={cn(
+                                                        "text-[10px] py-1 rounded-sm transition-all",
+                                                        allocationMode === 'floor' ? "bg-background shadow-sm text-primary font-medium" : "text-muted-foreground hover:text-foreground"
+                                                    )}
+                                                >
+                                                    Floor-wise (Vertical)
+                                                </button>
+                                                <button
+                                                    onClick={() => setAllocationMode('plot')}
+                                                    className={cn(
+                                                        "text-[10px] py-1 rounded-sm transition-all",
+                                                        allocationMode === 'plot' ? "bg-background shadow-sm text-primary font-medium" : "text-muted-foreground hover:text-foreground"
+                                                    )}
+                                                >
+                                                    Plot-wise (Horizontal)
+                                                </button>
                                             </div>
-                                            <Slider value={[programMix.commercial]} max={100} step={5} onValueChange={([v]) => setProgramMix(prev => ({ ...prev, commercial: v }))} className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3" />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="flex justify-between text-[10px]">
-                                                <span>Institutional</span>
-                                                <span>{programMix.institutional}%</span>
+
+                                            {/* Mix Sliders */}
+                                            <div className="space-y-3 pl-1">
+                                                {/* Residential */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-muted-foreground">Residential</span>
+                                                        <span>{programMix.residential}%</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[programMix.residential]}
+                                                        max={100}
+                                                        step={5}
+                                                        onValueChange={([v]) => setProgramMix(prev => ({ ...prev, residential: v }))}
+                                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-orange-400 [&_span]:h-3 [&_span]:w-3"
+                                                    />
+                                                </div>
+
+                                                {/* Commercial */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-muted-foreground">Commercial</span>
+                                                        <span>{programMix.commercial}%</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[programMix.commercial]}
+                                                        max={100}
+                                                        step={5}
+                                                        onValueChange={([v]) => setProgramMix(prev => ({ ...prev, commercial: v }))}
+                                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-blue-500 [&_span]:h-3 [&_span]:w-3"
+                                                    />
+                                                </div>
+
+                                                {/* Hospitality (Replaces Open Space) */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-muted-foreground">Hospitality</span>
+                                                        <span>{programMix.hospitality}%</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[programMix.hospitality]}
+                                                        max={100}
+                                                        step={5}
+                                                        onValueChange={([v]) => setProgramMix(prev => ({ ...prev, hospitality: v }))}
+                                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-pink-500 [&_span]:h-3 [&_span]:w-3"
+                                                    />
+                                                </div>
+
+                                                {/* Institutional */}
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-muted-foreground">Institutional/Public</span>
+                                                        <span>{programMix.institutional}%</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[programMix.institutional]}
+                                                        max={100}
+                                                        step={5}
+                                                        onValueChange={([v]) => setProgramMix(prev => ({ ...prev, institutional: v }))}
+                                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-purple-500 [&_span]:h-3 [&_span]:w-3"
+                                                    />
+                                                </div>
                                             </div>
-                                            <Slider value={[programMix.institutional]} max={100} step={5} onValueChange={([v]) => setProgramMix(prev => ({ ...prev, institutional: v }))} className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3" />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="flex justify-between text-[10px]">
-                                                <span>Open Space</span>
-                                                <span>{programMix.openSpace}%</span>
-                                            </div>
-                                            <Slider value={[programMix.openSpace]} max={100} step={5} onValueChange={([v]) => setProgramMix(prev => ({ ...prev, openSpace: v }))} className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3" />
                                         </div>
                                     </div>
                                 </div>
@@ -690,7 +777,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                 <Slider
                                     value={[siteCoverage]}
                                     min={0.1}
-                                    max={1.0}
+                                    max={regulationMaxCoverage}
                                     step={0.05}
                                     onValueChange={([v]) => setSiteCoverage(v)}
                                     className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
@@ -743,7 +830,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                 </div>
 
                                 {/* Compliance Footprint Controls */}
-                                <div className="grid grid-cols-2 gap-3 pt-2">
+                                {/* <div className="grid grid-cols-2 gap-3 pt-2">
                                     <div className="space-y-1.5">
                                         <div className="flex justify-between text-[10px]">
                                             <span className="font-medium text-foreground/80">Max Footprint</span>
@@ -775,7 +862,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         </div>
                                         <p className="text-[9px] text-muted-foreground italic">Minimum viable building size</p>
                                     </div>
-                                </div>
+                                </div> */}
 
                                 {/* Constraints */}
                                 <div className="space-y-3 pt-1">
@@ -863,7 +950,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         <div className="flex justify-between items-center">
                                             <Label className="text-[10px] font-medium text-foreground/80">Floors</Label>
                                             <span className={cn("text-[10px] text-muted-foreground", floorRange[1] > regulationMaxFloors && "text-red-500 font-bold")}>
-                                                {floorRange[0]} - {floorRange[1]} fl (Reg: {regulationMaxFloors})
+                                                {floorRange[0]} - {floorRange[1]} floors (Reg: {regulationMaxFloors})
                                             </span>
                                         </div>
                                         <Slider

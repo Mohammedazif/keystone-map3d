@@ -823,6 +823,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             const plotStub = plots.find(p => p.id === plotId);
             if (!plotStub) return;
 
+            // SITE UTILIZATION (Percentage 0-100)
+            const userMaxCoverage = params.siteCoverage !== undefined ? params.siteCoverage * 100 : (plotStub.regulation?.geometry?.max_ground_coverage?.value || 50);
+
             set({ isGeneratingScenarios: true });
 
             // Helper to generate buildings for a scenario
@@ -1107,8 +1110,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     targetFloors: regulationMaxFloors
                 } = complianceOutput;
 
-                // Use user overrides if provided, otherwise use regulation values
-                const effectiveMaxFootprint = params.maxFootprint ?? regulationMaxFootprint;
+                // Use user overrides if provided, otherwise use site utilization (userMaxCoverage)
+                const effectiveMaxFootprint = params.maxFootprint ?? (plotArea * userMaxCoverage / 100);
                 const effectiveMinFootprint = params.minFootprint ?? 100;
                 const effectiveMaxFloors = params.maxFloors ?? regulationMaxFloors;
                 const effectiveMaxFAR = params.maxAllowedFAR ?? (currentRegulation.geometry.floor_area_ratio?.value || 2.0);
@@ -1133,6 +1136,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 console.log(`[FAR Scaling] Target GFA: ${effectiveMaxGFA.toFixed(0)}m², Avg Building GFA: ${avgBuildingGFA.toFixed(0)}m²`);
                 console.log(`[FAR Scaling] Target Building Count: ${targetBuildingCount} buildings to achieve FAR`);
+                console.log(`[Coverage] User Max Coverage (Utilization): ${userMaxCoverage}%`);
 
                 // Vastu: Protect Brahmasthan (Center)
                 if (p.vastuCompliant) {
@@ -1324,7 +1328,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 });
 
                 // Convert to Buildings
-                const newBuildings = explodedFeatures.map((f, i) => {
+                let newBuildings = explodedFeatures.map((f, i) => {
                     // Calculate height based on floor count range AND regulation limits
                     const floorHeight = params.floorHeight || 3.5;
 
@@ -1388,21 +1392,94 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                     // Determine intended use from params
                     let intendedUse = BuildingIntendedUse.Residential;
+                    let buildingSpecificFloors: any[] = [];
+                    const id = `gen-${crypto.randomUUID()}`;
 
-                    // Check regulation type first for more specific classification
+                    // IMPORTANT: Check mixed-use FIRST to ensure programMix allocation runs
+                    // before any regulation-type overrides (which might contain 'public', etc.)
                     const regulationType = plotStub.selectedRegulationType?.toLowerCase() || '';
 
-                    if (regulationType.includes('industrial') || regulationType.includes('warehouse') || regulationType.includes('storage') || regulationType.includes('manufacturing')) {
+                    if (params.landUse === 'mixed') {
+                        // --- MIXED USE ALLOCATION LOGIC ---
+                        const mix = params.programMix || { residential: 100, commercial: 0, institutional: 0, hospitality: 0 };
+                        const allocationMode = params.allocationMode || 'floor';
+
+                        if (allocationMode === 'plot') {
+                            // --- PLOT-WISE ALLOCATION ---
+                            // Distribute buildings based on count across the total set
+                            const totalBuildings = explodedFeatures.length;
+                            const resLimit = (mix.residential / 100) * totalBuildings;
+                            const commLimit = resLimit + (mix.commercial / 100) * totalBuildings;
+                            const hospLimit = commLimit + (mix.hospitality / 100) * totalBuildings;
+
+                            if (i < resLimit) intendedUse = BuildingIntendedUse.Residential;
+                            else if (i < commLimit) intendedUse = BuildingIntendedUse.Commercial;
+                            else if (i < hospLimit) intendedUse = BuildingIntendedUse.Hospitality;
+                            else intendedUse = BuildingIntendedUse.Public; // 'institutional' slot maps to Public
+
+                            const floorColors = generateFloorColors(floors, intendedUse);
+                            buildingSpecificFloors = Array.from({ length: floors }, (_, j) => ({
+                                id: `floor-${id}-${j}`,
+                                height: floorHeight,
+                                color: floorColors[j] || '#cccccc',
+                                type: 'Occupied',
+                                intendedUse: intendedUse
+                            }));
+
+                        } else {
+                            // --- FLOOR-WISE ALLOCATION (Vertical Stacking) ---
+                            intendedUse = BuildingIntendedUse.MixedUse;
+
+                            // Calculate number of floors for each use
+                            // Stack Order (Bottom -> Top): Institutional -> Commercial -> Hospitality -> Residential
+                            const instFloors = Math.round(floors * (mix.institutional / 100));
+                            const hospFloors = Math.round(floors * (mix.hospitality / 100));
+                            const commFloors = Math.round(floors * (mix.commercial / 100));
+                            // Residential gets the remainder to ensure total == floors
+                            const resFloors = Math.max(0, floors - instFloors - hospFloors - commFloors);
+
+                            let currentFloorIndex = 0;
+
+                            const addFloors = (count: number, type: BuildingIntendedUse) => {
+                                if (count <= 0) return;
+                                const colors = generateFloorColors(count, type);
+                                for (let k = 0; k < count; k++) {
+                                    buildingSpecificFloors.push({
+                                        id: `floor-${id}-${currentFloorIndex}`,
+                                        height: floorHeight,
+                                        color: colors[k] || '#cccccc',
+                                        type: 'Occupied',
+                                        intendedUse: type,
+                                        level: currentFloorIndex
+                                    });
+                                    currentFloorIndex++;
+                                }
+                            };
+
+                            addFloors(instFloors, BuildingIntendedUse.Public);
+                            addFloors(commFloors, BuildingIntendedUse.Commercial);
+                            addFloors(hospFloors, BuildingIntendedUse.Hospitality);
+                            addFloors(resFloors, BuildingIntendedUse.Residential);
+                        }
+                    } else if (regulationType.includes('industrial') || regulationType.includes('warehouse') || regulationType.includes('storage') || regulationType.includes('manufacturing')) {
                         intendedUse = BuildingIntendedUse.Industrial;
                     } else if (regulationType.includes('public') || regulationType.includes('civic') || regulationType.includes('government') || params.landUse === 'institutional') {
                         intendedUse = BuildingIntendedUse.Public;
                     } else if (params.landUse === 'commercial') {
                         intendedUse = BuildingIntendedUse.Commercial;
-                    } else if (params.landUse === 'mixed') {
-                        intendedUse = BuildingIntendedUse.MixedUse;
                     }
 
-                    const id = `gen-${crypto.randomUUID()}`;
+                    // Fallback for non-mixed / standard cases if floors not yet generated
+                    if (buildingSpecificFloors.length === 0) {
+                        const floorColors = generateFloorColors(floors, intendedUse);
+                        buildingSpecificFloors = Array.from({ length: floors }, (_, j) => ({
+                            id: `floor-${id}-${j}`,
+                            height: floorHeight,
+                            color: floorColors[j] || '#cccccc',
+                            type: 'Occupied',
+                            intendedUse: intendedUse
+                        }));
+                    }
 
                     // --- INTERNAL LAYOUT (CORES/UNITS) ---
                     // Some generators (like L/U/T/H) already calculate layout.
@@ -1417,10 +1494,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const activeProject = get().projects.find(prj => prj.id === get().activeProjectId);
                         const projectUnitMix = activeProject?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
 
-                        console.log(`[use-building-store] Generating internal layout for building ${i} using unitMix`, projectUnitMix);
                         const layoutResult = generateBuildingLayout(f as Feature<Polygon>, {
                             subtype: f.properties?.subtype || params.typology,
-                            unitMix: projectUnitMix
+                            unitMix: projectUnitMix,
+                            intendedUse: intendedUse // Pass intendedUse to generate appropriate unit types
                         });
                         layout = { cores: layoutResult.cores, units: layoutResult.units, utilities: layoutResult.utilities };
                     }
@@ -1441,11 +1518,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         extrusion: true,
                         soilData: null,
                         intendedUse: intendedUse,
-                        floors: Array.from({ length: floors }, (_, j) => ({
-                            id: `floor-${id}-${j}`,
-                            height: floorHeight,
-                            color: generateFloorColors(floors, intendedUse)[j] || '#cccccc'
-                        })),
+                        floors: buildingSpecificFloors,
                         cores: layout.cores,
                         units: layout.units,
                         internalUtilities: layout.utilities || [],
@@ -1453,6 +1526,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         numFloors: floors,
                         typicalFloorHeight: floorHeight,
                         visible: true,
+                        // Store mix allocation so adjusting floor count later reuses the same percentages
+                        programMix: params.landUse === 'mixed' && params.programMix
+                            ? { ...params.programMix }
+                            : undefined,
                     } as Building;
                 });
 
@@ -1482,6 +1559,31 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 color: generateFloorColors(newFloors, b.intendedUse)[j] || '#cccccc'
                             }));
                         });
+                    }
+                }
+
+                // --- SITE UTILIZATION (COVERAGE) ENFORCEMENT ---
+                // Prune buildings from smallest to largest until coverage limit is satisfied
+                const coverageLimit = p.maxCoverage ?? (plotStub.maxCoverage ? plotStub.maxCoverage : undefined);
+                if (coverageLimit !== undefined && newBuildings.length > 0) {
+                    const covPlotArea = turf.area(plotStub.geometry);
+                    const maxAllowedFootprint = covPlotArea * (coverageLimit / 100);
+                    let totalFootprint = newBuildings.reduce((sum, b) => sum + b.area, 0);
+
+                    if (totalFootprint > maxAllowedFootprint * 1.05) {
+                        console.log(`[Coverage Enforcement] Total: ${totalFootprint.toFixed(0)}m², Limit: ${maxAllowedFootprint.toFixed(0)}m² (${coverageLimit}% of ${covPlotArea.toFixed(0)}m²). Pruning...`);
+                        const sorted = [...newBuildings].sort((a, b) => a.area - b.area);
+                        const pruned: Building[] = [...newBuildings];
+                        for (const bld of sorted) {
+                            if (totalFootprint <= maxAllowedFootprint * 1.05) break;
+                            const idx = pruned.findIndex(b => b.id === bld.id);
+                            if (idx !== -1) {
+                                totalFootprint -= bld.area;
+                                pruned.splice(idx, 1);
+                            }
+                        }
+                        newBuildings = pruned;
+                        console.log(`[Coverage Enforcement] After pruning: ${newBuildings.length} buildings, coverage: ${((totalFootprint / covPlotArea) * 100).toFixed(1)}%`);
                     }
                 }
 
@@ -1931,6 +2033,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     frontSetback: params.frontSetback,
                     rearSetback: params.rearSetback,
                     vastuCompliant: isVastu,
+                    maxCoverage: userMaxCoverage,
                     overrideTypologies: scenarioTypologies[0].length > 0 ? scenarioTypologies[0] : undefined,
                     seed: 0 + (params.seedOffset || 0)
                 }));
@@ -1958,6 +2061,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     frontSetback: params.frontSetback,
                     rearSetback: params.rearSetback,
                     vastuCompliant: isVastu,
+                    maxCoverage: userMaxCoverage,
                     overrideTypologies: scenarioTypologies[1].length > 0 ? scenarioTypologies[1] : undefined,
                     seed: 1 + (params.seedOffset || 0)
                 }));
@@ -1983,6 +2087,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     frontSetback: params.frontSetback,
                     rearSetback: params.rearSetback,
                     vastuCompliant: isVastu,
+                    maxCoverage: userMaxCoverage,
                     overrideTypologies: scenarioTypologies[2].length > 0 ? scenarioTypologies[2] : undefined,
                     seed: 2 + (params.seedOffset || 0)
                 }));
@@ -2615,18 +2720,54 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const newTypicalHeight = building.typicalFloorHeight ?? oldTypicalHeight;
 
                         if (props.numFloors !== undefined || props.typicalFloorHeight !== undefined) {
-                            const colors = generateFloorColors(newNumFloors, building.intendedUse);
-
                             // Preserve special floors (Parking, Utility)
                             const specialFloors = building.floors.filter(f => f.type === 'Parking');
                             const standardFloors = building.floors.filter(f => f.type !== 'Parking');
 
-                            const newFloors = Array.from({ length: newNumFloors }, (_, i) => ({
-                                id: standardFloors[i]?.id || `floor-${Date.now()}-${i}`,
-                                height: newTypicalHeight,
-                                color: colors[i],
-                                type: 'General' as const
-                            }));
+                            let newFloors: Floor[];
+
+                            const mix = building.programMix;
+                            if (mix && building.intendedUse === BuildingIntendedUse.MixedUse) {
+                                // --- MIXED USE: Recompute from stored percentages ---
+                                // Stack order (bottom→top): Institutional → Commercial → Hospitality → Residential
+                                const instFloors  = Math.round(newNumFloors * (mix.institutional / 100));
+                                const commFloors  = Math.round(newNumFloors * (mix.commercial  / 100));
+                                const hospFloors  = Math.round(newNumFloors * (mix.hospitality  / 100));
+                                const resFloors   = Math.max(0, newNumFloors - instFloors - commFloors - hospFloors);
+
+                                const segments: Array<{ use: BuildingIntendedUse; count: number }> = [
+                                    { use: BuildingIntendedUse.Public,       count: instFloors },
+                                    { use: BuildingIntendedUse.Commercial,   count: commFloors },
+                                    { use: BuildingIntendedUse.Hospitality,  count: hospFloors },
+                                    { use: BuildingIntendedUse.Residential,  count: resFloors  },
+                                ];
+
+                                newFloors = [];
+                                let idx = 0;
+                                for (const seg of segments) {
+                                    const segColors = generateFloorColors(seg.count, seg.use);
+                                    for (let k = 0; k < seg.count; k++) {
+                                        newFloors.push({
+                                            id: standardFloors[idx]?.id || `floor-${Date.now()}-${idx}`,
+                                            height: newTypicalHeight,
+                                            color: segColors[k] || '#cccccc',
+                                            type: 'General' as const,
+                                            intendedUse: seg.use,
+                                        });
+                                        idx++;
+                                    }
+                                }
+                            } else {
+                                // --- NON-MIXED: Simple uniform regeneration ---
+                                const colors = generateFloorColors(newNumFloors, building.intendedUse);
+                                newFloors = Array.from({ length: newNumFloors }, (_, i) => ({
+                                    id: standardFloors[i]?.id || `floor-${Date.now()}-${i}`,
+                                    height: newTypicalHeight,
+                                    color: colors[i] || '#cccccc',
+                                    type: 'General' as const,
+                                    intendedUse: building.intendedUse,
+                                }));
+                            }
 
                             building.floors = [...specialFloors, ...newFloors];
                             building.height = newNumFloors * newTypicalHeight;
@@ -2850,8 +2991,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // 3. Max Coverage:
                 const regMaxCoveragePct = reg?.geometry?.max_ground_coverage?.value;
                 const effectiveMaxCoveragePct = regMaxCoveragePct !== undefined
-                    ? Math.min(params.coverage || 0.5, regMaxCoveragePct / 100)
-                    : (params.coverage || 0.5);
+                    ? Math.min(params.siteCoverage || 0.5, regMaxCoveragePct / 100)
+                    : (params.siteCoverage || 0.5);
 
                 // 4. Solar Requirement
                 const regSolarRequired = (reg?.sustainability?.solar_panels?.value || 0) > 0;

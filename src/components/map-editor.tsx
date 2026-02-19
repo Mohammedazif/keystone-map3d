@@ -430,15 +430,18 @@ export function MapEditor({
       mapInstance.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
 
       // GENERATE & ADD TEXTURES
-      const buildingTypes = ['Residential', 'Commercial', 'Institutional', 'Mixed Use', 'Industrial', 'Hospitality'];
+      // Always remove + re-add so changes to texture-generator take effect immediately.
+      const buildingTypes = ['Residential', 'Commercial', 'Institutional', 'Public', 'Mixed Use', 'Industrial', 'Hospitality'];
       buildingTypes.forEach(type => {
-        // Generate texture with a base color matching our palette
         const color = getBuildingColor(type as BuildingIntendedUse);
         const img = generateBuildingTexture(type as any, color);
-        if (img && !mapInstance.hasImage(`texture-${type}`)) {
-          mapInstance.addImage(`texture-${type}`, img, { pixelRatio: 2 });
+        if (img) {
+          const key = `texture-${type}`;
+          if (mapInstance.hasImage(key)) mapInstance.removeImage(key);
+          mapInstance.addImage(key, img, { pixelRatio: 2 });
         }
       });
+
 
       // Terrain & Atmosphere Configuration
       mapInstance.setMaxPitch(85); // Allow looking up easier in mountains
@@ -450,8 +453,10 @@ export function MapEditor({
         'tileSize': 512,
         'maxzoom': 14
       });
-      // Start with flat terrain
-      mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 0 });
+      // NOTE: Do NOT call setTerrain here. Even exaggeration:0 activates Mapbox's
+      // terrain pipeline which distorts fill-extrusion base heights per-vertex,
+      // causing visible width inconsistencies on slabs at oblique camera angles.
+      // Terrain is only activated when the user explicitly toggles it on.
 
       // Add Sky Layer for better horizon context in 3D
       mapInstance.addLayer({
@@ -2025,7 +2030,11 @@ export function MapEditor({
             const typeLower = (floor.type || '').toLowerCase();
             const isBasementOrParking = (floor.level !== undefined && floor.level < 0) || typeLower === 'parking';
 
-            const builtColor = getBuildingColor(building.intendedUse);
+            // CRITICAL FIX: Use floor-specific intended use if available (for Mixed Use vertical stacking)
+            // Fallback to building-level intended use if not set on floor
+            const floorUse = floor.intendedUse || building.intendedUse;
+
+            const builtColor = getBuildingColor(floorUse);
             const intendedColor = isBasementOrParking ? '#555555' : builtColor;
 
             // --- Slabs & Walls Rendering Strategy ---
@@ -2132,7 +2141,8 @@ export function MapEditor({
             if (!mapInstance.getLayer(floorLayerId)) {
               // Determine if we should use a pattern
               const usePattern = !uiState.ghostMode && !isBasementOrParking;
-              const patternName = `texture-${building.intendedUse}`;
+              // Use floor-specific texture if available (e.g. texture-Residential, texture-Commercial)
+              const patternName = `texture-${floorUse}`;
 
               const paintProps: any = {
                 'fill-extrusion-color': usePattern ? '#ffffff' : ['get', 'color'],
@@ -2154,7 +2164,7 @@ export function MapEditor({
               }, LABELS_LAYER_ID);
             } else {
               const usePattern = !uiState.ghostMode && !isBasementOrParking;
-              const patternName = `texture-${building.intendedUse}`;
+              const patternName = `texture-${floorUse}`;
 
               mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-opacity', opacity);
               // Update Pattern & Color
@@ -2163,14 +2173,7 @@ export function MapEditor({
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', '#ffffff');
               } else {
                 // Use null to unset property in strict Mapbox TS/JS
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', null as any);
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', ['get', 'color']);
-              }
-
-              // Also update pattern opacity/visibility if pattern is used
-              if (usePattern && (uiState.ghostMode || anyComponentVisible || isInternalSelected)) {
-                // If switching to ghost/internal mode, remove pattern to see inside
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', null as any);
+                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', null); // Clear pattern
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', ['get', 'color']);
               }
             }
@@ -2178,15 +2181,6 @@ export function MapEditor({
             currentBase += floor.height;
           });
         }
-
-
-        // Calculate the height of the basement/podium to lift Cores and Units above it
-        // This ensures they don't overlap with the parking floors visually in Ghost Mode
-        const basementFloors = building.floors.filter(f =>
-          (f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking'
-        );
-        const basementHeight = basementFloors.reduce((sum, f) => sum + f.height, 0);
-        const effectiveBase = (building.baseHeight || 0) + basementHeight;
 
       });
 
@@ -2703,8 +2697,13 @@ export function MapEditor({
             const newStatus = !isTerrainEnabled;
             setIsTerrainEnabled(newStatus);
             if (map.current) {
-              // Toggle Terrain
-              map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': newStatus ? 1.0 : 0.0 });
+              // Toggle Terrain: use null to fully deactivate (exaggeration:0 still activates
+              // the terrain pipeline and distorts fill-extrusion geometry)
+              if (newStatus) {
+                map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.0 });
+              } else {
+                (map.current as any).setTerrain(null);
+              }
               // Trigger repaint to update building elevations
               if (window.tb) window.tb.repaint();
             }

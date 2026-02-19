@@ -1,7 +1,7 @@
 
 import * as turf from '@turf/turf';
 import { Feature, Polygon, MultiPolygon, Point } from 'geojson';
-import { Building, Core, Unit, UnitTypology, UtilityArea, UtilityType, EntryPoint } from '../types';
+import { Building, Core, Unit, UnitTypology, UtilityArea, UtilityType, EntryPoint, BuildingIntendedUse } from '../types';
 import { generateVastuGates } from '../vastu-gate-generator';
 
 interface LayoutParams {
@@ -13,6 +13,7 @@ interface LayoutParams {
     vastuCompliant?: boolean;
     unitMix?: UnitTypology[]; // Admin panel unit mix configuration
     alignmentRotation?: number; // The angle to rotate the building to align with axes (0deg) for internal layout generation
+    intendedUse?: BuildingIntendedUse; // Mixed Use Support
 }
 
 // Helper: Get cardinal direction of a bearing (0-360)
@@ -33,6 +34,9 @@ function getColorForUnitType(unitName: string): string {
     if (name.includes('2bhk') || name.includes('2 bhk')) return '#1E90FF';
     if (name.includes('3bhk') || name.includes('3 bhk')) return '#4169E1';
     if (name.includes('4bhk') || name.includes('4 bhk')) return '#FFD700';
+    if (name.includes('office')) return '#A9A9A9'; // Dark Gray
+    if (name.includes('guest room') || name.includes('suite')) return '#DA70D6'; // Orchid
+    if (name.includes('hall') || name.includes('public')) return '#F0E68C'; // Khaki
     return '#87CEFA'; // Default to 1BHK color
 }
 
@@ -525,13 +529,33 @@ export function generateBuildingLayout(
         if (!leasablePoly) leasablePoly = buildingPoly;
     }
 
-    // Use unitMix if provided, otherwise fall back to default behavior
-    if (params.unitMix && params.unitMix.length > 0) {
+    // Override or Setup defaults based on Intended Use
+    let useUnitMix = params.unitMix;
+    let defaultUnitType = 'Studio';
+    let defaultUnitSize = params.avgUnitSize || 120; // Residential default
+
+    // If specific non-residential use, override the mix
+    if (params.intendedUse === BuildingIntendedUse.Commercial) {
+        useUnitMix = undefined;
+        defaultUnitType = 'Office';
+        defaultUnitSize = 150;
+    } else if (params.intendedUse === BuildingIntendedUse.Hospitality) {
+        useUnitMix = undefined;
+        defaultUnitType = 'Guest Room';
+        defaultUnitSize = 35;
+    } else if (params.intendedUse === BuildingIntendedUse.Public || params.intendedUse === BuildingIntendedUse.Industrial) {
+        useUnitMix = undefined;
+        defaultUnitType = 'Hall';
+        defaultUnitSize = 500;
+    }
+
+    // Use unitMix if provided (and not cleared above), otherwise fall back to default behavior
+    if (useUnitMix && useUnitMix.length > 0) {
         // Calculate total leasable area
         const totalLeasableArea = turf.area(leasablePoly);
 
         // Calculate weighted average unit size from mix
-        const weightedAvgSize = params.unitMix.reduce((acc, unit) =>
+        const weightedAvgSize = useUnitMix!.reduce((acc, unit) =>
             acc + (unit.area * unit.mixRatio), 0);
 
         // Estimate total units that can fit
@@ -541,7 +565,7 @@ export function generateBuildingLayout(
 
         // Generate units for each type in the mix
         let unitIndex = 0;
-        params.unitMix.forEach(unitType => {
+        useUnitMix!.forEach(unitType => {
             const targetCount = Math.round(estimatedTotalUnits * unitType.mixRatio);
             const gridSizeM = Math.sqrt(unitType.area);
 
@@ -586,8 +610,8 @@ export function generateBuildingLayout(
         });
 
     } else {
-        // Fallback: Original grid-based approach with hardcoded thresholds
-        const gridSizeM = Math.sqrt(targetUnitSize);
+        // Fallback: Grid-based approach
+        const gridSizeM = Math.sqrt(defaultUnitSize);
         const gridOptions = { mask: buildingPoly, units: 'meters' as const };
         // @ts-ignore
         const grid = turf.squareGrid(bbox, gridSizeM, gridOptions);
@@ -600,15 +624,22 @@ export function generateBuildingLayout(
                 if (intersection) {
                     const area = turf.area(intersection);
 
-                    if (area > minUnitSize * 0.5) {
-                        let type = 'Studio';
-                        let color = '#ADD8E6';
+                    // Accept if area is reasonable
+                    if (area > defaultUnitSize * 0.5) {
+                        let type = defaultUnitType;
+                        let color = getColorForUnitType(type);
 
-                        if (area > 245) { type = '4BHK+'; color = idx % 2 === 0 ? '#FFD700' : '#E6C200'; }
-                        else if (area > 185) { type = '3BHK'; color = idx % 2 === 0 ? '#4169E1' : '#3658B8'; }
-                        else if (area > 140) { type = '2BHK'; color = idx % 2 === 0 ? '#1E90FF' : '#1578D6'; }
-                        else if (area > 55) { type = '1BHK'; color = idx % 2 === 0 ? '#87CEFA' : '#76B5DE'; }
-                        else { type = 'Studio'; color = idx % 2 === 0 ? '#ADD8E6' : '#9AC0CD'; }
+                        // Only apply BHK logic if it is actually Residential (or default)
+                        if (defaultUnitType === 'Studio') {
+                            if (area > 245) { type = '4BHK+'; color = idx % 2 === 0 ? '#FFD700' : '#E6C200'; }
+                            else if (area > 185) { type = '3BHK'; color = idx % 2 === 0 ? '#4169E1' : '#3658B8'; }
+                            else if (area > 140) { type = '2BHK'; color = idx % 2 === 0 ? '#1E90FF' : '#1578D6'; }
+                            else if (area > 55) { type = '1BHK'; color = idx % 2 === 0 ? '#87CEFA' : '#76B5DE'; }
+                            else { type = 'Studio'; color = idx % 2 === 0 ? '#ADD8E6' : '#9AC0CD'; }
+                        } else {
+                            // For non-residential, just alternate shades slightly
+                            color = idx % 2 === 0 ? color : darkenColor(color);
+                        }
 
                         units.push({
                             id: `unit-${idx}`,
