@@ -354,6 +354,15 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
             const querySnapshot = await getDocs(q);
             if (!querySnapshot.empty) {
                 fetchedRegulations = querySnapshot.docs.map(doc => doc.data() as RegulationData);
+            } else {
+                // Fallback to National (NBC) if no local regulations found
+                console.log(`[Store] No local regulations for ${locationName}, fetching NBC fallback...`);
+                const nbcQ = query(regulationsRef, where('location', '==', 'National (NBC)'));
+                const nbcSnapshot = await getDocs(nbcQ);
+                if (!nbcSnapshot.empty) {
+                    fetchedRegulations = nbcSnapshot.docs.map(doc => doc.data() as RegulationData);
+                    console.log(`[Store] NBC fallback found ${fetchedRegulations.length} entries.`);
+                }
             }
         }
     } catch (e) {
@@ -1878,9 +1887,16 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // Initialize empty to open modal with skeletons
                 set({ tempScenarios: [] });
 
-                // Base topology param mapping
-                const baseTypo = (params.typology === 'lshaped' || params.typology === 'slab') ? 'lamella' :
-                    (params.typology === 'ushaped' || params.typology === 'oshaped' ? 'perimeter' : 'tower');
+                // Base topology param mapping — must match the switch cases in createScenario:
+                // 'point', 'slab', 'plot', 'lshaped', 'ushaped', 'tshaped', 'hshaped', 'oshaped'
+                const baseTypo = (params.typology === 'lshaped') ? 'lshaped' :
+                    (params.typology === 'slab' || params.typology === 'plot') ? 'slab' :
+                        (params.typology === 'ushaped') ? 'ushaped' :
+                            (params.typology === 'tshaped') ? 'tshaped' :
+                                (params.typology === 'hshaped') ? 'hshaped' :
+                                    (params.typology === 'oshaped') ? 'oshaped' :
+                                        (params.typology === 'point') ? 'point' :
+                                            'slab'; // Default to slab (not point) for unknown typologies
 
                 const generatedScenarios: { plots: Plot[] }[] = [];
 
@@ -1904,7 +1920,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     }
                 }
 
-                // --- Generate Scenario 1 ---
+                // --- Generate Scenario 1: Primary typology ---
                 await sleep(100); // Quick start
                 generatedScenarios.push(createScenario("Scenario 1: Optimized", {
                     typology: baseTypo as AlgoTypology,
@@ -1922,10 +1938,19 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ tempScenarios: [...generatedScenarios] });
 
 
-                // --- Generate Scenario 2 ---
+                // --- Generate Scenario 2: Complementary typology for variety ---
                 await sleep(600); // Thinking time
+                // Pick a complementary typology for S2 to ensure visual variety
+                const s2Typo = scenarioTypologies[1].length > 0 ? baseTypo :
+                    (baseTypo === 'slab' ? 'lshaped' :
+                        baseTypo === 'lshaped' ? 'slab' :
+                            baseTypo === 'ushaped' ? 'slab' :
+                                baseTypo === 'hshaped' ? 'lshaped' :
+                                    baseTypo === 'tshaped' ? 'slab' :
+                                        baseTypo === 'oshaped' ? 'slab' :
+                                            'slab');
                 generatedScenarios.push(createScenario("Scenario 2: Max Density", {
-                    typology: baseTypo as AlgoTypology,
+                    typology: s2Typo as AlgoTypology,
                     spacing: 12,
                     orientation: isVastu ? 0 : (plotStub.roadAccessSides?.includes('E') ? 90 : 0),
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),
@@ -1940,14 +1965,17 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ tempScenarios: [...generatedScenarios] });
 
 
-                // --- Generate Scenario 3 ---
+                // --- Generate Scenario 3: Alternative angle/typology ---
                 await sleep(600); // Thinking time
-                // Try a different angle or configuration
-                const altAngle = isVastu ? 0 : 15;
-                const altTypo = baseTypo;
+                // S3 uses a rotated orientation for visual variety
+                const altAngle = isVastu ? 0 : 90;
+                const s3Typo = scenarioTypologies[2].length > 0 ? baseTypo :
+                    (baseTypo === 'slab' ? 'slab' :
+                        baseTypo === 'lshaped' ? 'lshaped' :
+                            'slab');
 
                 generatedScenarios.push(createScenario("Scenario 3: Alternative", {
-                    typology: altTypo as AlgoTypology,
+                    typology: s3Typo as AlgoTypology,
                     spacing: 18,
                     orientation: altAngle,
                     setback: params.setback !== undefined ? params.setback : (plotStub.setback || 4),

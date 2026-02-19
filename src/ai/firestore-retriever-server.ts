@@ -115,6 +115,10 @@ const LOCATION_MAP: Record<string, string> = {
     'nbc': 'in.gov.nbc.2016.vol1.digital.pdf',
     'national building code': 'in.gov.nbc.2016.vol1.digital.pdf',
     'national': 'in.gov.nbc.2016.vol1.digital.pdf',
+    'nbc vol 1': 'in.gov.nbc.2016.vol1.digital.pdf',
+    'nbc vol 2': 'in.gov.nbc.2016.vol2.digital.pdf',
+    'nbc volume 1': 'in.gov.nbc.2016.vol1.digital.pdf',
+    'nbc volume 2': 'in.gov.nbc.2016.vol2.digital.pdf',
 
     // === GREEN BUILDING & SUSTAINABILITY ===
     'green': 'IGBC_Green_New_Buildings_Rating_System_(Version_3.0_with_Fifth_Addendum).pdf',
@@ -130,19 +134,44 @@ const LOCATION_MAP: Record<string, string> = {
     'vastu shakti': 'SHAKTI CHAKRA DEGREES-Model.pdf',
 };
 
-// Available sources cache (lazy loaded)
-let AVAILABLE_SOURCES_CACHE: string[] | null = null;
+// NBC source filename patterns (for fallback detection)
+const NBC_SOURCE_PATTERNS = ['nbc', 'national building code', 'national_building_code'];
 
-async function getAvailableSourcesForFallback(): Promise<string[]> {
-    if (AVAILABLE_SOURCES_CACHE) return AVAILABLE_SOURCES_CACHE;
-    try {
-        // Fetch unique sources efficiently
-        const snapshot = await db.collection('regulations-vectors')
-            .select('source')
-            .limit(1)
-            .get();
-        return [];
-    } catch { return []; }
+function isNationalSource(source: string): boolean {
+    const lower = source.toLowerCase();
+    return NBC_SOURCE_PATTERNS.some(p => lower.includes(p)) || source === 'isNational';
+}
+
+async function getNationalChunks(db: FirebaseFirestore.Firestore, limit = 400): Promise<RegulationDocument[]> {
+    // Query for chunks with isNational flag OR with NBC filename patterns
+    const snapshot = await db.collection('regulations-vectors')
+        .where('isNational', '==', true)
+        .limit(limit)
+        .get();
+
+    if (!snapshot.empty) {
+        return snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+                text: data.text || '',
+                metadata: { source: data.source || 'NBC', filePath: data.filePath, documentId: doc.id },
+            };
+        });
+    }
+
+    // Fallback: try the known NBC filename
+    const nbcSnapshot = await db.collection('regulations-vectors')
+        .where('source', '==', 'in.gov.nbc.2016.vol1.digital.pdf')
+        .limit(limit)
+        .get();
+
+    return nbcSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+            text: data.text || '',
+            metadata: { source: data.source || 'NBC', filePath: data.filePath, documentId: doc.id },
+        };
+    });
 }
 
 /**
@@ -174,39 +203,43 @@ export async function retrieveRegulationsServer(
             colRef = colRef.where('source', '==', matchedSource).limit(STATE_LIMIT);
 
             const snapshot = await colRef.get();
-            if (snapshot.empty) return [];
 
-            const documents: RegulationDocument[] = snapshot.docs.map(doc => {
-                const data = doc.data();
-                return {
-                    text: data.text || '',
-                    metadata: {
-                        source: data.source || 'unknown',
-                        filePath: data.filePath,
-                        documentId: doc.id,
+            if (!snapshot.empty) {
+                const documents: RegulationDocument[] = snapshot.docs.map(doc => {
+                    const data = doc.data();
+                    return {
+                        text: data.text || '',
+                        metadata: {
+                            source: data.source || 'unknown',
+                            filePath: data.filePath,
+                            documentId: doc.id,
+                        },
+                    };
+                });
+                console.log(`[Firestore Retriever] Retrieved ${documents.length} chunks for ${matchedSource}`);
+                return documents;
+            }
+
+            // State source found in map but no chunks indexed yet — fall back to NBC
+            console.log(`[Firestore Retriever] No chunks found for '${matchedSource}'. Falling back to NBC.`);
+            const nbcDocs = await getNationalChunks(db);
+            if (nbcDocs.length > 0) {
+                console.log(`[Firestore Retriever] NBC fallback returned ${nbcDocs.length} chunks.`);
+                return [
+                    {
+                        text: `NOTE: Specific regulations for the requested location are not yet indexed. The following information is from the National Building Code (NBC) of India, which serves as the national standard and fallback.`,
+                        metadata: { source: 'system-nbc-fallback', filePath: 'system' },
                     },
-                };
-            });
-            console.log(`[Firestore Retriever] Retrieved ${documents.length} chunks for ${matchedSource}`);
-            return documents;
+                    ...nbcDocs,
+                ];
+            }
+            return [];
 
         } else if (preferGeneral) {
-            console.log('[Firestore Retriever] No location detected, but General Mode preferred. Searching NBC.');
-            const nbcSource = LOCATION_MAP['nbc'];
-            colRef = colRef.where('source', '==', nbcSource).limit(600);
-
-            const snapshot = await colRef.get();
-            if (snapshot.empty) return [];
-
-            const documents: RegulationDocument[] = snapshot.docs.map(doc => {
-                const data = doc.data();
-                return {
-                    text: data.text || '',
-                    metadata: { source: data.source || 'unknown', filePath: data.filePath, documentId: doc.id }
-                };
-            });
-            console.log(`[Firestore Retriever] Retrieved ${documents.length} chunks for NBC (General Mode).`);
-            return documents;
+            console.log('[Firestore Retriever] No location detected, General Mode preferred. Searching NBC.');
+            const nbcDocs = await getNationalChunks(db);
+            console.log(`[Firestore Retriever] Retrieved ${nbcDocs.length} chunks for NBC (General Mode).`);
+            return nbcDocs;
 
         } else {
             console.log('[Firestore Retriever] No specific location detected in query.');

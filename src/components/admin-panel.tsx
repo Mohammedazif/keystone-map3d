@@ -39,6 +39,7 @@ import { UnitTemplatesPanel } from './unit-templates-panel';
 import { CostRevenuePanel } from './cost-revenue-panel';
 import { TimeEstimationPanel } from './time-estimation-panel';
 import { PlanningParamsPanel } from './planning-params-panel';
+import { NationalCodePanel } from './national-code-panel';
 
 const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
     geometry: {
@@ -390,6 +391,7 @@ export function AdminPanel() {
                             <TabsTrigger value="costs">Cost & Revenue</TabsTrigger>
                             <TabsTrigger value="time">Time & Schedule</TabsTrigger>
                             <TabsTrigger value="planning">Planning Logic</TabsTrigger>
+                            <TabsTrigger value="national">National Code</TabsTrigger>
                         </TabsList>
 
                         <TabsContent value="building">
@@ -702,6 +704,10 @@ export function AdminPanel() {
 
                         <TabsContent value="planning">
                             <PlanningParamsPanel />
+                        </TabsContent>
+
+                        <TabsContent value="national">
+                            <NationalCodePanel />
                         </TabsContent>
                     </Tabs>
                 </main>

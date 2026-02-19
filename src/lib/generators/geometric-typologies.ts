@@ -1255,12 +1255,9 @@ export function generateSlabShapes(
     console.log(`[SlabGen] Spacing: Side=${sideSetback}m, Front=${frontSetback}m, Setback=${setback}m`);
 
     // 1. Valid Area
-    // Use variable setbacks (Front/Side/Rear) instead of uniform buffer
-    // @ts-ignore
-    const bufferedPlot = applyVariableSetbacks(plotGeometry, params as AlgoParams);
-    if (!bufferedPlot) return [];
-    // @ts-ignore
-    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    // NOTE: The plotGeometry chunk passed in already has setbacks applied from validAreaPoly.
+    // We do NOT apply setbacks again here to avoid double-shrinking the available area.
+    const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
 
     // @ts-ignore
     const simplified = turf.simplify(validArea, { tolerance: 0.000001, highQuality: true });
@@ -1387,7 +1384,7 @@ export function generateSlabShapes(
                     const probeArea = turf.area(probe);
                     const intersectArea = intersect ? turf.area(intersect) : 0;
 
-                    if (intersect && intersectArea >= probeArea * 0.95) {
+                    if (intersect && intersectArea >= probeArea * 0.60) {
                         validTurn = turn;
                         break;
                     } else {
@@ -1442,11 +1439,26 @@ export function generateSlabShapes(
                             }
 
                             const polyArea = turf.area(poly);
-                            if (intersect && turf.area(intersect) >= polyArea * 0.95) {
+                            if (intersect && turf.area(intersect) >= polyArea * 0.70) {
                                 if (!checkCollision(poly, usedAreas)) {
-                                    validPoly = poly;
-                                    winningDepth = d;
-                                    break;
+                                    // Clip the building to the valid area to avoid protruding outside
+                                    // @ts-ignore
+                                    const clipped = turf.intersect(poly, validArea);
+                                    if (clipped) {
+                                        // Validate clipped dimensions still meet minimums
+                                        const bbox = turf.bbox(clipped);
+                                        const clippedW = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
+                                        const clippedH = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
+                                        const clippedMinDim = Math.min(clippedW, clippedH);
+                                        const clippedMaxDim = Math.max(clippedW, clippedH);
+                                        if (clippedMinDim >= strategyMinWidth && clippedMaxDim >= strategyMinLength) {
+                                            validPoly = clipped as Feature<Polygon>;
+                                            winningDepth = d;
+                                            break;
+                                        } else {
+                                            console.log(`[Debug SlabGen] Clipped building too small: ${clippedMinDim.toFixed(1)}m x ${clippedMaxDim.toFixed(1)}m (min: ${strategyMinWidth}m x ${strategyMinLength}m). Skipping.`);
+                                        }
+                                    }
                                 } else {
                                     console.log('[Debug SlabGen] Collision blocked placement');
                                 }
