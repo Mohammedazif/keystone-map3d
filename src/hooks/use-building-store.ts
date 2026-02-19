@@ -1431,12 +1431,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             intendedUse = BuildingIntendedUse.MixedUse;
 
                             // Calculate number of floors for each use
-                            // Stack Order (Bottom -> Top): Institutional -> Commercial -> Hospitality -> Residential
+                            // Stack Order (Bottom -> Top): Commercial -> Institutional -> Hospitality -> Residential
+                            const commFloors = Math.round(floors * (mix.commercial / 100));
                             const instFloors = Math.round(floors * (mix.institutional / 100));
                             const hospFloors = Math.round(floors * (mix.hospitality / 100));
-                            const commFloors = Math.round(floors * (mix.commercial / 100));
                             // Residential gets the remainder to ensure total == floors
-                            const resFloors = Math.max(0, floors - instFloors - hospFloors - commFloors);
+                            const resFloors = Math.max(0, floors - commFloors - instFloors - hospFloors);
 
                             let currentFloorIndex = 0;
 
@@ -1456,8 +1456,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 }
                             };
 
-                            addFloors(instFloors, BuildingIntendedUse.Public);
                             addFloors(commFloors, BuildingIntendedUse.Commercial);
+                            addFloors(instFloors, BuildingIntendedUse.Public);
                             addFloors(hospFloors, BuildingIntendedUse.Hospitality);
                             addFloors(resFloors, BuildingIntendedUse.Residential);
                         }
@@ -2729,15 +2729,15 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             const mix = building.programMix;
                             if (mix && building.intendedUse === BuildingIntendedUse.MixedUse) {
                                 // --- MIXED USE: Recompute from stored percentages ---
-                                // Stack order (bottom→top): Institutional → Commercial → Hospitality → Residential
-                                const instFloors  = Math.round(newNumFloors * (mix.institutional / 100));
+                                // Stack order (bottom→top): Commercial → Institutional → Hospitality → Residential
                                 const commFloors  = Math.round(newNumFloors * (mix.commercial  / 100));
+                                const instFloors  = Math.round(newNumFloors * (mix.institutional / 100));
                                 const hospFloors  = Math.round(newNumFloors * (mix.hospitality  / 100));
-                                const resFloors   = Math.max(0, newNumFloors - instFloors - commFloors - hospFloors);
+                                const resFloors   = Math.max(0, newNumFloors - commFloors - instFloors - hospFloors);
 
                                 const segments: Array<{ use: BuildingIntendedUse; count: number }> = [
-                                    { use: BuildingIntendedUse.Public,       count: instFloors },
                                     { use: BuildingIntendedUse.Commercial,   count: commFloors },
+                                    { use: BuildingIntendedUse.Public,       count: instFloors },
                                     { use: BuildingIntendedUse.Hospitality,  count: hospFloors },
                                     { use: BuildingIntendedUse.Residential,  count: resFloors  },
                                 ];
