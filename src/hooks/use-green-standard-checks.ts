@@ -22,7 +22,7 @@ export function useGreenStandardChecks(
         if (!project) return checks;
 
         // --- 1. GEOMETRY-BASED CHECKS (Real-time) ---
-        const totalPlotArea = project.plots.reduce((sum, p) => sum + (p.area || 0), 0);
+        const totalPlotArea = project.totalPlotArea ?? project.plots.reduce((sum, p) => sum + (p.area || 0), 0);
 
         if (totalPlotArea > 0) {
             // A. Green Cover Check

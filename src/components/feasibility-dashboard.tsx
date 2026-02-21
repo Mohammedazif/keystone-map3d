@@ -289,12 +289,30 @@ function FeasibilityTab() {
                         </div>
                         <div className="grid grid-cols-2 gap-2 text-xs">
                             <div className="flex justify-between">
+                                <span className="text-muted-foreground">Substructure:</span>
+                                <span>{((estimates.timeline?.phases?.excavation || 0) + (estimates.timeline?.phases?.foundation || 0)).toFixed(1)} mo</span>
+                            </div>
+                            <div className="flex justify-between">
                                 <span className="text-muted-foreground">Structure:</span>
                                 <span>{(estimates.timeline?.phases?.structure || 0).toFixed(1)} mo</span>
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-muted-foreground">Finishing:</span>
                                 <span>{(estimates.timeline?.phases?.finishing || 0).toFixed(1)} mo</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Overlap w/ Services:</span>
+                                <span className="text-amber-500">- {((
+                                    (estimates.timeline?.phases?.excavation || 0) + 
+                                    (estimates.timeline?.phases?.foundation || 0) + 
+                                    (estimates.timeline?.phases?.structure || 0) + 
+                                    (estimates.timeline?.phases?.finishing || 0) +
+                                    (estimates.cost_breakdown?.contingency ? 2 : 2) // Assuming 2mo contingency
+                                ) - (estimates.timeline?.total_months || 0)).toFixed(1)} mo</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Contingency:</span>
+                                <span>2.0 mo</span>
                             </div>
                             <div className="pt-2 col-span-2 border-t border-border/10 flex justify-between items-center">
                                 <span className="text-muted-foreground">Efficiency Target:</span>
@@ -313,6 +331,30 @@ function FeasibilityTab() {
                             </div>
                         </div>
                     </div>
+
+                    {/* Per-Building Breakdown */}
+                    {estimates.breakdown && estimates.breakdown.length > 0 && (
+                        <div className="rounded-lg border p-3 bg-secondary/5 border-border/20">
+                            <div className="flex items-center gap-2 mb-2">
+                                <Building className="h-4 w-4 text-primary" />
+                                <span className="text-sm font-semibold">Building Breakdown</span>
+                            </div>
+                            <div className="space-y-2 max-h-[150px] overflow-y-auto pr-1">
+                                {estimates.breakdown.map((b: any, idx: number) => (
+                                    <div key={idx} className="text-xs border-b border-border/10 pb-2 last:border-0 last:pb-0">
+                                        <div className="flex justify-between font-medium mb-1">
+                                            <span>{b.buildingName}</span>
+                                            <span className="text-emerald-500">{((b.cost.total)/10000000).toFixed(2)} Cr</span>
+                                        </div>
+                                        <div className="flex justify-between text-[10px] text-muted-foreground">
+                                            <span>{b.timeline.total.toFixed(0)} months</span>
+                                            <span>Start: Now</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
             ) : (
                 <div className="rounded-lg border p-4 bg-secondary/10 text-center text-xs text-muted-foreground">

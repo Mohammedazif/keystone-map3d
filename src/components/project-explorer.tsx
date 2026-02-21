@@ -57,7 +57,13 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
         }
 
         const isSelected = selectedObjectId?.id === obj.id && selectedObjectId?.type === type;
-        const info = (type === 'ParkingArea' && obj.capacity) ? <span className="text-xs text-muted-foreground ml-2">({obj.capacity} spots)</span> : null;
+        let info = null;
+        if (type === 'ParkingArea' && obj.capacity) {
+            info = <span className="text-xs text-muted-foreground ml-2">({obj.capacity} spots)</span>;
+        } else if (type === 'UtilityArea' && obj.level !== undefined) {
+            const levelText = obj.level < 0 ? 'Basement' : 'Ground';
+            info = <span className="text-xs text-muted-foreground ml-2">({levelText})</span>;
+        }
 
         return (
             <div key={obj.id} className={cn("flex items-center justify-between p-2 rounded-md transition-colors", isSelected ? 'bg-primary/20' : 'hover:bg-muted')}>
@@ -209,9 +215,10 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                     {plot.greenAreas.map(g => renderObject(g, 'GreenArea'))}
                     {(plot.entries || []).map(e => renderObject(e, 'EntryPoint'))}
                     {plot.parkingAreas.map(p => renderObject(p, 'ParkingArea'))}
+                    {(plot.roads || []).map(r => renderObject(r, 'UtilityArea'))}
                     {plot.utilityAreas.map(u => renderObject(u, 'UtilityArea'))}
 
-                    {plot.buildings.length === 0 && plot.greenAreas.length === 0 && plot.parkingAreas.length === 0 && buildableAreas.length === 0 && plot.utilityAreas.length === 0 && (
+                    {plot.buildings.length === 0 && plot.greenAreas.length === 0 && plot.parkingAreas.length === 0 && buildableAreas.length === 0 && plot.utilityAreas.length === 0 && (plot.roads || []).length === 0 && (
                         <p className='text-xs text-center text-muted-foreground p-2'>This plot is empty.</p>
                     )}
                 </div>

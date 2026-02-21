@@ -47,6 +47,11 @@ export interface AlgoParams {
     siteCoverage?: number;
     seedOffset?: number;
 
+    // Podium / Stepped Massing
+    hasPodium?: boolean;
+    podiumFloors?: number;
+    upperFloorReduction?: number;
+
     // Dimensional Constraints
     minBuildingWidth?: number;
     maxBuildingWidth?: number;

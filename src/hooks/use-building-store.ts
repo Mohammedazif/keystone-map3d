@@ -1328,7 +1328,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 });
 
                 // Convert to Buildings
-                let newBuildings = explodedFeatures.map((f, i) => {
+                let newBuildings: Building[] = explodedFeatures.flatMap((f, i) => {
                     // Calculate height based on floor count range AND regulation limits
                     const floorHeight = params.floorHeight || 3.5;
 
@@ -1507,30 +1507,114 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         layout.utilities = f.properties.internalUtilities;
                     }
 
-                    return {
-                        id: id,
-                        name: `Building ${i + 1}`,
+                    const baseBuildingProps = {
                         isPolygonClosed: true,
-                        geometry: f,
-                        centroid: turf.centroid(f),
-                        height: height,
                         opacity: 0.9,
                         extrusion: true,
-                        soilData: null,
+                        soilData: { ph: null, bd: null },
                         intendedUse: intendedUse,
-                        floors: buildingSpecificFloors,
                         cores: layout.cores,
                         units: layout.units,
                         internalUtilities: layout.utilities || [],
-                        area: turf.area(f),
-                        numFloors: floors,
                         typicalFloorHeight: floorHeight,
                         visible: true,
-                        // Store mix allocation so adjusting floor count later reuses the same percentages
                         programMix: params.landUse === 'mixed' && params.programMix
                             ? { ...params.programMix }
                             : undefined,
-                    } as Building;
+                    };
+
+                    const isPodiumCandidate = params.hasPodium && params.podiumFloors !== undefined && params.podiumFloors > 0 && floors > params.podiumFloors &&
+                        (intendedUse === BuildingIntendedUse.Commercial || intendedUse === BuildingIntendedUse.Industrial || intendedUse === BuildingIntendedUse.Public);
+
+                    if (isPodiumCandidate) {
+                        const pFloors = params.podiumFloors!;
+                        const tFloors = floors - pFloors;
+                        
+                        // Shrink tower geometry
+                        let towerGeometry = f;
+                        const reduction = params.upperFloorReduction || 30;
+                        
+                        // We need a negative buffer (inset). 
+                        // Estimate an appropriate buffer distance based on area and reduction percent.
+                        // A rough approximation: distance = sqrt(Area) * (reduction / 100) / 2
+                        const area = turf.area(f);
+                        const bufferDist = -Math.max(1, Math.sqrt(area) * (reduction / 100) * 0.5);
+
+                        try {
+                            const buffered = turf.buffer(f, bufferDist, { units: 'meters' });
+                            if (buffered && buffered.geometry && buffered.geometry.type === 'Polygon') {
+                                const bufferedArea = turf.area(buffered);
+                                // Ensure the buffered geometry didn't completely collapse or become invalid
+                                if (bufferedArea > area * 0.1) {
+                                    towerGeometry = buffered as Feature<Polygon>;
+                                } else {
+                                    throw new Error("Buffer caused geometry to collapse too much.");
+                                }
+                            } else {
+                                throw new Error("Buffer did not return a valid Polygon.");
+                            }
+                        } catch(e) {
+                            console.warn("turf.buffer failed for tower geometry, falling back to centroid scaling", e);
+                            try {
+                                const scale = 1 - (reduction / 100);
+                                const centroid = turf.centroid(f).geometry.coordinates;
+                                // @ts-ignore
+                                const coords = f.geometry.coordinates[0];
+                                const shrunkCoords = coords.map((coord: any) => [
+                                    centroid[0] + (coord[0] - centroid[0]) * scale,
+                                    centroid[1] + (coord[1] - centroid[1]) * scale
+                                ]);
+                                towerGeometry = {
+                                    type: 'Feature',
+                                    properties: { ...f.properties },
+                                    geometry: { type: 'Polygon', coordinates: [shrunkCoords] }
+                                } as Feature<Polygon>;
+                            } catch (e2) {
+                                console.warn("Fallback scaling failed.", e2);
+                            }
+                        }
+                        
+                        const podiumBuilding: Building = {
+                            ...baseBuildingProps,
+                            id: `${id}-podium`,
+                            name: `Building ${i + 1} (Podium)`,
+                            geometry: f,
+                            centroid: turf.centroid(f),
+                            area: turf.area(f),
+                            height: pFloors * floorHeight,
+                            numFloors: pFloors,
+                            baseHeight: 0,
+                            floors: buildingSpecificFloors.slice(0, pFloors)
+                        } as Building;
+                        
+                        const towerBuilding: Building = {
+                            ...baseBuildingProps,
+                            id: `${id}-tower`,
+                            name: `Building ${i + 1} (Tower)`,
+                            geometry: towerGeometry,
+                            centroid: turf.centroid(towerGeometry),
+                            area: turf.area(towerGeometry),
+                            height: tFloors * floorHeight,
+                            numFloors: tFloors,
+                            baseHeight: pFloors * floorHeight,
+                            floors: buildingSpecificFloors.slice(pFloors).map(fl => ({ ...fl, id: `floor-${id}-tower-${fl.level || fl.id}` }))
+                        } as Building;
+                        
+                        return [podiumBuilding, towerBuilding];
+                    }
+
+                    return [{
+                        ...baseBuildingProps,
+                        id: id,
+                        name: `Building ${i + 1}`,
+                        geometry: f,
+                        centroid: turf.centroid(f),
+                        area: turf.area(f),
+                        height: height,
+                        numFloors: floors,
+                        baseHeight: 0,
+                        floors: buildingSpecificFloors,
+                    } as Building];
                 });
 
                 // Apply FAR constraint if available (prefer passed constraint, then plot default)
@@ -1553,10 +1637,23 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             const newFloors = Math.max(1, Math.floor(b.numFloors * scaleFactor));
                             b.numFloors = newFloors;
                             b.height = newFloors * b.typicalFloorHeight;
+                            
+                            // If this is a tower, we must preserve its base height but adjust its top
+                            // The baseHeight should NOT be reset unless we are also scaling the podium.
+                            // Currently, both scale proportionally, so tower's baseHeight should scale 
+                            // proportionally to its podium's new height if we want to be perfect, 
+                            // but simply keeping baseHeight = original podium height might cause gaps 
+                            // if podium shrunk. 
+                            // Since podium and tower scale by the SAME factor, we can scale baseHeight too.
+                            if (b.id.includes('-tower')) {
+                                b.baseHeight = Math.floor((b.baseHeight || 0) / b.typicalFloorHeight * scaleFactor) * b.typicalFloorHeight;
+                            }
+                            
                             b.floors = Array.from({ length: newFloors }, (_, j) => ({
                                 id: `floor-${b.id}-${j}`,
                                 height: b.typicalFloorHeight,
-                                color: generateFloorColors(newFloors, b.intendedUse)[j] || '#cccccc'
+                                color: generateFloorColors(newFloors, b.intendedUse)[j] || '#cccccc',
+                                level: b.id.includes('-tower') ? (Math.floor((b.baseHeight || 0) / b.typicalFloorHeight) + j) : j
                             }));
                         });
                     }
@@ -1759,7 +1856,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 if (params.selectedUtilities && Array.isArray(params.selectedUtilities) && params.selectedUtilities.length > 0) {
                     const selected = params.selectedUtilities;
                     const internalUtils = selected.filter((u: string) => ['HVAC', 'Electrical'].includes(u));
-                    const externalUtils = selected.filter((u: string) => ['STP', 'WTP', 'Water', 'Fire', 'Gas'].includes(u));
+                    const externalUtils = selected.filter((u: string) => ['STP', 'WTP', 'Water', 'Fire', 'Gas', 'DG Set', 'Solid Waste', 'Rainwater Harvesting', 'Admin'].includes(u));
 
                     // 1. Internal Utilities (Modify Buildings)
                     if (internalUtils.length > 0 && plotClone.buildings.length > 0) {
@@ -1819,7 +1916,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                         innerSetback as Feature<Polygon>,
                                         plotClone.buildings,
                                         params.vastuCompliant,
-                                        obstacles
+                                        obstacles,
+                                        params.selectedUtilities
                                     );
 
                                     plotClone.utilityAreas.push(...smartUtils);
@@ -3941,7 +4039,11 @@ const useProjectData = () => {
 
         const consumedPlotArea = plots.reduce((acc, p) => acc + p.area, 0);
 
-        const geomRegs = selectedPlot?.regulation?.geometry;
+        let geomRegs = selectedPlot?.regulation?.geometry;
+        if (!geomRegs && plots.length > 0) {
+            geomRegs = plots.find(p => p.regulation?.geometry)?.regulation?.geometry;
+        }
+
         const far = Number(
             geomRegs?.['floor_area_ratio']?.value ||
             geomRegs?.['max_far']?.value ||
@@ -3979,7 +4081,8 @@ const useProjectData = () => {
             far,
             totalBuildableArea,
             consumedBuildableArea,
-            consumedPlotArea: project.totalPlotArea ?? consumedPlotArea,
+            consumedPlotArea,
+            totalPlotArea: project.totalPlotArea ?? consumedPlotArea,
         };
     }, [projects, activeProjectId, plots, selectedPlot]);
 }

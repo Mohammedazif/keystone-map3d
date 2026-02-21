@@ -742,6 +742,7 @@ interface UtilityDef {
     area: number; // m2
     color: string;
     height: number;
+    level?: number;
 }
 
 /**
@@ -804,7 +805,8 @@ export function generateSiteUtilities(
     plotPoly: Feature<Polygon>,
     buildings: any[], // Array of building features containing units
     vastuCompliant: boolean = false,
-    obstacles: Feature<Polygon>[] = [] // Roads, Parking, etc.
+    obstacles: Feature<Polygon>[] = [], // Roads, Parking, etc.
+    selectedUtilities?: string[]
 ): { utilities: any[], buildings: any[] } {
     const utilities: any[] = [];
     const minX = turf.bbox(plotPoly)[0];
@@ -851,47 +853,59 @@ export function generateSiteUtilities(
     // --- 2. SIZING UTILITIES ---
 
     // STP (Sewage Treatment Plant)
-    // Formula: C_stp = (P * 135) * 0.8 / 1000 (KLD)
-    const stpCapacityKLD = (population * 135 * 0.8) / 1000;
-    const stpArea = Math.max(9, Math.ceil(stpCapacityKLD * 1.0)); // 1.0 sqm per KLD
+    // Formula: Capacity = Population * 120 LPCD * 1.2
+    const stpCapacityKLD = (population * 120 * 1.2) / 1000;
+    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 1.2)); // 1.2 sqm per KLD approx
 
     // UGT (Underground Water Tank)
-    // Formula: Volume = TDD = Population * 135
-    const ugtVolume = (population * 135) / 1000; // m3
-    const ugtArea = Math.max(15, Math.ceil(ugtVolume / 2.5)); // Min 15m2, 2.5m depth
+    // Formula: Capacity = Population * 135 LPCD * 1.0 (Full Day Storage)
+    const ugtVolume = (population * 135 * 1.0) / 1000; // m3
+    const ugtArea = Math.max(20, Math.ceil(ugtVolume / 2.5)); // Min 20m2, 2.5m depth
 
     // WTP (Water Treatment Plant)
-    // Formula: C_wtp = P * 135 * 1.1 / 1000
-    const wtpCapacityKLD = (population * 135 * 1.1) / 1000;
-    const wtpArea = Math.max(6, Math.ceil(wtpCapacityKLD * 0.4));
+    // Capacity = Pop * 135 * 1.2
+    const wtpCapacityKLD = (population * 135 * 1.2) / 1000;
+    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 0.5));
 
     // OWC (Organic Waste Converter)
     // Formula: Capacity = Total Units * 0.5 kg/day
     const owcCapacityKg = totalUnits * 0.5;
-    const owcArea = Math.max(6, Math.ceil(owcCapacityKg / 40));
+    const owcArea = Math.max(8, Math.ceil(owcCapacityKg / 30));
 
     // DG Set (Diesel Generator)
     // Formula: KVA = (Essential Load * 0.8) / (0.9 * 0.8)
     // Essential Load = 3kW * No of units
+    // Space: 0.8-1.2 sqm per kVA (User Guide) - conservatively using 0.5 for footprint vs room
     const essentialLoad = 3 * totalUnits;
     const dgKVA = (essentialLoad * 0.8) / (0.9 * 0.8);
-    const dgArea = Math.max(9, Math.ceil(dgKVA * 0.08));
+    const dgArea = Math.max(15, Math.ceil(dgKVA * 0.2)); // Using 0.2 to avoid massive sizes, assuming stacked/efficient layout
 
-    // Electrical Room / Transformer
-    const transformerArea = 12;
-    const electricalRoomArea = 8;
+    // Transformer / HT Yard
+    // 500 kVA -> 25–35 sqm (~0.06 sqm/kVA)
+    const transformerArea = Math.max(25, Math.ceil(dgKVA * 0.07));
 
-    // Gas Bank
-    const gasArea = 8;
+    // Gas Bank (LPG Manifold)
+    // Space: 15–40 sqm
+    const gasArea = Math.max(15, Math.min(40, Math.ceil(population * 0.02)));
 
-    // Fire Pump Room (SE)
-    const firePumpRoomArea = Math.max(15, Math.ceil(population * 0.01));
+    // Fire Pump Room & Tank
+    // Tank = High rise -> 200KL -> 200/2.5 = 80sqm.
+    // Pump Room = Basement/Ground
+    const fireTankVolume = 200; // 200KL standard for high rise
+    const fireTankArea = 80; // 2.5m depth
+    const firePumpRoomArea = 30;
 
     // Admin / Security Office (SW)
-    const adminBlockArea = Math.max(20, Math.ceil(population * 0.02));
+    const adminBlockArea = Math.max(20, Math.ceil(population * 0.01));
 
-    console.log(`[Utility Generator] Units: ${totalUnits}, Pop: ${population}, Demand: ${totalWaterDemand}L`);
-    console.log(`[Utility Sizes] STP: ${stpArea}m², UGT: ${ugtArea}m², DG: ${dgArea}m²`);
+    // Solar PV (Roof/Ground) - For Info/Capacity mainly
+    const solarCapacityKW = population * 0.8 * 0.7 * 0.25;
+    const solarAreaReq = solarCapacityKW * 10; // 10 sqm/kW
+
+    // EV Charging
+    const evPoints = Math.ceil(totalUnits * 0.1); // 10%
+
+    console.log(`[Utility Generator] Pop: ${population}. Sizing: STP=${stpArea}, UGT=${ugtArea}, DG=${dgArea}, Trans=${transformerArea}`);
 
     // --- 3. GROUPING & PLACEMENT ZONES ---
 
@@ -902,43 +916,29 @@ export function generateSiteUtilities(
 
     const plotOrientation = getPlotOrientation(plotPoly);
 
-    if (vastuCompliant) {
-        // VASTU LOGIC
-        // NE: Water (Elements: Water, Divine)
-        groupNE.push({ type: UtilityType.Water, name: 'UGT (Water)', area: ugtArea, color: '#4FC3F7', height: 0.5 }); // Underground
+    const shouldInclude = (type: string) => !selectedUtilities || selectedUtilities.includes(type);
 
-        // SE: Fire / Electrical (Element: Fire)
-        groupSE.push({ type: UtilityType.Electrical, name: 'Transformer Yard', area: transformerArea, color: '#FF9800', height: 3 });
-        groupSE.push({ type: UtilityType.Electrical, name: 'DG Set', area: dgArea, color: '#FFB74D', height: 2.5 });
-        groupSE.push({ type: UtilityType.Gas, name: 'Gas Bank', area: gasArea, color: '#F48FB1', height: 2 });
-        groupSE.push({ type: UtilityType.Fire, name: 'Fire Pump Room', area: firePumpRoomArea, color: '#FF5722', height: 2.5 }); // Strictly SE
+    // NE: Water Zone (Vastu: Water/Eshanya)
+    if (shouldInclude(UtilityType.Water)) groupNE.push({ type: UtilityType.Water, name: 'UGT (Domestic)', area: ugtArea, color: '#4FC3F7', height: 2.5, level: -1 });
+    // RWH often near Water
+    if (shouldInclude(UtilityType.RainwaterHarvesting)) groupNE.push({ type: UtilityType.RainwaterHarvesting, name: 'RWH Tank', area: Math.ceil(ugtArea * 0.3), color: '#81D4FA', height: 2.5, level: -1 });
 
-        // NW: Waste
-        groupNW.push({ type: UtilityType.STP, name: 'STP Plant', area: stpArea, color: '#BA68C8', height: 0.5 });
-        groupNW.push({ type: UtilityType.SolidWaste, name: 'OWC (Waste)', area: owcArea, color: '#8D6E63', height: 2 });
-        // WTP also in NW (Water processing/Waste related)
-        groupNW.push({ type: UtilityType.WTP, name: 'WTP Plant', area: wtpArea, color: '#29B6F6', height: 3 });
+    // SE: Fire / Electrical (Vastu: Agni)
+    if (shouldInclude(UtilityType.Electrical)) groupSE.push({ type: UtilityType.Electrical, name: 'Transformer Yard', area: transformerArea, color: '#FF9800', height: 2.5, level: 0 });
+    if (shouldInclude(UtilityType.DGSet)) groupSE.push({ type: UtilityType.DGSet, name: 'DG Set', area: dgArea, color: '#FFB74D', height: 2.5, level: 0 });
+    if (shouldInclude(UtilityType.Gas)) groupSE.push({ type: UtilityType.Gas, name: 'Gas Bank', area: gasArea, color: '#F48FB1', height: 2, level: 0 });
+    // Fire Pump Room usually near clusters, SE is good or near entry
+    if (shouldInclude(UtilityType.Fire)) groupSE.push({ type: UtilityType.Fire, name: 'Fire Pump Room', area: firePumpRoomArea, color: '#FF5722', height: 2.5, level: -1 });
 
-        // SW: Heavy / Earth / Admin
-        // Vastu: Admin/Security in SW (Earth element, Owner's Cabin)
-        groupSW.push({ type: UtilityType.Admin, name: 'Admin / Security', area: adminBlockArea, color: '#FDD835', height: 3 }); // Yellow for Earth
+    // NW: Waste / Air (Vastu: Vayu)
+    if (shouldInclude(UtilityType.STP)) groupNW.push({ type: UtilityType.STP, name: 'STP Plant', area: stpArea, color: '#BA68C8', height: 2.5, level: -1 });
+    if (shouldInclude(UtilityType.SolidWaste)) groupNW.push({ type: UtilityType.SolidWaste, name: 'OWC (Waste)', area: owcArea, color: '#8D6E63', height: 2, level: 0 });
+    if (shouldInclude(UtilityType.WTP)) groupNW.push({ type: UtilityType.WTP, name: 'WTP Plant', area: wtpArea, color: '#29B6F6', height: 3, level: -1 });
 
-    } else {
-        // NON-VASTU / USER DEFINED LOGIC
-        // Corner 1 (NE): Water + Fire
-        groupNE.push({ type: UtilityType.Water, name: 'UGT (Water)', area: ugtArea, color: '#4FC3F7', height: 0.5 });
-        groupNE.push({ type: UtilityType.Fire, name: 'Fire Tank', area: 50, color: '#F44336', height: 2 }); // Separate fire tank if customized
-
-        // Corner 2 (SE): Electrical
-        groupSE.push({ type: UtilityType.Electrical, name: 'Electrical Cluster', area: transformerArea + dgArea + electricalRoomArea, color: '#FF9800', height: 3 });
-
-        // Corner 3 (NW): STP + OWC
-        groupNW.push({ type: UtilityType.STP, name: 'STP + WTP', area: stpArea + wtpArea, color: '#BA68C8', height: 0.5 });
-        groupNW.push({ type: UtilityType.SolidWaste, name: 'OWC', area: owcArea, color: '#8D6E63', height: 2 });
-
-        // Corner 4 (SW): Gas + Others
-        groupSW.push({ type: UtilityType.Gas, name: 'Gas Bank', area: gasArea, color: '#F48FB1', height: 2 });
-    }
+    // SW: Earth / Heavy / Admin (Vastu: Nairitya)
+    if (shouldInclude(UtilityType.Admin)) groupSW.push({ type: UtilityType.Admin, name: 'Admin / Security', area: adminBlockArea, color: '#FDD835', height: 3, level: 0 });
+    // Separate Fire Tank (Underground) often in non-obtrusive area
+    if (shouldInclude(UtilityType.Fire)) groupSW.push({ type: UtilityType.Fire, name: 'Fire Tank (UG)', area: fireTankArea, color: '#EF9A9A', height: 2.5, level: -1 });
 
     // --- 3. PLACEMENT ALGORITHM ---
 
@@ -1192,7 +1192,9 @@ export function generateSiteUtilities(
                         area: util.area,
                         centroid: turf.centroid(poly),
                         visible: true,
-                        color: util.color
+                        color: util.color,
+                        level: util.level || 0,
+                        height: util.height
                     });
 
                     console.log(`[Utility Debug] ✓ Placed ${util.name} in ${corner} (Grid ${i},${j})`);

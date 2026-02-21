@@ -55,7 +55,7 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
     const estimates: ProjectEstimates | null = useMemo(() => {
         if (!project || !metrics || isLoading) return null;
 
-        const location = project.location || "Delhi"; // Default
+        const location = typeof project.location === 'string' ? project.location : "Delhi"; // Default
         const buildingType = project.intendedUse || "Residential";
 
         let heightCategory: TimeEstimationParameter['height_category'] = 'Mid-Rise (15-45m)';
@@ -63,10 +63,11 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
         // console.log("Estimating for:", { location, buildingType, heightCategory });
 
         // 1. MATCH COST PARAMETERS
-        let costParam = costs.find(c => c.location === location && c.building_type === buildingType);
+        const lookupType = buildingType === 'Mixed-Use' ? 'Mixed Use' : buildingType;
+        let costParam = costs.find(c => c.location === location && c.building_type === lookupType);
         if (!costParam) {
             // console.log("Exact match not found. Trying Delhi fallback...");
-            costParam = costs.find(c => c.location === 'Delhi' && c.building_type === buildingType);
+            costParam = costs.find(c => c.location === 'Delhi' && c.building_type === lookupType);
         }
         if (!costParam) {
             // console.log("Delhi fallback not found. Using first available.");
@@ -91,73 +92,165 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
         }
 
         // --- CALCULATIONS ---
-
-        // DETERMINATE GFA (Achieved vs Potential)
-        let gfa = metrics.totalBuiltUpArea;
+        let totalCost = 0;
+        let totalRev = 0;
+        let totalEarthwork = 0;
+        let totalStructure = 0;
+        let totalFinishing = 0;
+        let totalServices = 0;
+        const perBuildingBreakdown: any[] = [];
+        let maxTimelineMonths = 0;
+        let criticalPathPhases = { excavation: 0, foundation: 0, structure: 0, finishing: 0, overlap: 0, contingency: 0 };
         let isPotential = false;
 
-        // If no design exists, calculate potential max GFA based on plot
-        if (gfa === 0 && project.plots.length > 0) {
-            isPotential = true;
-            console.log("GFA is 0. Calculating potential...", project.plots.length);
-            // Use the first plot for estimation (multi-plot support later)
-            const plotStats = calculateDevelopmentStats(project.plots[0], project.feasibilityParams || DEFAULT_FEASIBILITY_PARAMS);
-            gfa = plotStats.totalBuiltUpArea;
-            console.log("Potential GFA:", gfa);
+        // Iterate over all buildings to calculate specific costs
+        let processedGFA = 0;
+        const buildings = project.plots.flatMap(p => p.buildings);
+        
+        // Helper to get time param for a specific building
+        const getTimeParam = (bType: string, height: number) => {
+            let hCat: TimeEstimationParameter['height_category'] = 'Mid-Rise (15-45m)';
+            if (height < 15) hCat = 'Low-Rise (<15m)';
+            if (height > 45) hCat = 'High-Rise (>45m)';
+            return times.find(t => t.building_type === bType && t.height_category === hCat) || timeParam;
+        };
+
+        const getCostParam = (bType: string) => {
+            return costs.find(c => c.location === location && c.building_type === bType) || costParam;
         }
 
-        // A. Costs
-        const constructionCost = {
-            earthwork: gfa * costParam.earthwork_cost_per_sqm,
-            structure: gfa * costParam.structure_cost_per_sqm,
-            finishing: gfa * costParam.finishing_cost_per_sqm,
-            services: gfa * costParam.services_cost_per_sqm,
-            contingency: 0 // calculated below
-        };
-        const subTotal = Object.values(constructionCost).reduce((a, b) => a + b, 0);
-        constructionCost.contingency = subTotal * 0.05; // 5% standard contingency
-        const totalConstructionCost = subTotal + constructionCost.contingency;
+        if (buildings.length > 0) {
+            buildings.forEach(b => {
+                const bType = b.intendedUse || buildingType;
+                const bCostParam = getCostParam(bType);
+                const bTimeParam = getTimeParam(bType, b.height);
+                
+                // Estimate GFA for this building
+                // If it has floors, use floor area * floors. If not, use footprint * floors.
+                // Creating a rough GFA estimate:
+                const floors = b.numFloors || Math.ceil(b.height / (b.typicalFloorHeight || 3));
+                const footprint = b.area;
+                const bGFA = footprint * floors;
 
-        // B. Revenue
-        const sellableArea = gfa * costParam.sellable_ratio;
-        const totalRevenue = sellableArea * costParam.market_rate_per_sqm;
+                processedGFA += bGFA;
+
+                // Break down cost for this building
+                const bEarthwork = bGFA * bCostParam.earthwork_cost_per_sqm;
+                const bStructure = bGFA * bCostParam.structure_cost_per_sqm;
+                const bFinishing = bGFA * bCostParam.finishing_cost_per_sqm;
+                const bServices = bGFA * bCostParam.services_cost_per_sqm;
+                
+                const bCost = bEarthwork + bStructure + bFinishing + bServices;
+                const bRev = bGFA * bCostParam.sellable_ratio * bCostParam.market_rate_per_sqm;
+                
+                totalCost += bCost;
+                totalRev += bRev;
+                
+                // Aggregate components
+                totalEarthwork += bEarthwork;
+                totalStructure += bStructure;
+                totalFinishing += bFinishing;
+                totalServices += bServices;
+
+                // Timeline
+                const structureDays = floors * bTimeParam.structure_per_floor_days;
+                const finishingDays = floors * bTimeParam.finishing_per_floor_days;
+                const totalDays = 
+                    (bTimeParam.excavation_timeline_months * 30) +
+                    (bTimeParam.foundation_timeline_months * 30) +
+                    structureDays +
+                    finishingDays - 
+                    ((finishingDays/30) * bTimeParam.services_overlap_factor * 30) +
+                    (bTimeParam.contingency_buffer_months * 30);
+                
+                const bMonths = totalDays / 30;
+                
+                // Track critical path (longest duration building)
+                if (bMonths > maxTimelineMonths) {
+                    maxTimelineMonths = bMonths;
+                    const overlapMonths = (finishingDays / 30) * bTimeParam.services_overlap_factor;
+                    criticalPathPhases = {
+                        excavation: bTimeParam.excavation_timeline_months,
+                        foundation: bTimeParam.foundation_timeline_months,
+                        structure: structureDays / 30,
+                        finishing: finishingDays / 30,
+                        overlap: overlapMonths,
+                        contingency: bTimeParam.contingency_buffer_months
+                    };
+                }
+
+                perBuildingBreakdown.push({
+                    buildingId: b.id,
+                    buildingName: b.name || `Building ${b.id.slice(0, 4)}`,
+                    timeline: {
+                        total: bMonths,
+                        structure: structureDays / 30,
+                        finishing: finishingDays / 30
+                    },
+                    cost: {
+                        total: bCost,
+                        ratePerSqm: bCostParam.total_cost_per_sqm
+                    }
+                });
+            });
+        } else {
+             // Fallback if no buildings generated yet (use plot potential)
+            isPotential = true;
+            // Existing potential logic...
+            let gfa = metrics.totalBuiltUpArea;
+            if (gfa === 0 && project.plots.length > 0) {
+                 const plotStats = calculateDevelopmentStats(project.plots[0], project.feasibilityParams || DEFAULT_FEASIBILITY_PARAMS);
+                 gfa = plotStats.totalBuiltUpArea;
+            }
+            
+            totalEarthwork = gfa * costParam.earthwork_cost_per_sqm;
+            totalStructure = gfa * costParam.structure_cost_per_sqm;
+            totalFinishing = gfa * costParam.finishing_cost_per_sqm;
+            totalServices = gfa * costParam.services_cost_per_sqm;
+            totalCost = totalEarthwork + totalStructure + totalFinishing + totalServices;
+            
+            totalRev = gfa * costParam.sellable_ratio * costParam.market_rate_per_sqm;
+            
+            // Standard timeline for potential
+            const floors = Math.ceil(metrics.achievedFAR / (metrics.groundCoveragePct / 100 || 0.4)) || 10;
+            const structureDays = floors * timeParam.structure_per_floor_days;
+            const finishingDays = floors * timeParam.finishing_per_floor_days;
+            const overlapMonths = (finishingDays / 30) * timeParam.services_overlap_factor;
+             const totalDays =
+                (timeParam.excavation_timeline_months * 30) +
+                (timeParam.foundation_timeline_months * 30) +
+                structureDays +
+                finishingDays -
+                (overlapMonths * 30) +
+                (timeParam.contingency_buffer_months * 30);
+            maxTimelineMonths = totalDays / 30;
+            
+            criticalPathPhases = {
+                excavation: timeParam.excavation_timeline_months,
+                foundation: timeParam.foundation_timeline_months,
+                structure: structureDays / 30,
+                finishing: finishingDays / 30,
+                overlap: overlapMonths,
+                contingency: timeParam.contingency_buffer_months
+            };
+        }
+
+        // Add 5% contingency to total cost (if not already in param, but param usually has raw. Let's add project level soft cost buffer?)
+        // The doc says "Soft Costs & Add-Ons... usually 5-10% of build cost". 
+        // Our params have "total_cost_per_sqm", let's assume it includes construction but maybe not all soft costs.
+        // Let's stick to the parameter's "total" for now to match admin panel expectation, 
+        // OR add the contingency here as per previous logic.
+        // Previous logic: constructionCost.contingency = subTotal * 0.05;
+        // The params in Admin Panel show "Total Construction Cost" which sums up the components.
+        // Let's apply limiting factors.
+        
+        // Add 5% contingency on top of everything
+        const contingency = totalCost * 0.05;
+        const finalTotalCost = totalCost + contingency; 
 
         // Profit
-        const profit = totalRevenue - totalConstructionCost; // Excluding land cost for now
-        const roi = totalConstructionCost > 0 ? (profit / totalConstructionCost) * 100 : 0;
-
-        // C. Timeline
-        // Estimate floors based on GFA / (Plot Area * Coverage)
-        // If we don't have explicit floors, estimate:
-        let floors = Math.ceil(metrics.achievedFAR / (metrics.groundCoveragePct / 100 || 0.4));
-
-        if (isPotential && project.plots.length > 0) {
-            const plot = project.plots[0];
-            // Approx Potential Floors = FAR / Coverage (assume 50% coverage if not set)
-            const far = plot.far || 3.0;
-            const cov = (plot.maxCoverage || 50) / 100;
-            floors = Math.ceil(far / cov);
-        }
-
-        const validFloors = isFinite(floors) && floors > 0 ? floors : 4; // Default to 4 floors if unknown
-
-        const structureDays = validFloors * timeParam.structure_per_floor_days;
-        const finishingDays = validFloors * timeParam.finishing_per_floor_days;
-
-        // Convert to months
-        const structureMonths = structureDays / 30;
-        const finishingMonths = finishingDays / 30;
-        const overlapMonths = finishingMonths * timeParam.services_overlap_factor;
-
-        const totalDays =
-            (timeParam.excavation_timeline_months * 30) +
-            (timeParam.foundation_timeline_months * 30) +
-            structureDays +
-            finishingDays -
-            (overlapMonths * 30) +
-            (timeParam.contingency_buffer_months * 30);
-
-        const totalMonths = totalDays / 30;
+        const profit = totalRev - finalTotalCost; 
+        const roi = finalTotalCost > 0 ? (profit / finalTotalCost) * 100 : 0;
 
         // D. Efficiency
         const achievedEfficiency = isPotential ? (planParam?.efficiency_target || 0.75) : metrics.efficiency;
@@ -171,25 +264,27 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
 
         return {
             isPotential,
-            total_construction_cost: totalConstructionCost,
-            cost_breakdown: constructionCost,
-            total_revenue: totalRevenue,
+            total_construction_cost: finalTotalCost,
+            cost_breakdown: {
+                earthwork: totalEarthwork,
+                structure: totalStructure,
+                finishing: totalFinishing,
+                services: totalServices,
+                contingency: contingency
+            },
+            total_revenue: totalRev,
             potential_profit: profit,
             roi_percentage: roi,
             timeline: {
-                total_months: totalMonths,
-                phases: {
-                    excavation: timeParam.excavation_timeline_months,
-                    foundation: timeParam.foundation_timeline_months,
-                    structure: structureMonths,
-                    finishing: finishingMonths
-                }
+                total_months: maxTimelineMonths,
+                phases: criticalPathPhases
             },
             efficiency_metrics: {
                 achieved: achievedEfficiency,
                 target: targetEfficiency,
                 status: effStatus
-            }
+            },
+            breakdown: perBuildingBreakdown
         };
     }, [project, metrics, costs, times, planning, isLoading]);
 

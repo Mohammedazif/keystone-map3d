@@ -123,6 +123,8 @@ export enum UtilityType {
   DGSet = 'DG Set',
   RainwaterHarvesting = 'Rainwater Harvesting',
   SolidWaste = 'Solid Waste',
+  SolarPV = 'Solar PV',
+  EVStation = 'EV Station',
   Admin = 'Admin',
 }
 
@@ -134,6 +136,8 @@ export interface UtilityArea {
   centroid: Feature<Point>;
   area: number;
   visible: boolean;
+  level?: number;
+  height?: number;
 }
 
 export interface Label {
@@ -587,6 +591,8 @@ export interface ProjectEstimates {
       foundation: number;
       structure: number;
       finishing: number;
+      overlap?: number;
+      contingency?: number;
     }
   };
 
@@ -595,4 +601,17 @@ export interface ProjectEstimates {
     target: number; // from planning params
     status: 'Optimal' | 'Inefficient' | 'Aggressive';
   };
+  breakdown?: {
+    buildingId: string;
+    buildingName: string;
+    timeline: {
+        total: number;
+        structure: number;
+        finishing: number;
+    };
+    cost: {
+        total: number;
+        ratePerSqm: number;
+    };
+  }[];
 }

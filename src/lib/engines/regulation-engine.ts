@@ -43,7 +43,7 @@ export class RegulationEngine {
         // 5. Compliance Scores
         const compliance = this.calculateCompliance(areaMetrics, greenMetrics);
 
-        const netSaleable = areaMetrics.totalBuiltUpArea - serviceMetrics.services.total - serviceMetrics.amenities.total; // Rough estimate
+        const netSaleable = areaMetrics.totalBuiltUpArea - areaMetrics.coreArea - areaMetrics.circulationArea - serviceMetrics.services.total - serviceMetrics.amenities.total;
         const efficiency = areaMetrics.totalBuiltUpArea > 0 ? netSaleable / areaMetrics.totalBuiltUpArea : 0;
 
         return {
@@ -57,13 +57,13 @@ export class RegulationEngine {
     }
 
     private calculateAreaMetrics() {
-        let totalPlotArea = 0;
+        let consumedPlotArea = 0;
         let totalBuiltUpArea = 0;
         let groundCoverageArea = 0;
 
         // Plot Area
         this.project.plots.forEach(plot => {
-            totalPlotArea += plot.area;
+            consumedPlotArea += plot.area;
 
             // Building Areas
             plot.buildings.forEach(b => {
@@ -82,12 +82,15 @@ export class RegulationEngine {
 
 
 
+        const totalPlotArea = this.project.totalPlotArea || consumedPlotArea;
+
         // Achieved FAR
         const achievedFAR = totalPlotArea > 0 ? (totalBuiltUpArea / totalPlotArea) : 0;
         const groundCoveragePct = totalPlotArea > 0 ? (groundCoverageArea / totalPlotArea) * 100 : 0;
 
         return {
             totalPlotArea,
+            consumedPlotArea,
             totalBuiltUpArea,
             achievedFAR,
             groundCoveragePct,
@@ -106,7 +109,7 @@ export class RegulationEngine {
 
         let servicePct = 0.05; // Default Residential
         if (this.project.intendedUse === 'Commercial') servicePct = 0.10;
-        if (this.project.intendedUse === 'Mixed Use') servicePct = 0.08;
+        if (this.project.intendedUse === 'Mixed-Use') servicePct = 0.08;
 
         const totalServices = totalBuiltUpArea * servicePct;
 
