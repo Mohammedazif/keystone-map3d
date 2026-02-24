@@ -340,7 +340,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
             />
           </div>
 
-          <div className={cn("absolute top-4 right-4 z-20 transition-transform duration-300 ease-in-out flex flex-col", 
+          <div className={cn("absolute top-4 right-4 z-20 transition-transform duration-300 ease-in-out flex flex-col items-end pointer-events-none", 
             selectedObjectId && !isSimulatorEnabled ? "translate-x-0" : "translate-x-[calc(100%+2rem)]")} 
             style={{ 
               bottom: kpiBottom,

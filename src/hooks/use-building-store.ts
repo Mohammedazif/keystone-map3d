@@ -1929,6 +1929,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 const plotClone = JSON.parse(JSON.stringify(plotStub));
                 plotClone.buildings = newBuildings;
 
+                // Persist user overrides from toolbar
+                plotClone.userFAR = params.targetFAR;
+                plotClone.userGFA = params.targetGFA;
+
                 // Clear other generated areas to avoid overlap confusion (re-populated below derived from params)
                 plotClone.greenAreas = [];
                 plotClone.parkingAreas = [];
@@ -2362,6 +2366,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         if (scenPlot.entries) {
                             draft.plots[plotIndex].entries = JSON.parse(JSON.stringify(scenPlot.entries));
                         }
+
+                        // Copy user defined targets
+                        draft.plots[plotIndex].userFAR = scenPlot.userFAR;
+                        draft.plots[plotIndex].userGFA = scenPlot.userGFA;
                     }
                 });
             }));
@@ -4307,7 +4315,7 @@ const useProjectData = () => {
             geomRegs = plots.find(p => p.regulation?.geometry)?.regulation?.geometry;
         }
 
-        const far = Number(
+        const far = selectedPlot?.userFAR || Number(
             geomRegs?.['floor_area_ratio']?.value ||
             geomRegs?.['max_far']?.value ||
             geomRegs?.['fsi']?.value
@@ -4333,7 +4341,7 @@ const useProjectData = () => {
             };
         }
 
-        const totalBuildableArea = (project.totalPlotArea ?? consumedPlotArea) * far;
+        const totalBuildableArea = selectedPlot?.userGFA || (project.totalPlotArea ?? consumedPlotArea) * far;
         const consumedBuildableArea = plots
             .flatMap(p => p.buildings)
             .reduce((acc, b) => {

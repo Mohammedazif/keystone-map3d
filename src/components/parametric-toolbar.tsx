@@ -293,9 +293,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                 const far = Number(farValue);
                 if (!isNaN(far) && far > 0) {
                     setRegulationMaxFAR(far);
-                    // Update targetFAR to regulation default
-                    setTargetFAR(far);
+                    // Update targetFAR to user override IF it exists, otherwise use regulation default
+                    setTargetFAR(selectedPlot.userFAR ?? far);
                 }
+            } else if (selectedPlot.userFAR) {
+                setTargetFAR(selectedPlot.userFAR);
             }
 
             // Coverage - Try multiple possible field names

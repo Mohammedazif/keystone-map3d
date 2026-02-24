@@ -188,6 +188,8 @@ export interface Plot {
   maxBuildingHeight?: number; // Maximum building height in meters (from regulations)
   far?: number; // Floor Area Ratio (from regulations)
   maxCoverage?: number; // Maximum ground coverage percentage (from regulations)
+  userFAR?: number; // User-defined target FAR override
+  userGFA?: number; // User-defined target GFA override
   developmentStats?: DevelopmentStats;
   roadAccessSides?: string[]; // Detected road directions (N, S, E, W)
 }

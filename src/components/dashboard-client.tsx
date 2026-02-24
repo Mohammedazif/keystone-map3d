@@ -147,53 +147,61 @@ export function DashboardClient() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[...projects].sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()).map(project => (
-              <Link key={project.id} href={`/dashboard/project/${project.id}`} className="block rounded-lg group">
-                <Card className={cn("h-full flex flex-col justify-between transition-shadow relative bg-background overflow-hidden",
-                  "group-hover:shadow-2xl group-hover:shadow-primary/20",
-                  "before:absolute before:inset-0 before:-translate-x-full before:bg-[linear-gradient(90deg,transparent,hsl(var(--primary)/0.2),transparent)]",
-                  "before:transition-transform before:duration-700 group-hover:before:translate-x-full"
-                )}>
-                  <div>
-                    <CardHeader>
-                      <CardTitle className="truncate">
-                        {project.name}
-                      </CardTitle>
-                      <CardDescription>
-                        {project.plots.length} {project.plots.length === 1 ? 'plot' : 'plots'}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-muted-foreground">
-                        Last modified: {formatDistanceToNow(new Date(project.lastModified), { addSuffix: true })}
-                      </p>
-                    </CardContent>
-                  </div>
-                  <CardFooter className='flex justify-end'>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive z-10" onClick={(e) => e.preventDefault()}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This action cannot be undone. This will permanently delete your
-                            project and remove your data from our servers.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel onClick={e => e.preventDefault()}>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={(e) => handleDeleteProject(e, project.id)}>
-                            Continue
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </CardFooter>
-                </Card>
-              </Link>
+              <div key={project.id} className="relative group rounded-lg">
+                <Link href={`/dashboard/project/${project.id}`} className="block h-full">
+                  <Card className={cn("h-full flex flex-col justify-between transition-shadow relative bg-background overflow-hidden",
+                    "group-hover:shadow-2xl group-hover:shadow-primary/20",
+                    "before:absolute before:inset-0 before:-translate-x-full before:bg-[linear-gradient(90deg,transparent,hsl(var(--primary)/0.2),transparent)]",
+                    "before:transition-transform before:duration-700 group-hover:before:translate-x-full before:pointer-events-none"
+                  )}>
+                    <div>
+                      <CardHeader>
+                        <CardTitle className="truncate">
+                          {project.name}
+                        </CardTitle>
+                        <CardDescription>
+                          {project.plots.length} {project.plots.length === 1 ? 'plot' : 'plots'}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <p className="text-sm text-muted-foreground">
+                          Last modified: {formatDistanceToNow(new Date(project.lastModified), { addSuffix: true })}
+                        </p>
+                      </CardContent>
+                    </div>
+                    <div className="h-10" /> {/* Spacer for the absolute delete button */}
+                  </Card>
+                </Link>
+
+                <div className="absolute bottom-3 right-3 z-30">
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This action cannot be undone. This will permanently delete your
+                          project and remove your data from our servers.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={(e) => handleDeleteProject(e, project.id)}>
+                          Continue
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              </div>
             ))}
           </div>
         )

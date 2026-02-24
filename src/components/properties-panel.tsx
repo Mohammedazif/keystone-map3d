@@ -129,7 +129,7 @@ function BuildingProperties() {
                 />
             </div>
 
-            <div>
+            {/* <div>
                 <Label htmlFor="intendedUse" className="text-sm font-medium text-muted-foreground">Intended Use</Label>
                 <Select
                     value={selectedBuilding.intendedUse}
@@ -146,7 +146,7 @@ function BuildingProperties() {
                         <SelectItem value="Public">Public</SelectItem>
                     </SelectContent>
                 </Select>
-            </div>
+            </div> */}
 
             {/* ─── Building Internals: Cores / Utilities / Units ─── */}
             {((selectedBuilding.cores && selectedBuilding.cores.length > 0) ||
@@ -480,44 +480,42 @@ function PlotProperties() {
     };
 
     return (
-        <ScrollArea className="max-h-[calc(100vh-200px)] -mx-6 px-6">
-            <div className='space-y-6 pb-6'>
-                <div className='space-y-4'>
-                    <div>
-                        <Label htmlFor="plot-name" className="text-sm font-medium text-muted-foreground">Plot Name</Label>
-                        <Input id="plot-name" value={selectedPlot.name} onChange={(e) => actions.updatePlot(selectedPlot.id, { name: e.target.value })} />
-                    </div>
-                    {selectedPlot.location && (
-                        <div className='p-3 bg-secondary rounded-md text-sm text-center'>
-                            <span className='text-muted-foreground'>Location: </span>
-                            <span className='font-semibold'>{selectedPlot.location}</span>
-                            {!regulation && (
-                                <p className='text-xs text-amber-500 flex items-center justify-center gap-1 mt-1'>
-                                    <Info className='h-3 w-3' /> No local regulations found. Using defaults.
-                                </p>
-                            )}
-                        </div>
-                    )}
-                    <div>
-                        <Label htmlFor="plot-setback" className="text-sm font-medium text-muted-foreground">Setback ({selectedPlot.setback}m)</Label>
-                        <Slider
-                            id="plot-setback"
-                            min={setbackRules?.min ?? 0}
-                            max={setbackRules?.max ?? 50}
-                            step={1}
-                            value={[selectedPlot.setback]}
-                            onValueChange={(v) => actions.updatePlot(selectedPlot.id, { setback: v[0] })}
-                        />
-                    </div>
+        <div className='space-y-6 pb-6'>
+            <div className='space-y-4'>
+                <div>
+                    <Label htmlFor="plot-name" className="text-sm font-medium text-muted-foreground">Plot Name</Label>
+                    <Input id="plot-name" value={selectedPlot.name} onChange={(e) => actions.updatePlot(selectedPlot.id, { name: e.target.value })} />
                 </div>
-
-                <Separator />
-
-                {/* UnitMixConfig moved? User requested hiding configuration */}
-                {/* <UnitMixConfig params={feasibilityParams} onChange={handleParamsChange} /> */}
-
+                {selectedPlot.location && (
+                    <div className='p-3 bg-secondary rounded-md text-sm text-center'>
+                        <span className='text-muted-foreground'>Location: </span>
+                        <span className='font-semibold'>{selectedPlot.location}</span>
+                        {!regulation && (
+                            <p className='text-xs text-amber-500 flex items-center justify-center gap-1 mt-1'>
+                                <Info className='h-3 w-3' /> No local regulations found. Using defaults.
+                            </p>
+                        )}
+                    </div>
+                )}
+                <div>
+                    <Label htmlFor="plot-setback" className="text-sm font-medium text-muted-foreground">Setback ({selectedPlot.setback}m)</Label>
+                    <Slider
+                        id="plot-setback"
+                        min={setbackRules?.min ?? 0}
+                        max={setbackRules?.max ?? 50}
+                        step={1}
+                        value={[selectedPlot.setback]}
+                        onValueChange={(v) => actions.updatePlot(selectedPlot.id, { setback: v[0] })}
+                    />
+                </div>
             </div>
-        </ScrollArea>
+
+            <Separator />
+
+            {/* UnitMixConfig moved? User requested hiding configuration */}
+            {/* <UnitMixConfig params={feasibilityParams} onChange={handleParamsChange} /> */}
+
+        </div>
     )
 }
 
@@ -958,7 +956,7 @@ export function PropertiesPanel() {
     const { name, type } = getSelectionDetails(selectedObjectId, plots);
 
     return (
-        <Card className="bg-background/80 backdrop-blur-sm max-h-full flex-1 flex flex-col shadow-xl overflow-hidden border-border/50">
+        <Card className="bg-background/80 backdrop-blur-sm max-h-full w-full flex flex-col shadow-xl overflow-hidden border-border/50 pointer-events-auto">
             <CardHeader className='flex-row items-center justify-between shrink-0'>
                 <div>
                     <CardTitle className='text-lg'>{name}</CardTitle>
@@ -968,7 +966,7 @@ export function PropertiesPanel() {
                     <X className='h-4 w-4' />
                 </Button>
             </CardHeader>
-            <CardContent className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin space-y-6 pb-4">
+            <CardContent className="min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin space-y-6 pb-4">
                 {selectedObjectId.type === 'Building' && <BuildingProperties />}
                 {selectedObjectId.type === 'Plot' && <PlotProperties />}
                 {(selectedObjectId.type === 'GreenArea' || selectedObjectId.type === 'ParkingArea' || selectedObjectId.type === 'BuildableArea') && <ZoneProperties />}
