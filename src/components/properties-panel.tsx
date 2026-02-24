@@ -5,12 +5,13 @@ import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import * as turf from '@turf/turf';
 import { BuildingIntendedUse, type Floor, type Plot, type BuildableArea, FeasibilityParams, UnitTypology, type UtilityArea, UtilityType, ParkingType } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateTotalParkingSpaces } from '@/lib/parking-calc';
 import { produce } from 'immer';
 import { Button } from './ui/button';
-import { Plus, Trash2, X, Info, WandSparkles, Loader2, PieChart, BarChart3, Calculator, PenTool, Zap, AlertTriangle, Fan, Car, Layers, ArrowDownToLine } from 'lucide-react';
+import { Plus, Trash2, X, Info, WandSparkles, Loader2, PieChart, BarChart3, Calculator, PenTool, Zap, AlertTriangle, Fan, Car, Layers, ArrowDownToLine, Box, Grid2x2, Eye, EyeOff, ChevronDown, ChevronRight } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
 import { Separator } from './ui/separator';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
@@ -21,9 +22,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 
 
 function BuildingProperties() {
-    const { actions } = useBuildingStore();
+    const { actions, componentVisibility } = useBuildingStore(s => ({ actions: s.actions, componentVisibility: s.componentVisibility }));
     const selectedBuilding = useSelectedBuilding();
     const selectedPlot = useSelectedPlot();
+    const [showInternals, setShowInternals] = React.useState(true);
     const projectData = useProjectData();
 
     if (!selectedBuilding || !selectedPlot) return null;
@@ -40,13 +42,15 @@ function BuildingProperties() {
 
     const totalGFA = (projectData?.totalBuildableArea ?? 0);
     const consumedGFA = (projectData?.consumedBuildableArea ?? 0);
-    const currentBuildingGFA = selectedBuilding.area * selectedBuilding.floors.length;
-    const remainingGFA = totalGFA - (consumedGFA - currentBuildingGFA);
-
     const parkingFloorsCount = selectedBuilding.floors.filter(f => f.type === 'Parking').length;
-    const effectiveFloors = (selectedBuilding.numFloors ?? selectedBuilding.floors.length) - parkingFloorsCount;
-    const newBuildingGFA = selectedBuilding.area * Math.max(0, effectiveFloors);
+    // Occupiable floor count = numFloors if set (should exclude parking), or derive from floors array
+    const occupiableFloorCount = selectedBuilding.numFloors ?? (selectedBuilding.floors.length - parkingFloorsCount);
+    const effectiveFloors = Math.max(0, occupiableFloorCount);
+    const currentBuildingGFA = selectedBuilding.area * effectiveFloors;
+    const newBuildingGFA = currentBuildingGFA;
+    const remainingGFA = totalGFA - (consumedGFA - currentBuildingGFA);
     const isOverLimit = newBuildingGFA > remainingGFA;
+
 
 
     return (
@@ -84,7 +88,7 @@ function BuildingProperties() {
                         <Input
                             id="num-floors"
                             type="number"
-                            value={selectedBuilding.numFloors ?? ''}
+                            value={occupiableFloorCount ?? ''}
                             onChange={(e) => handleFloorCountChange(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
                             min="1"
                         />
@@ -102,12 +106,11 @@ function BuildingProperties() {
                     </div>
                 </div>
                 <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => actions.addParkingFloor(selectedBuilding.id, ParkingType.Basement)} className="flex-1">
-                        <ArrowDownToLine className="h-4 w-4 mr-2" /> Add Basement
-                    </Button>
-                    {/* <Button variant="outline" size="sm" onClick={() => actions.addParkingFloor(selectedBuilding.id, ParkingType.Stilt)} className="flex-1">
-                        <Layers className="h-4 w-4 mr-2" /> Add Stilt
-                    </Button> */}
+                    {!selectedBuilding.id.endsWith('-tower') && (
+                        <Button variant="outline" size="sm" onClick={() => actions.addParkingFloor(selectedBuilding.id, ParkingType.Basement)} className="flex-1">
+                            <ArrowDownToLine className="h-4 w-4 mr-2" /> Add Basement
+                        </Button>
+                    )}
                 </div>
             </div>
             <p className='text-xs text-muted-foreground text-center'>
@@ -144,6 +147,153 @@ function BuildingProperties() {
                     </SelectContent>
                 </Select>
             </div>
+
+            {/* ─── Building Internals: Cores / Utilities / Units ─── */}
+            {((selectedBuilding.cores && selectedBuilding.cores.length > 0) ||
+              (selectedBuilding.internalUtilities && selectedBuilding.internalUtilities.length > 0) ||
+              (selectedBuilding.units && selectedBuilding.units.length > 0)) && (() => {
+                // Calculate if internals are effectively ON:
+                const anyGlobalVisible = componentVisibility.units || componentVisibility.cores || componentVisibility.electrical || componentVisibility.hvac;
+                const internalsOn = selectedBuilding.internalsVisible === true || (selectedBuilding.internalsVisible === undefined && anyGlobalVisible);
+                
+                const toggleInternals = (e: React.MouseEvent) => {
+                    e.stopPropagation();
+                    actions.updateBuilding(selectedBuilding.id, { internalsVisible: !internalsOn });
+                };
+
+                // --- Build sorted floor stack ---
+                const basementFloors = selectedBuilding.floors
+                    .filter(f => f.type === 'Parking' || (f.level !== undefined && f.level < 0))
+                    .sort((a, b) => (a.level ?? 0) - (b.level ?? 0)); // B2 before B1
+
+                const regularFloors = selectedBuilding.floors
+                    .filter(f => f.type !== 'Parking' && f.type !== 'Utility' && (f.level === undefined || f.level >= 0));
+
+                // Build unit map: floorId -> unit[]
+                const unitsByFloor: Record<string, typeof selectedBuilding.units> = {};
+                (selectedBuilding.units || []).forEach(u => {
+                    const fid = u.floorId || 'unassigned';
+                    if (!unitsByFloor[fid]) unitsByFloor[fid] = [];
+                    unitsByFloor[fid]!.push(u);
+                });
+
+                // Count units only on regular (non-parking) floors
+                const totalOccupiableUnits = regularFloors.reduce((sum, f) => sum + (unitsByFloor[f.id]?.length || 0), 0);
+                const uniqueUnitTypes = [...new Set((selectedBuilding.units || []).map(u => u.type))];
+
+                return (
+                    <div className="border rounded-md overflow-hidden">
+                        {/* Header */}
+                        <div className="flex items-center bg-secondary/50 text-sm font-medium hover:bg-secondary transition-colors">
+                            <button
+                                className="flex-1 flex items-center gap-2 px-3 py-2 text-left"
+                                onClick={() => setShowInternals(v => !v)}
+                            >
+                                <span>Building Internals</span>
+                                {showInternals ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            </button>
+                            <button
+                                className={cn("px-3 py-2 transition-colors rounded-r-md", internalsOn ? 'text-primary hover:text-primary/80' : 'text-muted-foreground hover:text-foreground')}
+                                onClick={toggleInternals}
+                                title={internalsOn ? 'Hide internals for this building' : 'Show internals for this building'}
+                            >
+                                {internalsOn ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                            </button>
+                        </div>
+
+                        {showInternals && (
+                            <div className="p-3 space-y-3 text-xs">
+
+                                {/* Cores */}
+                                {selectedBuilding.cores && selectedBuilding.cores.length > 0 && (
+                                    <div className="flex items-center gap-2 px-1 py-0.5 text-muted-foreground">
+                                        <Box className="h-3 w-3 shrink-0" style={{ color: '#9370DB' }} />
+                                        <span className="flex-1 font-medium text-foreground">
+                                            Core ({selectedBuilding.cores.length})
+                                        </span>
+                                        <span className="text-muted-foreground font-mono">
+                                            {selectedBuilding.cores.reduce((s, c) => s + turf.area(c.geometry), 0).toFixed(1)} m²
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* Internal Utilities */}
+                                {selectedBuilding.internalUtilities && selectedBuilding.internalUtilities.length > 0 && (
+                                    <div className="space-y-1">
+                                        {selectedBuilding.internalUtilities.map(util => {
+                                            const isElec = util.type === 'Electrical';
+                                            const utilArea = turf.area(util.geometry);
+                                            return (
+                                                <div key={util.id} className="flex items-center gap-2 px-1 py-0.5 text-muted-foreground">
+                                                    {isElec ? <Zap className="h-3 w-3 text-amber-400 shrink-0" /> : <Fan className="h-3 w-3 text-blue-400 shrink-0" />}
+                                                    <span className="flex-1">{util.name}</span>
+                                                    <span className="font-mono">{utilArea.toFixed(1)} m²</span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {/* ─── Floor Stack ─── */}
+                                <div className="space-y-1 border-t pt-2">
+                                    <div className="flex items-center gap-2 px-1 py-0.5">
+                                        <Layers className="h-3 w-3 text-violet-400 shrink-0" />
+                                        <span className="font-medium text-foreground">
+                                            Floor Stack ({regularFloors.length} floors{basementFloors.length > 0 ? ` + ${basementFloors.length} basement${basementFloors.length > 1 ? 's' : ''}` : ''})
+                                        </span>
+                                    </div>
+
+                                    {/* Basements */}
+                                    {basementFloors.map((floor, i) => (
+                                        <div key={floor.id} className="flex items-center gap-1.5 pl-5 py-0.5 text-muted-foreground">
+                                            <Car className="h-3 w-3 text-gray-400 shrink-0" />
+                                            <span className="text-gray-400 font-medium">
+                                                Basement {basementFloors.length - i}
+                                            </span>
+                                            <span className="text-muted-foreground/60 text-[10px]">
+                                                (Parking · {floor.parkingCapacity ?? '?'} cars)
+                                            </span>
+                                        </div>
+                                    ))}
+
+                                    {/* Regular floors with units */}
+                                    {regularFloors.map((floor, i) => {
+                                        const floorUnits = unitsByFloor[floor.id] || [];
+                                        const unitTypes = [...new Set(floorUnits.map(u => u.type))];
+                                        const floorLabel = floor.level !== undefined ? `Floor ${floor.level + 1}` : `Floor ${i + 1}`;
+                                        return (
+                                            <div key={floor.id} className="flex items-center gap-1.5 pl-5 py-0.5 text-muted-foreground">
+                                                <Layers className="h-3 w-3 text-blue-300 shrink-0" />
+                                                <span className="text-blue-300 font-medium">{floorLabel}</span>
+                                                {floorUnits.length > 0 && (
+                                                    <>
+                                                        <span>— {floorUnits.length} unit{floorUnits.length !== 1 ? 's' : ''}</span>
+                                                        <span className="text-muted-foreground/60 text-[10px]">({unitTypes.join(', ')})</span>
+                                                    </>
+                                                )}
+                                                {floor.intendedUse && floor.intendedUse !== selectedBuilding.intendedUse && (
+                                                    <span className="text-muted-foreground/60 text-[10px] ml-auto">{floor.intendedUse}</span>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+
+                                    {/* Total units summary */}
+                                    {totalOccupiableUnits > 0 && (
+                                        <div className="flex items-center gap-2 px-1 pt-1 border-t">
+                                            <Grid2x2 className="h-3 w-3 text-blue-400 shrink-0" />
+                                            <span className="font-medium text-foreground">
+                                                Total Units: {totalOccupiableUnits} · {uniqueUnitTypes.join(', ')}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
+
         </div>
     )
 }
@@ -485,27 +635,28 @@ function ZoneProperties() {
 
 function InternalUtilityProperties() {
     const { selectedObjectId, plots } = useBuildingStore();
-    if (!selectedObjectId || !selectedObjectId.id.startsWith('floor-')) return null;
+    if (!selectedObjectId || selectedObjectId.type !== 'UtilityArea') return null;
 
-    // Find floor
-    let floor: any = null;
+    // First try to find it as a plot utility area (which is already handled by ZoneProperties, but just in case)
+    // Here we focus on internal building utilities
+    let internalUtility: any = null;
     let building: any = null;
 
     for (const p of plots) {
         for (const b of p.buildings) {
-            const f = b.floors?.find((x: any) => x.id === selectedObjectId.id);
-            if (f) {
-                floor = f;
+            const u = b.internalUtilities?.find((x: any) => x.id === selectedObjectId.id);
+            if (u) {
+                internalUtility = u;
                 building = b;
                 break;
             }
         }
-        if (floor) break;
+        if (internalUtility) break;
     }
 
-    if (!floor) return <div className="p-4 text-sm text-center text-muted-foreground">Utility details not found.</div>;
+    if (!internalUtility) return <div className="p-4 text-sm text-center text-muted-foreground">Utility details not found.</div>;
 
-    const isElectrical = floor.utilityType === 'Electrical' || selectedObjectId.id.includes('electrical');
+    const isElectrical = internalUtility.type === 'Electrical';
     const name = isElectrical ? 'Electrical Room' : 'HVAC Plant';
     const Icon = isElectrical ? Zap : Fan;
 
@@ -514,19 +665,15 @@ function InternalUtilityProperties() {
             <div className="flex items-center gap-2 p-3 bg-secondary/50 rounded-md">
                 <Icon className={cn("h-5 w-5", isElectrical ? "text-amber-400" : "text-blue-400")} />
                 <div>
-                    <h4 className="font-semibold text-sm">{name}</h4>
+                    <h4 className="font-semibold text-sm">{internalUtility.name || name}</h4>
                     <p className="text-xs text-muted-foreground">Attached to {building.name}</p>
                 </div>
             </div>
 
             <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                    <span className="text-muted-foreground">Location</span>
-                    <span className="font-mono">{isElectrical ? "Base (Ground)" : "Roof Top"}</span>
-                </div>
-                <div className="flex justify-between">
-                    <span className="text-muted-foreground">Structure Height</span>
-                    <span className="font-mono">{isElectrical ? "3.0m" : "2.0m"}</span>
+                    <span className="text-muted-foreground">Footprint Area</span>
+                    <span className="font-mono">{(internalUtility.geometry ? turf.area(internalUtility.geometry) : 0).toFixed(1)} m²</span>
                 </div>
                 <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md space-y-2 mt-4">
                     <h5 className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Utility Specs</h5>
@@ -650,6 +797,91 @@ function EntryPointProperties() {
     );
 }
 
+function UnitProperties() {
+    const { selectedObjectId, plots } = useBuildingStore();
+    if (!selectedObjectId || selectedObjectId.type !== 'Unit') return null;
+
+    let unit: any = null;
+    let building: any = null;
+    for (const p of plots) {
+        for (const b of p.buildings) {
+            const u = b.units?.find((u: any) => u.id === selectedObjectId.id);
+            if (u) {
+                unit = u;
+                building = b;
+                break;
+            }
+        }
+        if (unit) break;
+    }
+
+    if (!unit) return null;
+
+    const area = unit.geometry ? turf.area(unit.geometry) : 0;
+
+    return (
+        <div className="space-y-4 pt-4">
+            <div className="flex items-center gap-2 p-3 bg-secondary/50 rounded-md">
+                <div className="w-5 h-5 rounded-sm border shadow-sm" style={{ backgroundColor: unit.color || '#ccc' }} />
+                <div>
+                    <h4 className="font-semibold text-sm">{unit.type} Unit</h4>
+                    <p className="text-xs text-muted-foreground">Building: {building.name}</p>
+                </div>
+            </div>
+
+            <div className="p-3 bg-secondary rounded-md space-y-2 text-sm mt-4">
+                <div className="flex justify-between">
+                    <span className="text-muted-foreground">Area:</span>
+                    <span className="font-mono">{area.toFixed(2)} m²</span>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function CoreProperties() {
+    const { selectedObjectId, plots } = useBuildingStore();
+    if (!selectedObjectId || selectedObjectId.type !== 'Core') return null;
+
+    let core: any = null;
+    let building: any = null;
+    for (const p of plots) {
+        for (const b of p.buildings) {
+            const c = b.cores?.find((c: any) => c.id === selectedObjectId.id);
+            if (c) {
+                core = c;
+                building = b;
+                break;
+            }
+        }
+        if (core) break;
+    }
+
+    if (!core) return null;
+
+    // Convert footprint to m2
+    const area = core.geometry ? turf.area(core.geometry) : 0;
+
+    return (
+        <div className="space-y-4 pt-4">
+            <div className="flex items-center gap-2 p-3 bg-secondary/50 rounded-md">
+                <Layers className="h-5 w-5 text-slate-500" />
+                <div>
+                    <h4 className="font-semibold text-sm">{core.type} Core</h4>
+                    <p className="text-xs text-muted-foreground">Building: {building.name}</p>
+                </div>
+            </div>
+
+            <div className="p-3 bg-secondary rounded-md space-y-2 text-sm mt-4">
+                <div className="flex justify-between">
+                    <span className="text-muted-foreground">Footprint Area:</span>
+                    <span className="font-mono">{area.toFixed(2)} m²</span>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function getSelectionDetails(selectedObjectId: { type: string, id: string } | null, plots: any[]) {
     if (!selectedObjectId) return { name: 'Properties', type: '' };
 
@@ -661,7 +893,7 @@ function getSelectionDetails(selectedObjectId: { type: string, id: string } | nu
         name = plot?.name;
     } else if (type === 'EntryPoint') {
         for (const plot of plots) {
-            const entry = plot.entries.find(e => e.id === id);
+            const entry = plot.entries.find((e: any) => e.id === id);
             if (entry) {
                 name = entry.name || `${entry.type} Gate`;
                 break;
@@ -684,6 +916,16 @@ function getSelectionDetails(selectedObjectId: { type: string, id: string } | nu
             } else if (type === 'UtilityArea') {
                 const utilityArea = plot.utilityAreas.find((u: any) => u.id === id);
                 if (utilityArea) { name = utilityArea.name; break; }
+                const internalUtil = plot.buildings.flatMap((b: any) => b.internalUtilities || []).find((u: any) => u.id === id);
+                if (internalUtil) { name = internalUtil.name || internalUtil.type; break; }
+            } else if (type === 'Unit') {
+                const b = plot.buildings.find((b: any) => b.units?.some((u: any) => u.id === id));
+                const u = b?.units?.find((u: any) => u.id === id);
+                if (u) { name = `${u.type} Unit`; break; }
+            } else if (type === 'Core') {
+                const b = plot.buildings.find((b: any) => b.cores?.some((c: any) => c.id === id));
+                const c = b?.cores?.find((c: any) => c.id === id);
+                if (c) { name = `${c.type} Core`; break; }
             } else if ((type as string) === 'Utility' || (type as string) === 'Parking') {
                 // Search in building floors
                 for (const b of plot.buildings) {
@@ -729,9 +971,17 @@ export function PropertiesPanel() {
             <CardContent className="space-y-6">
                 {selectedObjectId.type === 'Building' && <BuildingProperties />}
                 {selectedObjectId.type === 'Plot' && <PlotProperties />}
-                {(selectedObjectId.type === 'GreenArea' || selectedObjectId.type === 'ParkingArea' || selectedObjectId.type === 'BuildableArea' || selectedObjectId.type === 'UtilityArea') && <ZoneProperties />}
-                {(selectedObjectId.type as string) === 'Utility' && <InternalUtilityProperties />}
+                {(selectedObjectId.type === 'GreenArea' || selectedObjectId.type === 'ParkingArea' || selectedObjectId.type === 'BuildableArea') && <ZoneProperties />}
+                {selectedObjectId.type === 'UtilityArea' && (
+                    // We need to decide if we use ZoneProperties (plot level) or InternalUtilityProperties (building level) 
+                    // based on whether it exists on the plot directly.
+                    plots.flatMap(p => p.utilityAreas).some(u => u.id === selectedObjectId.id)
+                        ? <ZoneProperties />
+                        : <InternalUtilityProperties />
+                )}
                 {(selectedObjectId.type as string) === 'Parking' && <ParkingFloorProperties />}
+                {selectedObjectId.type === 'Unit' && <UnitProperties />}
+                {selectedObjectId.type === 'Core' && <CoreProperties />}
                 {selectedObjectId.type === 'EntryPoint' && <EntryPointProperties />}
             </CardContent>
         </Card>

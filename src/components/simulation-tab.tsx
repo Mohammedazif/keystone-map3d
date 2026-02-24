@@ -126,19 +126,36 @@ export function SimulationTab({
                             <Label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Analysis Layer</Label>
 
                             <div className="grid grid-cols-2 gap-2">
-                                {['none', 'sun-hours', 'daylight', 'wind'].map((m) => (
+                                {[
+                                    { id: 'none', label: 'None', tool: '' },
+                                    { id: 'sun-hours', label: 'Sun Hours', tool: 'Radiance/Ladybug' },
+                                    { id: 'daylight', label: 'Daylight', tool: 'Radiance/Honeybee' },
+                                    { id: 'wind', label: 'Wind / CFD', tool: 'OpenFOAM' },
+                                    { id: 'energy', label: 'Energy', tool: 'EnergyPlus/OpenStudio' },
+                                    { id: 'mobility', label: 'Mobility', tool: 'SUMO/MATSim' },
+                                    { id: 'resilience', label: 'Resilience', tool: 'OpenQuake' }
+                                ].map((m) => (
                                     <button
-                                        key={m}
-                                        onClick={() => setAnalysisMode(m as any)}
+                                        key={m.id}
+                                        onClick={() => setAnalysisMode(m.id as any)}
                                         className={cn(
-                                            "text-xs px-3 py-2 rounded-md border transition-all text-left flex items-center justify-between group",
-                                            analysisMode === m
+                                            "text-xs px-3 py-2 rounded-md border transition-all text-left flex flex-col items-start justify-center group relative",
+                                            m.id === 'none' && "col-span-2",
+                                            analysisMode === m.id
                                                 ? "bg-primary text-primary-foreground border-primary shadow-sm"
                                                 : "bg-background hover:bg-muted text-muted-foreground border-border hover:border-primary/30"
                                         )}
                                     >
-                                        <span className="capitalize">{m.replace('-', ' ')}</span>
-                                        {analysisMode === m && <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+                                        <div className="flex items-center justify-between w-full">
+                                            <span className="capitalize font-medium">{m.label}</span>
+                                            {analysisMode === m.id && <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+                                        </div>
+                                        {m.tool && (
+                                            <span className={cn(
+                                                "text-[9px] mt-0.5 opacity-80",
+                                                analysisMode === m.id ? "text-primary-foreground/80" : "text-muted-foreground"
+                                            )}>{m.tool}</span>
+                                        )}
                                     </button>
                                 ))}
                             </div>
@@ -231,14 +248,22 @@ export function SimulationTab({
                                     ) : (
                                         <>
                                             <div className="flex justify-between text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
-                                                <span>Low Impact</span>
-                                                <span>High Impact</span>
+                                                <span>{analysisMode === 'resilience' ? 'High Impact' : analysisMode === 'energy' ? 'Low EUI' : 'Low Impact'}</span>
+                                                <span>{analysisMode === 'resilience' ? 'Low Impact' : analysisMode === 'energy' ? 'High EUI' : 'High Impact'}</span>
                                             </div>
-                                            <div className="h-2.5 w-full rounded-full bg-gradient-to-r from-blue-600 via-green-500 to-red-500 shadow-inner" />
+                                            <div className={cn(
+                                                "h-2.5 w-full rounded-full shadow-inner",
+                                                analysisMode === 'mobility' ? "bg-gradient-to-r from-blue-500 via-cyan-500 to-purple-500" :
+                                                analysisMode === 'resilience' ? "bg-gradient-to-r from-red-500 via-amber-500 to-green-500" :
+                                                "bg-gradient-to-r from-blue-600 via-green-500 to-red-500"
+                                            )} />
                                             <p className="text-[10px] text-center text-muted-foreground pt-1 italic">
-                                                {analysisMode === 'sun-hours' && "Cumulative sun exposure over the day"}
-                                                {analysisMode === 'daylight' && "Visibility of the sky from surface"}
-                                                {analysisMode === 'wind' && "Wind pressure from prevailing direction"}
+                                                {analysisMode === 'sun-hours' && "Cumulative sun exposure over the day (Radiance/Ladybug)"}
+                                                {analysisMode === 'daylight' && "Visibility of the sky from surface (Radiance/Honeybee)"}
+                                                {analysisMode === 'wind' && "Wind pressure from prevailing direction (OpenFOAM)"}
+                                                {analysisMode === 'energy' && "Estimated Energy Use Intensity (EnergyPlus/OpenStudio)"}
+                                                {analysisMode === 'mobility' && "Projected traffic generation & flow (SUMO/MATSim)"}
+                                                {analysisMode === 'resilience' && "Seismic Vulnerability & Resilience Score (OpenQuake)"}
                                             </p>
                                         </>
                                     )}

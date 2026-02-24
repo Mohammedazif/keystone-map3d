@@ -183,7 +183,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                         }}
                                         title={componentVisibility.cores ? "Hide Cores" : "Show Only Cores"}
                                     >
-                                        <Box className="h-3 w-3 mr-2 text-zinc-500" />
+                                        <Box className="h-3 w-3 mr-2" style={{ color: '#9370DB' }} />
                                         <span className="flex-1">Cores ({b.cores.length})</span>
                                         {componentVisibility.cores ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
                                     </div>
@@ -191,6 +191,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                             )}
                             {b.units && b.units.length > 0 && (
                                 <div className="pl-8 space-y-1 pb-2">
+                                    {/* Header row */}
                                     <div
                                         className={cn(
                                             "flex items-center text-xs cursor-pointer transition-colors group",
@@ -198,10 +199,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                                 ? "text-primary font-medium"
                                                 : "text-muted-foreground hover:text-primary"
                                         )}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            actions.toggleComponentVisibility('units');
-                                        }}
+                                        onClick={(e) => { e.stopPropagation(); actions.toggleComponentVisibility('units'); }}
                                         title={componentVisibility.units ? "Hide Units" : "Show Only Units"}
                                     >
                                         <Grid className="h-3 w-3 mr-2 text-blue-400" />

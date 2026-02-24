@@ -10,6 +10,8 @@ export interface SoilData {
 export enum BuildingIntendedUse {
   Residential = 'Residential',
   Commercial = 'Commercial',
+  Retail = 'Retail',
+  Office = 'Office',
   MixedUse = 'Mixed-Use',
   Industrial = 'Industrial',
   Public = 'Public',
@@ -18,10 +20,12 @@ export enum BuildingIntendedUse {
 }
 
 
+
 export interface Core {
   id: string;
   type: 'Lift' | 'Stair' | 'Service' | 'Lobby';
   geometry: Feature<Polygon>;
+  floorId?: string;
 }
 
 export interface Unit {
@@ -29,6 +33,7 @@ export interface Unit {
   type: string; // e.g. "2BHK", "Studio"
   geometry: Feature<Polygon>;
   color?: string; // e.g. "#ADD8E6"
+  floorId?: string;
 }
 
 export interface Floor {
@@ -68,6 +73,12 @@ export interface Building {
   internalUtilities?: UtilityArea[]; // Generated internal utility zones (HVAC, Electrical)
   // Stored mix allocation so floor adjustments preserve the original ratio
   programMix?: { residential: number; commercial: number; hospitality: number; institutional: number };
+  // Whether to show internal elements (cores, units, utilities) on the map for THIS building
+  internalsVisible?: boolean;
+  // Rotation angle used to align core/unit grid generation (axis-aligned layout)
+  alignmentRotation?: number;
+  // For podium+tower pairs: the combined total floors (podium.numFloors + tower.numFloors)
+  totalFloors?: number;
 }
 
 export interface GreenArea {
@@ -456,7 +467,7 @@ export type GenerateZonesOutput = z.infer<typeof GenerateZonesOutputSchema>;
 
 export type DrawingObjectType = 'Plot' | 'Zone' | 'Building' | 'Road';
 
-export type SelectableObjectType = 'Plot' | 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea' | 'Label' | 'EntryPoint';
+export type SelectableObjectType = 'Plot' | 'Building' | 'GreenArea' | 'ParkingArea' | 'BuildableArea' | 'UtilityArea' | 'Label' | 'EntryPoint' | 'Unit' | 'Core';
 
 
 // Admin Panel Types

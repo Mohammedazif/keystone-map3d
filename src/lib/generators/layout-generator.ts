@@ -13,7 +13,9 @@ interface LayoutParams {
     vastuCompliant?: boolean;
     unitMix?: UnitTypology[]; // Admin panel unit mix configuration
     alignmentRotation?: number; // The angle to rotate the building to align with axes (0deg) for internal layout generation
-    intendedUse?: BuildingIntendedUse; // Mixed Use Support
+    intendedUse?: BuildingIntendedUse | string; // Mixed Use Support
+    numFloors?: number;
+    floorHeight?: number;
 }
 
 // Helper: Get cardinal direction of a bearing (0-360)
@@ -29,15 +31,15 @@ function getCardinalDirection(bearing: number): string {
 // Helper: Get base color for unit type
 function getColorForUnitType(unitName: string): string {
     const name = unitName.toLowerCase();
-    if (name.includes('studio')) return '#ADD8E6';
-    if (name.includes('1bhk') || name.includes('1 bhk')) return '#87CEFA';
-    if (name.includes('2bhk') || name.includes('2 bhk')) return '#1E90FF';
-    if (name.includes('3bhk') || name.includes('3 bhk')) return '#4169E1';
-    if (name.includes('4bhk') || name.includes('4 bhk')) return '#FFD700';
+    if (name.includes('studio')) return '#ADD8E6'; // Light Blue
+    if (name.includes('1bhk') || name.includes('1 bhk')) return '#80bc65'; // Green
+    if (name.includes('2bhk') || name.includes('2 bhk')) return '#1E90FF'; // Blue
+    if (name.includes('3bhk') || name.includes('3 bhk')) return '#DA70D6'; // Orchid
+    if (name.includes('4bhk') || name.includes('4 bhk')) return '#FFD700'; // Gold
     if (name.includes('office')) return '#A9A9A9'; // Dark Gray
-    if (name.includes('guest room') || name.includes('suite')) return '#DA70D6'; // Orchid
+    if (name.includes('guest room') || name.includes('suite')) return '#70c8daff'; 
     if (name.includes('hall') || name.includes('public')) return '#F0E68C'; // Khaki
-    return '#87CEFA'; // Default to 1BHK color
+    return '#414141';
 }
 
 // Helper: Darken a hex color by 10%
@@ -136,15 +138,142 @@ export function generateBuildingLayout(
 
     const minUnitSize = params.minUnitSize || 60;
     const targetUnitSize = params.avgUnitSize || 120;
+    const intendedUse = params.intendedUse || 'Residential';
+
+    // --- NEW CORE CALCULATION LOGIC ---
+    // 1. Determine Floor Area (A) and Floors (F)
+    const floorArea = turf.area(workingPoly); // Area per floor (BUA)
+    const floors = params.numFloors || 5; // Default if not passed
+    const height = floors * (params.floorHeight || 3.1);
+
+    // 2. Determine Population (POP) per floor
+    let popPerFloor = 0;
+    let assumedUnitsPerFloor = 0;
+    
+    if (intendedUse === 'Residential') {
+        const estUnitSize = targetUnitSize;
+        assumedUnitsPerFloor = Math.max(1, Math.floor((floorArea * 0.75) / estUnitSize)); // Assuming 75% efficiency
+        popPerFloor = assumedUnitsPerFloor * 5; // 5 persons per unit
+    } else if (intendedUse === 'Commercial' || intendedUse === 'Industrial') {
+        popPerFloor = floorArea / 10; // 10 sqm per person
+    } else if (intendedUse === 'Institutional' || intendedUse === 'Public') {
+        popPerFloor = floorArea / 6; // 6 sqm per person
+    } else {
+        popPerFloor = floorArea / 10; // Fallback
+    }
+
+    if (popPerFloor < 1) popPerFloor = 10; // Minimum safety
+
+    // 3. LIFT CALCULATIONS
+    let numLifts = 0;
+    let passengerLifts = 0;
+    let serviceLifts = 0;
+    let stretcherLifts = 0;
+
+    if (intendedUse === 'Residential') {
+        passengerLifts = Math.max(1, Math.ceil(assumedUnitsPerFloor / 80)); // 1 per 70-90 units
+    } else if (intendedUse === 'Commercial' || intendedUse === 'Industrial') {
+        passengerLifts = Math.max(1, Math.ceil(popPerFloor / 275)); // 1 per 250-300 pop
+        // OR 1 per 800-1000 sqm
+        const areaBasedLifts = Math.max(1, Math.ceil(floorArea / 900));
+        passengerLifts = Math.max(passengerLifts, areaBasedLifts);
+    } else if (intendedUse === 'Institutional' || intendedUse === 'Public' || intendedUse === 'Hospitality') {
+        passengerLifts = Math.max(1, Math.ceil(floorArea / 2250)); // 1 per 2000-2500 sqm
+        stretcherLifts = 1; // Mandatory
+    } else {
+        passengerLifts = Math.max(1, Math.ceil(floorArea / 1000));
+    }
+
+    // Height overrides
+    if (floors > 10) serviceLifts += 1; // Fire lift essentially
+    if (floors > 20) serviceLifts += 1;
+
+    const liftArea = (passengerLifts * 2.5) + (serviceLifts * 5.0) + (stretcherLifts * 6.0);
+    numLifts = passengerLifts + serviceLifts + stretcherLifts;
+
+    // 4. STAIRCASE CALCULATIONS
+    let numStairs = (popPerFloor <= 30 && height <= 20) ? 1 : 2;
+    if (popPerFloor > 500 && (intendedUse === 'Commercial' || intendedUse === 'Institutional')) {
+        numStairs = 3;
+    }
+
+    let stairAreaPerStair = 15; // default residential
+    if (intendedUse === 'Commercial') stairAreaPerStair = 22;
+    else if (intendedUse === 'Institutional' || intendedUse === 'Public') stairAreaPerStair = 28;
+
+    const stairArea = numStairs * stairAreaPerStair;
+
+    // 5. LOBBY & CORRIDOR CALCULATIONS
+    let lobbyMultiplier = 4; // Res default
+    if (intendedUse === 'Commercial') lobbyMultiplier = 6;
+    else if (intendedUse === 'Institutional' || intendedUse === 'Public') lobbyMultiplier = 8;
+    
+    const lobbyArea = numLifts * lobbyMultiplier;
+
+    let corridorArea = 0;
+    if (intendedUse === 'Residential') {
+        if (assumedUnitsPerFloor <= 4) corridorArea = 8;
+        else if (assumedUnitsPerFloor <= 8) corridorArea = 16;
+        else corridorArea = 28;
+    } else if (intendedUse === 'Commercial') {
+        corridorArea = floorArea * 0.08; // 8%
+    } else if (intendedUse === 'Institutional' || intendedUse === 'Public') {
+        corridorArea = floorArea * 0.12; // 12%
+    }
+
+    // 6. SHAFT CALCULATIONS
+    let shaftArea = 0;
+    // Plumbing (Res: 1 per 4 units, Comm: 1 per 750sqm)
+    let plumbingShafts = (intendedUse === 'Residential') ? Math.ceil(assumedUnitsPerFloor / 4) : Math.ceil(floorArea / 750);
+    shaftArea += plumbingShafts * 0.8;
+    
+    // Elec/Fire (1 per core roughly)
+    const numPhysicalCores = params.subtype === 'ushaped' ? 2 : 1; 
+    shaftArea += (numPhysicalCores * 0.6) + (numPhysicalCores * 0.5); // Elec + Fire
+
+    // HVAC Riser
+    if (intendedUse === 'Commercial') shaftArea += Math.ceil(floorArea / 1000) * 3;
+    else if (intendedUse === 'Institutional') shaftArea += numPhysicalCores * 4.5;
+
+    // Garbage/Others
+    if (intendedUse === 'Residential' && assumedUnitsPerFloor >= 6) shaftArea += 0.7;
+    else if (intendedUse === 'Hospitality' || intendedUse === 'Institutional') shaftArea += 1.5;
+
+    // Fire Check Lobby
+    let fireLobbyArea = 0;
+    if (height > 24) {
+        fireLobbyArea = numPhysicalCores * 10;
+    }
+
+    const calculatedCoreAreaPerFloor = liftArea + stairArea + lobbyArea + corridorArea + shaftArea + fireLobbyArea;
+    const coreAreaPerNode = calculatedCoreAreaPerFloor / numPhysicalCores;
+    
+    // Fallbacks just in case calculations result in extremely small or massive areas
+    const finalCoreArea = Math.min(Math.max(coreAreaPerNode, 20), floorArea * 0.35);
 
     // 1. Generate Core(s) - Typology-Specific Placement
     const bbox = turf.bbox(workingPoly);
     const width = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
     const depth = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
 
-    const coreSizeFactor = params.subtype === 'ushaped' ? 0.10 : 0.15;
-    const coreW = Math.min(8, Math.max(4, width * coreSizeFactor));
-    const coreD = Math.min(8, Math.max(4, depth * coreSizeFactor));
+    // Derive dimensions dynamically from area, trying to create a square-ish rectangle
+    // but capping max dimension to avoid spilling out of wings
+    const coreAspect = 1.2; // W slightly wider than D usually
+    let coreW = Math.sqrt(finalCoreArea * coreAspect);
+    let coreD = finalCoreArea / coreW;
+
+    // Prevent core from overflowing narrow wings
+    const minDim = Math.min(width, depth);
+    if (coreW > minDim * 0.8) {
+        coreW = minDim * 0.8;
+        coreD = finalCoreArea / coreW;
+    }
+    if (coreD > minDim * 0.8) {
+        coreD = minDim * 0.8;
+        coreW = finalCoreArea / coreD;
+    }
+
+    console.log(`[Layout Gen] Computed Core -> Pop: ${popPerFloor.toFixed(0)}, Lifts: ${numLifts}, Stairs: ${numStairs}, Area: ${finalCoreArea.toFixed(1)} sqm, Dims: ${coreW.toFixed(1)}x${coreD.toFixed(1)}`);
 
     // Helper: Create a core at a specific point
     const createCoreAtPoint = (point: Feature<any>, id: string): Feature<Polygon> | null => {
@@ -242,7 +371,7 @@ export function generateBuildingLayout(
 
         for (const candidate of candidates) {
             // @ts-ignore
-            if (turf.booleanContains(buildingPoly, candidate)) {
+            if (turf.booleanContains(workingPoly, candidate)) {
                 const core = createCoreAtPoint(candidate, 'core-t-junction');
                 if (core) {
                     console.log('[Layout Generator] T-Shape core placed at junction');
@@ -274,7 +403,7 @@ export function generateBuildingLayout(
         // Try left core
         for (const candidate of leftCandidates) {
             // @ts-ignore
-            if (turf.booleanPointInPolygon(candidate, buildingPoly)) {
+            if (turf.booleanPointInPolygon(candidate, workingPoly)) {
                 const core = createCoreAtPoint(candidate, 'core-h-left');
                 if (core) {
                     cores.push({ id: 'core-h-left', type: 'Lobby', geometry: core });
@@ -287,7 +416,7 @@ export function generateBuildingLayout(
         // Try right core
         for (const candidate of rightCandidates) {
             // @ts-ignore
-            if (turf.booleanPointInPolygon(candidate, buildingPoly)) {
+            if (turf.booleanPointInPolygon(candidate, workingPoly)) {
                 const core = createCoreAtPoint(candidate, 'core-h-right');
                 if (core) {
                     cores.push({ id: 'core-h-right', type: 'Lobby', geometry: core });
@@ -300,14 +429,14 @@ export function generateBuildingLayout(
     } else {
         // Default: Single core using centroid logic
         console.log('[Layout Generator] Default core placement (subtype:', params.subtype, ')');
-        let centerPoint = turf.centroid(buildingPoly);
+        let centerPoint = turf.centroid(workingPoly);
 
         // @ts-ignore
-        if (!turf.booleanContains(buildingPoly, centerPoint)) {
-            centerPoint = turf.centerOfMass(buildingPoly);
+        if (!turf.booleanContains(workingPoly, centerPoint)) {
+            centerPoint = turf.centerOfMass(workingPoly);
             // @ts-ignore
-            if (!turf.booleanContains(buildingPoly, centerPoint)) {
-                centerPoint = turf.pointOnFeature(buildingPoly);
+            if (!turf.booleanContains(workingPoly, centerPoint)) {
+                centerPoint = turf.pointOnFeature(workingPoly);
             }
         }
 
@@ -318,7 +447,7 @@ export function generateBuildingLayout(
     // Fallback: If no cores were placed, use pointOnFeature
     if (cores.length === 0) {
         console.warn('[Layout Generator] No cores placed, using fallback');
-        const fallbackPoint = turf.pointOnFeature(buildingPoly);
+        const fallbackPoint = turf.pointOnFeature(workingPoly);
         const core = createCoreAtPoint(fallbackPoint, 'core-fallback');
         if (core) cores.push({ id: 'core-fallback', type: 'Lobby', geometry: core });
     }
@@ -331,7 +460,7 @@ export function generateBuildingLayout(
         return { cores: [], units: [], utilities: [], entrances: [] };
     }
 
-    const coreGeom = cores[0].geometry;
+    let coreGeom = cores[0].geometry;
 
     // 1.1 Generate Electrical Shaft (Vertical Utility)
     // Place it adjacent to the core
@@ -361,7 +490,7 @@ export function generateBuildingLayout(
             const elecPoly = turf.bboxPolygon(box as [number, number, number, number]);
 
             // @ts-ignore
-            if (turf.booleanContains(buildingPoly, elecPoly)) {
+            if (turf.booleanContains(workingPoly, elecPoly)) {
                 // Perfect fit inside
                 utilities.push({
                     id: `util-elec-${Math.random().toString(36).substr(2, 5)}`,
@@ -378,7 +507,7 @@ export function generateBuildingLayout(
             } else {
                 // Try Intersection as fallback
                 // @ts-ignore
-                const clipped = turf.intersect(elecPoly, buildingPoly);
+                const clipped = turf.intersect(elecPoly, workingPoly);
                 if (clipped && turf.area(clipped) > 1.5) { // Ensure at least 1.5sqm remains
                     utilities.push({
                         id: `util-elec-${Math.random().toString(36).substr(2, 5)}`,
@@ -400,7 +529,7 @@ export function generateBuildingLayout(
         if (!placedElec) {
             console.log('[Layout Generator] Fallback: Forcing Electrical Shaft inside building');
             // Find a point guaranteed to be inside
-            const innerPoint = turf.pointOnFeature(buildingPoly); // Uses pointOnSurface logic
+            const innerPoint = turf.pointOnFeature(workingPoly); // Uses pointOnSurface logic
             const [ix, iy] = innerPoint.geometry.coordinates;
             // Create a small box around it
             const forcePoly = turf.bboxPolygon([
@@ -410,7 +539,7 @@ export function generateBuildingLayout(
 
             // Intersect again to be safe
             // @ts-ignore
-            const safePoly = turf.intersect(forcePoly, buildingPoly) || forcePoly;
+            const safePoly = turf.intersect(forcePoly, workingPoly) || forcePoly;
 
             utilities.push({
                 id: `util-elec-force-${Math.random().toString(36).substr(2, 5)}`,
@@ -429,7 +558,7 @@ export function generateBuildingLayout(
     // 1.2 Generate HVAC Zone (Rooftop)
     // Create a small corner box (4x4m) instead of full footprint
     try {
-        const bBox = turf.bbox(buildingPoly);
+        const bBox = turf.bbox(workingPoly);
         const hvacSize = 4; // 4x4 meter HVAC unit
         const hvacSizeDeg = hvacSize / 111320; // Convert to degrees
 
@@ -446,7 +575,7 @@ export function generateBuildingLayout(
 
         // Check if the entire box is inside the building to prevent overhangs
         // @ts-ignore
-        const isInside = turf.booleanContains(buildingPoly, hvacBox);
+        const isInside = turf.booleanContains(workingPoly, hvacBox);
 
         let hvacPoly = hvacBox; // Use the fixed-size box directly
 
@@ -460,7 +589,7 @@ export function generateBuildingLayout(
                 bBox[3] - inset
             ]);
             // @ts-ignore
-            if (turf.booleanContains(buildingPoly, neBox)) {
+            if (turf.booleanContains(workingPoly, neBox)) {
                 hvacPoly = neBox;
             } else {
                 // Try SW corner
@@ -471,13 +600,13 @@ export function generateBuildingLayout(
                     bBox[1] + hvacSizeDeg + inset
                 ]);
                 // @ts-ignore
-                if (turf.booleanContains(buildingPoly, swBox)) {
+                if (turf.booleanContains(workingPoly, swBox)) {
                     hvacPoly = swBox;
                 } else {
                     // Final fallback: Use pointOnFeature which GUARANTEES a point inside the polygon
                     // reliable for U/L/H shapes where centroid might be outside
                     console.log('[Layout Generator] Corner placement failed, using pointOnFeature');
-                    const innerPoint = turf.pointOnFeature(buildingPoly);
+                    const innerPoint = turf.pointOnFeature(workingPoly);
                     const [ix, iy] = innerPoint.geometry.coordinates;
                     hvacPoly = turf.bboxPolygon([
                         ix - hvacSizeDeg / 2,
@@ -505,161 +634,181 @@ export function generateBuildingLayout(
     }
 
     // 2. Generate Units based on Unit Mix Configuration
-    const corridorW = params.corridorWidth || 2;
-    const coreWithCorridor = turf.buffer(coreGeom, corridorW / 1000, { units: 'kilometers' });
+    let obstacles: any = undefined;
 
-    // Combine Core + Electrical + Corridor for subtraction
-    let obstacles: any = coreWithCorridor || coreGeom;
-    const elecShaft = utilities.find(u => u.type === UtilityType.Electrical);
-    if (elecShaft) {
-        // Buffer electrical slightly to include in obstacle
-        const bufferedElec = turf.buffer(elecShaft.geometry, 0.1 / 1000, { units: 'kilometers' });
-        // @ts-ignore
-        obstacles = turf.union(obstacles, bufferedElec || elecShaft.geometry);
+    if (coreGeom) {
+        // Minimal buffer just to prevent turf topology intersection errors, allowing units to touch cores
+        const corridorW = params.corridorWidth || 0.1;
+        const coreWithCorridor = turf.buffer(coreGeom, corridorW / 1000, { units: 'kilometers' });
+
+        // Combine Core + Electrical + Corridor for subtraction
+        obstacles = coreWithCorridor || coreGeom;
+        const elecShaft = utilities.find(u => u.type === UtilityType.Electrical);
+        if (elecShaft) {
+            // Buffer electrical slightly to include in obstacle
+            const bufferedElec = turf.buffer(elecShaft.geometry, 0.1 / 1000, { units: 'kilometers' });
+            // @ts-ignore
+            obstacles = turf.union(obstacles, bufferedElec || elecShaft.geometry);
+        }
     }
 
-    // Use the obstacles to cut the hole
-    // @ts-ignore
-    let leasablePoly = turf.difference(buildingPoly, obstacles);
-
-    if (!leasablePoly) {
-        // Fallback if difference fails
+    // Use the obstacles to cut the hole on the ALIGNED workingPoly
+    let leasablePoly = workingPoly; 
+    if (obstacles) {
         // @ts-ignore
-        leasablePoly = turf.difference(buildingPoly, coreGeom);
-        if (!leasablePoly) leasablePoly = buildingPoly;
+        leasablePoly = turf.difference(workingPoly, obstacles);
+        if (!leasablePoly) {
+            // Fallback if difference fails -> Difference with just core
+            if (coreGeom) {
+                // @ts-ignore
+                leasablePoly = turf.difference(workingPoly, coreGeom);
+            }
+            if (!leasablePoly) leasablePoly = workingPoly;
+        }
     }
 
     // Override or Setup defaults based on Intended Use
     let useUnitMix = params.unitMix;
-    let defaultUnitType = 'Studio';
-    let defaultUnitSize = params.avgUnitSize || 120; // Residential default
 
     // If specific non-residential use, override the mix
     if (params.intendedUse === BuildingIntendedUse.Commercial) {
-        useUnitMix = undefined;
-        defaultUnitType = 'Office';
-        defaultUnitSize = 150;
+        useUnitMix = [{ name: 'Office', mixRatio: 1, area: 150 }];
     } else if (params.intendedUse === BuildingIntendedUse.Hospitality) {
-        useUnitMix = undefined;
-        defaultUnitType = 'Guest Room';
-        defaultUnitSize = 35;
+        useUnitMix = [{ name: 'Guest Room', mixRatio: 1, area: 35 }];
     } else if (params.intendedUse === BuildingIntendedUse.Public || params.intendedUse === BuildingIntendedUse.Industrial) {
-        useUnitMix = undefined;
-        defaultUnitType = 'Hall';
-        defaultUnitSize = 500;
+        useUnitMix = [{ name: 'Hall', mixRatio: 1, area: 500 }];
+    } else if (!useUnitMix || useUnitMix.length === 0) {
+        // Default residential mix if none provided
+        useUnitMix = [
+            { name: '1BHK', mixRatio: 0.15, area: 60 },
+            { name: '2BHK', mixRatio: 0.40, area: 120 },
+            { name: '3BHK', mixRatio: 0.35, area: 180 },
+            { name: '4BHK', mixRatio: 0.10, area: 250 }
+        ];
     }
 
-    // Use unitMix if provided (and not cleared above), otherwise fall back to default behavior
-    if (useUnitMix && useUnitMix.length > 0) {
-        // Calculate total leasable area
-        const totalLeasableArea = turf.area(leasablePoly);
+    // Now we ALWAYS have a useUnitMix array.
+    const weightedAvgSize = useUnitMix.reduce((acc, unit) => acc + (unit.area * unit.mixRatio), 0);
+    
+    // 1. Create ONE unified grid based on weighted average size to prevent overlapping
+    // Auto-adjust grid size to pack neatly into an integer number of divisions across BOTH dimensions
+    const nominalGridSizeM = Math.sqrt(weightedAvgSize);
 
-        // Calculate weighted average unit size from mix
-        const weightedAvgSize = useUnitMix!.reduce((acc, unit) =>
-            acc + (unit.area * unit.mixRatio), 0);
+    // Calculate discrete number of cells across width and depth
+    const cellsX = Math.max(1, Math.round(width / nominalGridSizeM));
+    const cellsY = Math.max(1, Math.round(depth / nominalGridSizeM));
+    
+    // Derive exact cell dimensions DIRECTLY from bbox degree extent (avoids latitude-dependent
+    // meter→degree conversion which causes a systematic ~6% gap at India's ~20°N latitude).
+    const bboxWidthDeg = bbox[2] - bbox[0]; // total longitude span of building
+    const bboxHeightDeg = bbox[3] - bbox[1]; // total latitude span of building
+    const wDeg = bboxWidthDeg / cellsX;     // exact cell width in degrees
+    const hDeg = bboxHeightDeg / cellsY;    // exact cell height in degrees
 
-        // Estimate total units that can fit
-        const estimatedTotalUnits = Math.floor(totalLeasableArea / weightedAvgSize);
+    // Actual cell area in m² (still needed for threshold check)
+    const gridW = width / cellsX;
+    const gridH = depth / cellsY;
 
-        console.log(`[Layout Generator] UnitMix Mode: ${estimatedTotalUnits} total units estimated`);
+    // Generate custom rectangular grid — cells perfectly tile the entire building bbox
+    let gridFeatures: Feature<Polygon>[] = [];
+    const minX = bbox[0], minY = bbox[1];
+    
+    for (let i = 0; i < cellsX; i++) {
+        for (let j = 0; j < cellsY; j++) {
+            const cellMinX = minX + (i * wDeg);
+            const cellMinY = minY + (j * hDeg);
+            const cellMaxX = cellMinX + wDeg;
+            const cellMaxY = cellMinY + hDeg;
+            
+            gridFeatures.push(turf.bboxPolygon([cellMinX, cellMinY, cellMaxX, cellMaxY]));
+        }
+    }
 
-        // Generate units for each type in the mix
-        let unitIndex = 0;
-        useUnitMix!.forEach(unitType => {
-            const targetCount = Math.round(estimatedTotalUnits * unitType.mixRatio);
-            const gridSizeM = Math.sqrt(unitType.area);
-
-            console.log(`[Layout Generator] Generating ${targetCount}x ${unitType.name} (${unitType.area}m²)`);
-
-            // Create adaptive grid for this unit type
-            const gridOptions = { mask: buildingPoly, units: 'meters' as const };
+    // 2. Find all valid leasable cells
+    let validCells: Feature<Polygon>[] = [];
+    gridFeatures.forEach((cell) => {
+        try {
             // @ts-ignore
-            const grid = turf.squareGrid(bbox, gridSizeM, gridOptions);
+            const intersection = turf.intersect(cell, leasablePoly);
+            // Use a very low threshold (5%) so edge cells that partially overlap the
+            // building boundary are included. The intersection clips them to the
+            // building shape, so they never overflow outside — they just look thin.
+            if (intersection && turf.area(intersection) > (gridW * gridH) * 0.05) {
+                validCells.push(intersection as Feature<Polygon>);
+            }
+        } catch (e) { }
+    });
 
-            let unitsCreated = 0;
-            grid.features.forEach((cell: Feature<Polygon>) => {
-                if (unitsCreated >= targetCount) return; // Stop when we have enough of this type
+    const totalValidCells = validCells.length;
+    console.log(`[Layout Generator] Unified Grid: ${totalValidCells} cells found (avg size: ${weightedAvgSize.toFixed(1)}m²)`);
 
-                try {
-                    // @ts-ignore
-                    const intersection = turf.intersect(cell, leasablePoly);
+    // 3. Calculate exact unit counts using Largest Remainder Method
+    let exactCounts = useUnitMix.map(u => ({
+        type: u.name,
+        color: getColorForUnitType(u.name),
+        exactCount: totalValidCells * u.mixRatio,
+        target: 0
+    }));
 
-                    if (intersection) {
-                        const area = turf.area(intersection);
+    let totalAllocated = 0;
+    exactCounts.forEach(u => {
+        u.target = Math.floor(u.exactCount);
+        totalAllocated += u.target;
+    });
 
-                        // Accept if area is close to target (±30% tolerance)
-                        if (area > unitType.area * 0.7 && area < unitType.area * 1.3) {
-                            // Alternate colors for visual distinction
-                            const baseColor = getColorForUnitType(unitType.name);
-                            const color = unitIndex % 2 === 0 ? baseColor : darkenColor(baseColor);
+    let remainder = totalValidCells - totalAllocated;
+    exactCounts.sort((a, b) => (b.exactCount - b.target) - (a.exactCount - a.target));
 
-                            units.push({
-                                id: `unit-${unitIndex}`,
-                                type: unitType.name,
-                                geometry: intersection as Feature<Polygon>,
-                                color
-                            });
-                            unitsCreated++;
-                            unitIndex++;
-                        }
-                    }
-                } catch (e) { }
-            });
-
-            console.log(`[Layout Generator] Created ${unitsCreated}/${targetCount} ${unitType.name} units`);
-        });
-
-    } else {
-        // Fallback: Grid-based approach
-        const gridSizeM = Math.sqrt(defaultUnitSize);
-        const gridOptions = { mask: buildingPoly, units: 'meters' as const };
-        // @ts-ignore
-        const grid = turf.squareGrid(bbox, gridSizeM, gridOptions);
-
-        grid.features.forEach((cell: any, idx: number) => {
-            try {
-                // @ts-ignore
-                const intersection = turf.intersect(cell, leasablePoly);
-
-                if (intersection) {
-                    const area = turf.area(intersection);
-
-                    // Accept if area is reasonable
-                    if (area > defaultUnitSize * 0.5) {
-                        let type = defaultUnitType;
-                        let color = getColorForUnitType(type);
-
-                        // Only apply BHK logic if it is actually Residential (or default)
-                        if (defaultUnitType === 'Studio') {
-                            if (area > 245) { type = '4BHK+'; color = idx % 2 === 0 ? '#FFD700' : '#E6C200'; }
-                            else if (area > 185) { type = '3BHK'; color = idx % 2 === 0 ? '#4169E1' : '#3658B8'; }
-                            else if (area > 140) { type = '2BHK'; color = idx % 2 === 0 ? '#1E90FF' : '#1578D6'; }
-                            else if (area > 55) { type = '1BHK'; color = idx % 2 === 0 ? '#87CEFA' : '#76B5DE'; }
-                            else { type = 'Studio'; color = idx % 2 === 0 ? '#ADD8E6' : '#9AC0CD'; }
-                        } else {
-                            // For non-residential, just alternate shades slightly
-                            color = idx % 2 === 0 ? color : darkenColor(color);
-                        }
-
-                        units.push({
-                            id: `unit-${idx}`,
-                            type,
-                            geometry: intersection as Feature<Polygon>,
-                            color
-                        });
-                    }
-                }
-            } catch (e) { }
-        });
+    for (let i = 0; i < remainder; i++) {
+        exactCounts[i % exactCounts.length].target += 1;
     }
+
+    // Create proportional "deck" of unit types
+    let unitDeck: { type: string, color: string }[] = [];
+    exactCounts.forEach(u => {
+        for (let i = 0; i < u.target; i++) {
+            const color = i % 2 === 0 ? u.color : darkenColor(u.color);
+            unitDeck.push({ type: u.type, color });
+        }
+    });
+
+    // Deterministic shuffle to prevent clumping of unit types
+    let seed = Math.floor(turf.area(workingPoly) || 12345);
+    const random = () => {
+        seed = (seed * 9301 + 49297) % 233280;
+        return seed / 233280;
+    };
+    for (let i = unitDeck.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        [unitDeck[i], unitDeck[j]] = [unitDeck[j], unitDeck[i]];
+    }
+
+    // We can sort the valid cells to group units nicely (e.g. by Y coordinate then X)
+    validCells.sort((a, b) => {
+        const cA = turf.centroid(a).geometry.coordinates;
+        const cB = turf.centroid(b).geometry.coordinates;
+        if (Math.abs(cA[1] - cB[1]) < 0.0001) return cA[0] - cB[0];
+        return cA[1] - cB[1];
+    });
+
+    // 4. Assign units
+    validCells.forEach((cell, idx) => {
+        const assignment = unitDeck[idx];
+        units.push({
+            id: `unit-${idx}`,
+            type: assignment.type,
+            geometry: cell,
+            color: assignment.color
+        });
+    });
 
     // 3. Generate Entrances (NEW)
     try {
         // Find best edge for entrance based on Vastu/Roads
-        const buildingCenter = turf.centroid(buildingPoly);
+        const buildingCenter = turf.centroid(workingPoly);
         // Explode polygon to gets points (edges are between points)
         // @ts-ignore
-        const vertices = turf.explode(buildingPoly).features;
+        const vertices = turf.explode(workingPoly).features;
 
         let bestCandidatePoint: any = null;
         let bestCandidateScore = -1;
@@ -722,10 +871,43 @@ export function generateBuildingLayout(
         console.warn('Error generating entrance:', e);
     }
 
+    // --- MASTER ROTATION BLOCK ---
+    // Rotate everything back to the actual building orientation!
+    if (rotationAngle !== 0) {
+        cores.forEach(c => {
+            if (c.geometry) {
+                // @ts-ignore
+                c.geometry = turf.transformRotate(c.geometry, rotationAngle, { pivot: center });
+            }
+        });
+        utilities.forEach(u => {
+            if (u.geometry) {
+                // @ts-ignore
+                u.geometry = turf.transformRotate(u.geometry, rotationAngle, { pivot: center });
+                u.centroid = turf.centroid(u.geometry);
+            }
+        });
+        units.forEach(u => {
+            if (u.geometry) {
+                // @ts-ignore
+                u.geometry = turf.transformRotate(u.geometry, rotationAngle, { pivot: center });
+            }
+        });
+        entrances.forEach(e => {
+            if (e.position && e.position.length >= 2) {
+                const pt = turf.point([e.position[0], e.position[1]]);
+                // @ts-ignore
+                const rotatedPt = turf.transformRotate(pt, rotationAngle, { pivot: center });
+                e.position = rotatedPt.geometry.coordinates as [number, number];
+            }
+        });
+        console.log(`[Layout Gen] Master rotated all components back by ${rotationAngle}deg`);
+    }
+
     // 4. Efficiency Validation
     const totalArea = turf.area(buildingPoly);
     let totalUnitArea = 0;
-    units.forEach(u => totalUnitArea += turf.area(u.geometry));
+    units.forEach(u => { if (u.geometry) totalUnitArea += turf.area(u.geometry); });
     const efficiency = totalUnitArea / totalArea;
     const efficiencyPercent = (efficiency * 100).toFixed(1);
 

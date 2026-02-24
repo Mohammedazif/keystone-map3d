@@ -68,7 +68,7 @@ export function calculateAggregateStats(
     };
 }
 
-export type AnalysisMode = 'none' | 'sun-hours' | 'daylight' | 'wind';
+export type AnalysisMode = 'none' | 'sun-hours' | 'daylight' | 'wind' | 'energy' | 'mobility' | 'resilience';
 
 // Parsed threshold values from certificate regulations
 interface ParsedThresholds {
@@ -356,6 +356,24 @@ function getColorForValue(
         }
     }
 
+    if (mode === 'energy') {
+        if (actualValue > 250) return '#ef4444'; // Red
+        if (actualValue > 150) return '#f59e0b'; // Amber
+        return '#10b981'; // Green
+    }
+
+    if (mode === 'mobility') {
+        if (actualValue > 5000) return '#9333ea'; // Purple
+        if (actualValue > 2000) return '#06b6d4'; // Cyan
+        return '#3b82f6'; // Blue
+    }
+
+    if (mode === 'resilience') {
+        if (actualValue < 60) return '#ef4444'; // Red
+        if (actualValue < 80) return '#f59e0b'; // Amber
+        return '#10b981'; // Green
+    }
+
     return '#cccccc';
 }
 
@@ -452,6 +470,28 @@ export async function runVisualAnalysis(
                 color
             });
         }
+    } else if (mode === 'energy') {
+        for (const building of targetBuildings) {
+            const height = building.height || (building.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+            const baseEui = 100 + (height * 2) + ((building.area % 1000) / 10);
+            const color = getColorForValue(baseEui, mode, greenRegulations);
+            results.set(building.id, { buildingId: building.id, value: baseEui, color });
+        }
+    } else if (mode === 'mobility') {
+        for (const building of targetBuildings) {
+            const trips = building.area * 0.5;
+            const color = getColorForValue(trips, mode, greenRegulations);
+            results.set(building.id, { buildingId: building.id, value: trips, color });
+        }
+    } else if (mode === 'resilience') {
+        for (const building of targetBuildings) {
+            const height = building.height || (building.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+            let score = Math.max(40, 100 - (height / 5));
+            score += (building.area % 20) - 10;
+            score = Math.min(100, Math.max(0, score));
+            const color = getColorForValue(score, mode, greenRegulations);
+            results.set(building.id, { buildingId: building.id, value: score, color });
+        }
     }
 
     console.timeEnd('Analysis');
@@ -534,7 +574,7 @@ export async function runGroundAnalysis(
     greenRegulations: GreenRegulationData[] = []
 ): Promise<any> { // Returns FeatureCollection
 
-    if (mode === 'none' || !plotGeometry) return turf.featureCollection([]);
+    if (mode === 'none' || mode === 'energy' || mode === 'mobility' || mode === 'resilience' || !plotGeometry) return turf.featureCollection([]);
 
     console.time('GroundAnalysis');
 
@@ -708,6 +748,11 @@ export async function runWallAnalysis(
 ): Promise<any> { // Returns FeatureCollection
     console.log('[ANALYSIS ENGINE] Starting runWallAnalysis', { mode });
     console.time('WallAnalysis');
+
+    if (mode === 'none' || mode === 'energy' || mode === 'mobility' || mode === 'resilience' || targetBuildings.length === 0) {
+        console.timeEnd('WallAnalysis');
+        return turf.featureCollection([]);
+    }
 
     const walls: any[] = [];
 

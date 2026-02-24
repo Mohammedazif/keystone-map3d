@@ -4,8 +4,10 @@ export const DEFAULT_FEASIBILITY_PARAMS: FeasibilityParams = {
     coreFactor: 0.15, // 15% (Low-rise default)
     circulationFactor: 0.12, // 12% (Mid-range default)
     unitMix: [
-        { name: '2BHK', area: 140, mixRatio: 0.5 },
-        { name: '3BHK', area: 185, mixRatio: 0.5 }
+        { name: '1BHK', area: 60,  mixRatio: 0.15 },
+        { name: '2BHK', area: 140, mixRatio: 0.40 },
+        { name: '3BHK', area: 185, mixRatio: 0.35 },
+        { name: '4BHK', area: 250, mixRatio: 0.10 }
     ],
     efficiencyTarget: 0.70
 };

@@ -27,6 +27,16 @@ export const BUILDING_MATERIALS = {
         saturation: 60, // Vibrant
         baseLightness: 60,
     },
+    [BuildingIntendedUse.Retail]: {
+        baseHue: 340, // Pink/Red/Magenta shade to distinguish from others
+        saturation: 70, // Vibrant and inviting
+        baseLightness: 60,
+    },
+    [BuildingIntendedUse.Office]: {
+        baseHue: 200, // Light Cyan/Blue, distinct from bright blue Commercial
+        saturation: 50,
+        baseLightness: 75,
+    },
     [BuildingIntendedUse.MixedUse]: {
         baseHue: 280, // Purple/Mixed
         saturation: 40,

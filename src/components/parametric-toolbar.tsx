@@ -130,6 +130,13 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         hospitality: 0
     });
 
+    const [unitMixConfig, setUnitMixConfig] = useState({
+        '1BHK': 15,
+        '2BHK': 40,
+        '3BHK': 35,
+        '4BHK': 10
+    });
+
     const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('floor'); // New Allocation Mode
     const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'STP', 'WTP', 'Electrical', 'HVAC', 'Water']);
 
@@ -388,7 +395,13 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             vastuCompliant: projectData?.vastuCompliant || false,
             hasPodium,
             podiumFloors,
-            upperFloorReduction
+            upperFloorReduction,
+            unitMix: [
+                { name: '1BHK', mixRatio: unitMixConfig['1BHK'] / 100, area: 60 },
+                { name: '2BHK', mixRatio: unitMixConfig['2BHK'] / 100, area: 140 },
+                { name: '3BHK', mixRatio: unitMixConfig['3BHK'] / 100, area: 185 },
+                { name: '4BHK', mixRatio: unitMixConfig['4BHK'] / 100, area: 250 }
+            ].filter(u => u.mixRatio > 0)
         };
 
         // Increment seed offset for NEXT generation (Simulation of "Refresh")
@@ -572,6 +585,106 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             </div>
                                         </div>
                                     )}
+                                </div>
+                            )}
+
+                            {/* Podium for Mixed-Use (Floor-wise: auto-podium; Plot-wise: slider) */}
+                            {landUse === 'mixed' && (
+                                <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider cursor-pointer" onClick={() => setHasPodium(!hasPodium)}>
+                                            Stepped / Podium Massing
+                                        </Label>
+                                        <input
+                                            type="checkbox"
+                                            checked={hasPodium}
+                                            onChange={(e) => setHasPodium(e.target.checked)}
+                                            className="h-3 w-3 accent-primary"
+                                        />
+                                    </div>
+
+                                    {hasPodium && (
+                                        <div className="space-y-3 pt-2">
+                                            {allocationMode === 'floor' && (
+                                                <p className="text-[9px] text-muted-foreground italic">
+                                                    Retail, Office, Institutional &amp; Hospitality floors form the podium automatically. Residential becomes the tower.
+                                                </p>
+                                            )}
+                                            {allocationMode === 'plot' && (
+                                                <div className="space-y-1">
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-muted-foreground">Podium Floors (Residential)</span>
+                                                        <span>{podiumFloors} floors</span>
+                                                    </div>
+                                                    <Slider
+                                                        value={[podiumFloors]}
+                                                        min={1}
+                                                        max={5}
+                                                        step={1}
+                                                        onValueChange={([val]) => setPodiumFloors(val)}
+                                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/50 [&_span]:h-3 [&_span]:w-3"
+                                                    />
+                                                </div>
+                                            )}
+                                            <div className="space-y-1">
+                                                <div className="flex justify-between text-[10px]">
+                                                    <span className="text-muted-foreground">Upper Floor Reduction</span>
+                                                    <span>{upperFloorReduction}%</span>
+                                                </div>
+                                                <Slider
+                                                    value={[upperFloorReduction]}
+                                                    min={10}
+                                                    max={60}
+                                                    step={5}
+                                                    onValueChange={([val]) => setUpperFloorReduction(val)}
+                                                    className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/50 [&_span]:h-3 [&_span]:w-3"
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Unit Mix Allocation (Residential / Mixed Only) */}
+                            {(landUse === 'residential' || landUse === 'mixed') && (
+                                <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
+                                    <div className="flex justify-between items-center">
+                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Unit Mix Allocation</Label>
+                                        <Badge
+                                            variant="outline"
+                                            className={cn("text-[9px] h-4",
+                                                (unitMixConfig['1BHK'] + unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']) !== 100
+                                                    ? "text-red-500 border-red-200"
+                                                    : "text-green-600 border-green-200"
+                                            )}
+                                        >
+                                            Total: {unitMixConfig['1BHK'] + unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']}%
+                                        </Badge>
+                                    </div>
+
+                                    <div className="space-y-3 pl-1">
+                                        {Object.entries(unitMixConfig).map(([type, value]) => (
+                                            <div key={type} className="space-y-1">
+                                                <div className="flex justify-between text-[10px]">
+                                                    <span className="text-muted-foreground">{type}</span>
+                                                    <span>{value}%</span>
+                                                </div>
+                                                <Slider
+                                                    value={[value]}
+                                                    max={100}
+                                                    step={5}
+                                                    onValueChange={([val]) => setUnitMixConfig(prev => ({ ...prev, [type]: val }))}
+                                                    className={cn(
+                                                        "[&_.relative]:h-1.5 [&_span]:h-3 [&_span]:w-3",
+                                                        type === '1BHK' && "[&_.absolute]:bg-[#414141]",
+                                                        type === '2BHK' && "[&_.absolute]:bg-[#1E90FF]",
+                                                        type === '3BHK' && "[&_.absolute]:bg-[#DA70D6]",
+                                                        type === '4BHK' && "[&_.absolute]:bg-[#FFD700]"
+                                                    )}
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
 

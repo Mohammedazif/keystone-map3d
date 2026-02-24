@@ -5,7 +5,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Sun } from 'lucide-react';
 
-export type AnalysisMode = 'none' | 'sun-hours' | 'daylight' | 'wind';
+export type AnalysisMode = 'none' | 'sun-hours' | 'daylight' | 'wind' | 'energy' | 'mobility' | 'resilience';
 
 interface SolarControlsProps {
     date: Date;
@@ -93,7 +93,7 @@ export function SolarControls({ date, setDate, enabled, setEnabled, analysisMode
                         <div className="space-y-2">
                             <Label className="text-xs">Advanced Analysis (Heatmap)</Label>
                             <div className="grid grid-cols-2 gap-2">
-                                {['none', 'sun-hours', 'daylight', 'wind'].map((m) => (
+                                {['none', 'sun-hours', 'daylight', 'wind', 'energy', 'mobility', 'resilience'].map((m) => (
                                     <button
                                         key={m}
                                         onClick={() => setAnalysisMode(m as any)}
@@ -118,7 +118,10 @@ export function SolarControls({ date, setDate, enabled, setEnabled, analysisMode
                                 <div className="text-[10px] text-center text-muted-foreground italic">
                                     {analysisMode === 'sun-hours' ? 'Sun Exposure' :
                                         analysisMode === 'daylight' ? 'Sky Visibility' :
-                                            'Wind Pressure'}
+                                            analysisMode === 'wind' ? 'Wind Pressure' :
+                                                analysisMode === 'energy' ? 'Energy (EUI)' :
+                                                    analysisMode === 'mobility' ? 'Traffic Flow' :
+                                                        analysisMode === 'resilience' ? 'Seismic Score' : ''}
                                 </div>
                             </div>
                         )}

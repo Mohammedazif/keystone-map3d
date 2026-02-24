@@ -1477,6 +1477,7 @@ export function generateSlabShapes(
                         validPoly.properties = {
                             type: 'generated', subtype: 'slab', area: area,
                             cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
+                            alignmentRotation: edgeData.bearing,
                             scenarioId: `Slab-Row-${rowsAdded}-Seq-${candidates.length}`,
                             score: area
                         };
@@ -1604,6 +1605,7 @@ export function generatePointShapes(
                             poly.properties = {
                                 type: 'generated', subtype: 'point', area: polyArea,
                                 cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
+                                alignmentRotation: bearingNext,
                                 scenarioId: `Point-Corner-${i}`, score: polyArea
                             };
                             candidates.push({ feature: poly, score: polyArea });
@@ -1667,6 +1669,7 @@ export function generatePointShapes(
                         validPoly.properties = {
                             type: 'generated', subtype: 'point', area: area,
                             cores: layout.cores, units: layout.units, entrances: layout.entrances, internalUtilities: layout.utilities,
+                            alignmentRotation: bearing,
                             scenarioId: `Point-Edge-${i}-${currentDist.toFixed(0)}`, score: area
                         };
                         candidates.push({ feature: validPoly, score: area });

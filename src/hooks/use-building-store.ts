@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { Feature, Polygon, MultiPolygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType } from '@/lib/types';
+import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
@@ -1422,8 +1422,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 id: `floor-${id}-${j}`,
                                 height: floorHeight,
                                 color: floorColors[j] || '#cccccc',
-                                type: 'Occupied',
-                                intendedUse: intendedUse
+                                type: 'General' as const,
+                                intendedUse: intendedUse,
+                                level: j
                             }));
 
                         } else {
@@ -1431,8 +1432,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             intendedUse = BuildingIntendedUse.MixedUse;
 
                             // Calculate number of floors for each use
-                            // Stack Order (Bottom -> Top): Commercial -> Institutional -> Hospitality -> Residential
+                            // Stack Order (Bottom -> Top): Retail -> Institutional -> Hospitality -> Office -> Residential
                             const commFloors = Math.round(floors * (mix.commercial / 100));
+                            
+                            // Split Commercial roughly 40% Retail / 60% Office (min 1 Retail if any commercial)
+                            const retailFloors = commFloors > 0 ? Math.max(1, Math.floor(commFloors * 0.4)) : 0;
+                            const officeFloors = Math.max(0, commFloors - retailFloors);
+
                             const instFloors = Math.round(floors * (mix.institutional / 100));
                             const hospFloors = Math.round(floors * (mix.hospitality / 100));
                             // Residential gets the remainder to ensure total == floors
@@ -1456,9 +1462,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 }
                             };
 
-                            addFloors(commFloors, BuildingIntendedUse.Commercial);
+                            addFloors(retailFloors, BuildingIntendedUse.Retail);
                             addFloors(instFloors, BuildingIntendedUse.Public);
                             addFloors(hospFloors, BuildingIntendedUse.Hospitality);
+                            addFloors(officeFloors, BuildingIntendedUse.Office);
                             addFloors(resFloors, BuildingIntendedUse.Residential);
                         }
                     } else if (regulationType.includes('industrial') || regulationType.includes('warehouse') || regulationType.includes('storage') || regulationType.includes('manufacturing')) {
@@ -1476,31 +1483,30 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             id: `floor-${id}-${j}`,
                             height: floorHeight,
                             color: floorColors[j] || '#cccccc',
-                            type: 'Occupied',
-                            intendedUse: intendedUse
+                            type: 'General' as const,
+                            intendedUse: intendedUse,
+                            level: j
                         }));
                     }
 
                     // --- INTERNAL LAYOUT (CORES/UNITS) ---
                     // Some generators (like L/U/T/H) already calculate layout.
                     // Others (like Tower/Lamella) need it calculated here.
-                    let layout: any = {
-                        cores: f.properties?.cores || [],
-                        units: f.properties?.units || [],
-                        utilities: f.properties?.internalUtilities || []
+                    // Always regenerate layout fresh using the toolbar's unitMix to avoid stale cached units
+                    const projectUnitMix = params.unitMix || activeProject?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
+                    const freshLayout = generateBuildingLayout(f as Feature<Polygon>, {
+                        subtype: f.properties?.subtype || params.typology,
+                        unitMix: projectUnitMix,
+                        intendedUse: intendedUse,
+                        // Preserve the alignment rotation stored by the geometric generators so units
+                        // are generated axis-aligned and then rotated back to match the building
+                        alignmentRotation: f.properties?.alignmentRotation ?? 0
+                    });
+                    const layout: any = {
+                        cores: freshLayout.cores,
+                        units: freshLayout.units,
+                        utilities: freshLayout.utilities || f.properties?.internalUtilities || []
                     };
-
-                    if (layout.units.length === 0) {
-                        const activeProject = get().projects.find(prj => prj.id === get().activeProjectId);
-                        const projectUnitMix = activeProject?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
-
-                        const layoutResult = generateBuildingLayout(f as Feature<Polygon>, {
-                            subtype: f.properties?.subtype || params.typology,
-                            unitMix: projectUnitMix,
-                            intendedUse: intendedUse // Pass intendedUse to generate appropriate unit types
-                        });
-                        layout = { cores: layoutResult.cores, units: layoutResult.units, utilities: layoutResult.utilities };
-                    }
 
                     // Ensure utilities from geometric-typologies (f.properties.internalUtilities) are preserved if not re-generated
                     if (!layout.utilities && f.properties?.internalUtilities) {
@@ -1513,8 +1519,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         extrusion: true,
                         soilData: { ph: null, bd: null },
                         intendedUse: intendedUse,
-                        cores: layout.cores,
-                        units: layout.units,
                         internalUtilities: layout.utilities || [],
                         typicalFloorHeight: floorHeight,
                         visible: true,
@@ -1523,11 +1527,30 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             : undefined,
                     };
 
-                    const isPodiumCandidate = params.hasPodium && params.podiumFloors !== undefined && params.podiumFloors > 0 && floors > params.podiumFloors &&
-                        (intendedUse === BuildingIntendedUse.Commercial || intendedUse === BuildingIntendedUse.Industrial || intendedUse === BuildingIntendedUse.Public);
+                    let actualPodiumFloors = params.podiumFloors;
+                    
+                    // For floor-wise mixed-use, we auto-calculate the podium floors (Retail + Office + Inst + Hosp)
+                    if (params.landUse === 'mixed' && params.allocationMode === 'floor' && params.hasPodium && intendedUse === BuildingIntendedUse.MixedUse) {
+                        const mix = params.programMix || { residential: 40, commercial: 40, institutional: 10, hospitality: 10 };
+                        const commFloors = Math.round(floors * (mix.commercial / 100));
+                        const retailFloors = commFloors > 0 ? Math.max(1, Math.floor(commFloors * 0.4)) : 0;
+                        const officeFloors = Math.max(0, commFloors - retailFloors);
+                        const instFloors = Math.round(floors * (mix.institutional / 100));
+                        const hospFloors = Math.round(floors * (mix.hospitality / 100));
+                        actualPodiumFloors = retailFloors + officeFloors + instFloors + hospFloors;
+                    }
+
+                    const isPodiumCandidate = params.hasPodium && actualPodiumFloors !== undefined && actualPodiumFloors > 0 && floors > actualPodiumFloors && (
+                        // Non-mixed landuse (commercial, institutional): existing types
+                        (params.landUse !== 'mixed' && (intendedUse === BuildingIntendedUse.Commercial || intendedUse === BuildingIntendedUse.Industrial || intendedUse === BuildingIntendedUse.Public)) ||
+                        // Mixed floor-wise: auto-split MixedUse building
+                        (params.landUse === 'mixed' && params.allocationMode === 'floor' && intendedUse === BuildingIntendedUse.MixedUse) ||
+                        // Mixed plot-wise: ONLY residential buildings get podium treatment
+                        (params.landUse === 'mixed' && params.allocationMode === 'plot' && intendedUse === BuildingIntendedUse.Residential)
+                    );
 
                     if (isPodiumCandidate) {
-                        const pFloors = params.podiumFloors!;
+                        const pFloors = actualPodiumFloors!;
                         const tFloors = floors - pFloors;
                         
                         // Shrink tower geometry
@@ -1547,6 +1570,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 // Ensure the buffered geometry didn't completely collapse or become invalid
                                 if (bufferedArea > area * 0.1) {
                                     towerGeometry = buffered as Feature<Polygon>;
+                                    // REATTACH PROPERTIES LOST DURING BUFFERING
+                                    towerGeometry.properties = { ...f.properties, alignmentRotation: f.properties?.alignmentRotation ?? 0 };
                                 } else {
                                     throw new Error("Buffer caused geometry to collapse too much.");
                                 }
@@ -1566,16 +1591,43 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 ]);
                                 towerGeometry = {
                                     type: 'Feature',
-                                    properties: { ...f.properties },
+                                    properties: { ...f.properties, alignmentRotation: f.properties?.alignmentRotation ?? 0 },
                                     geometry: { type: 'Polygon', coordinates: [shrunkCoords] }
                                 } as Feature<Polygon>;
                             } catch (e2) {
                                 console.warn("Fallback scaling failed.", e2);
                             }
                         }
-                        
+
+                        const towerUnitMix = params.unitMix || activeProject?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
+                        const towerAlignRotForLayout = (towerGeometry as any).properties?.alignmentRotation ?? f.properties?.alignmentRotation ?? 0;
+                        const towerLayoutResult = generateBuildingLayout(towerGeometry, {
+                            subtype: f.properties?.subtype || params.typology,
+                            unitMix: towerUnitMix,
+                            intendedUse: intendedUse,
+                            alignmentRotation: towerAlignRotForLayout
+                        });
+
+                        const multiplyUnits = (floors: Floor[], baseLayout: any) => {
+                            const units: Unit[] = [];
+                            floors.forEach(floor => {
+                                if ((floor.level !== undefined && floor.level < 0) || floor.type === 'Parking' || floor.type === 'Utility') return;
+                                (baseLayout.units || []).forEach((u: Unit) => units.push({ ...u, id: `${floor.id}-u-${u.id}`, floorId: floor.id }));
+                            });
+                            return units;
+                        };
+
+                        const podiumFloorsArray = buildingSpecificFloors.slice(0, pFloors);
+                        const towerFloorsArray = buildingSpecificFloors.slice(pFloors).map(fl => ({ ...fl, id: `floor-${id}-tower-${fl.level || fl.id}` }));
+
+                        const podiumUnits = multiplyUnits(podiumFloorsArray, layout);
+                        const towerUnits = multiplyUnits(towerFloorsArray, towerLayoutResult);
+
+                        const alignRot = f.properties?.alignmentRotation ?? 0;
                         const podiumBuilding: Building = {
                             ...baseBuildingProps,
+                            cores: layout.cores || [],
+                            units: multiplyUnits(podiumFloorsArray, layout),
                             id: `${id}-podium`,
                             name: `Building ${i + 1} (Podium)`,
                             geometry: f,
@@ -1584,11 +1636,16 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             height: pFloors * floorHeight,
                             numFloors: pFloors,
                             baseHeight: 0,
-                            floors: buildingSpecificFloors.slice(0, pFloors)
+                            floors: podiumFloorsArray,
+                            alignmentRotation: alignRot,
+                            totalFloors: floors, // record combined total so tower can stay in sync
                         } as Building;
                         
+                        const towerAlignRot = (towerGeometry as any).properties?.alignmentRotation ?? alignRot;
                         const towerBuilding: Building = {
                             ...baseBuildingProps,
+                            cores: towerLayoutResult.cores || [],
+                            units: multiplyUnits(towerFloorsArray, towerLayoutResult),
                             id: `${id}-tower`,
                             name: `Building ${i + 1} (Tower)`,
                             geometry: towerGeometry,
@@ -1597,14 +1654,26 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             height: tFloors * floorHeight,
                             numFloors: tFloors,
                             baseHeight: pFloors * floorHeight,
-                            floors: buildingSpecificFloors.slice(pFloors).map(fl => ({ ...fl, id: `floor-${id}-tower-${fl.level || fl.id}` }))
+                            floors: towerFloorsArray,
+                            alignmentRotation: towerAlignRot,
                         } as Building;
                         
                         return [podiumBuilding, towerBuilding];
                     }
 
+                    const multiplyUnits = (floors: Floor[], baseLayout: any) => {
+                        const units: Unit[] = [];
+                        floors.forEach(floor => {
+                            if ((floor.level !== undefined && floor.level < 0) || floor.type === 'Parking' || floor.type === 'Utility') return;
+                            (baseLayout.units || []).forEach((u: Unit) => units.push({ ...u, id: `${floor.id}-u-${u.id}`, floorId: floor.id }));
+                        });
+                        return units;
+                    };
+
                     return [{
                         ...baseBuildingProps,
+                        cores: layout.cores || [],
+                        units: multiplyUnits(buildingSpecificFloors, layout),
                         id: id,
                         name: `Building ${i + 1}`,
                         geometry: f,
@@ -1649,12 +1718,53 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 b.baseHeight = Math.floor((b.baseHeight || 0) / b.typicalFloorHeight * scaleFactor) * b.typicalFloorHeight;
                             }
                             
-                            b.floors = Array.from({ length: newFloors }, (_, j) => ({
-                                id: `floor-${b.id}-${j}`,
-                                height: b.typicalFloorHeight,
-                                color: generateFloorColors(newFloors, b.intendedUse)[j] || '#cccccc',
-                                level: b.id.includes('-tower') ? (Math.floor((b.baseHeight || 0) / b.typicalFloorHeight) + j) : j
-                            }));
+                            // Only modify the NON-PARKING floors
+                            // Because if we blindly recreate all floors, we lose the basement/stilt parking definitions
+                            // So let's slice the existing non-parking floors array instead, or recreate it properly
+                            const occupiableFloorsCount = newFloors;
+                            const parkingFloors = b.floors.filter(f => f.type === 'Parking');
+                            const occupiableFloors = b.floors.filter(f => f.type !== 'Parking');
+                            
+                            // Adjust the number of occupiable floors to match newFloors
+                            let newOccupiableFloors = occupiableFloors.slice(0, occupiableFloorsCount);
+                            if (newOccupiableFloors.length < occupiableFloorsCount) {
+                                // Shouldn't happen if we're only scaling DOWN, but just in case
+                                const diff = occupiableFloorsCount - newOccupiableFloors.length;
+                                const colors = generateFloorColors(diff, b.intendedUse as BuildingIntendedUse);
+                                const extra = Array.from({ length: diff }, (_, j) => ({
+                                    id: `floor-${b.id}-extra-${j}`,
+                                    height: b.typicalFloorHeight,
+                                    color: colors[j] || '#cccccc',
+                                    level: b.id.includes('-tower') ? (newOccupiableFloors.length + j) : (newOccupiableFloors.length + j) // Standard indexing
+                                    // Note: FAR scaling logic below will need further refinement for Podium-Tower siblings but we fix the local tower gap here.
+                                    // Actually, if we use sequential indexing, level is just index.
+                                    // For towers in FAR scaling, we'd need to find the specific sibling.
+
+                                }));
+                                newOccupiableFloors = [...newOccupiableFloors, ...extra as Floor[]];
+                            }
+                            
+                            b.floors = [...parkingFloors, ...newOccupiableFloors];
+
+                            // Re-sync units: after floor truncation, some units may reference
+                            // floor IDs that no longer exist. Re-map units to surviving floors.
+                            if (b.units && b.units.length > 0) {
+                                const survivingFloorIds = new Set(newOccupiableFloors.map(f => f.id));
+                                // Find template units from any surviving floor
+                                const templateFloorId = b.units.find(u => survivingFloorIds.has(u.floorId || ''))?.floorId;
+                                if (templateFloorId) {
+                                    const templateUnits = b.units.filter(u => u.floorId === templateFloorId);
+                                    const resyncedUnits: typeof b.units = [];
+                                    newOccupiableFloors.forEach(floor => {
+                                        if ((floor.level !== undefined && floor.level < 0) || floor.type === 'Parking') return;
+                                        templateUnits.forEach(tmpl => {
+                                            const baseId = tmpl.id.includes('-u-') ? tmpl.id.split('-u-').pop() : tmpl.id;
+                                            resyncedUnits.push({ ...tmpl, id: `${floor.id}-u-${baseId}`, floorId: floor.id });
+                                        });
+                                    });
+                                    b.units = resyncedUnits;
+                                }
+                            }
                         });
                     }
                 }
@@ -1690,6 +1800,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // Surface parking is handled separately in Peripheral Zone Generation
                 if (params.parkingTypes && params.parkingTypes.length > 0 && newBuildings.length > 0) {
                     newBuildings.forEach((b: Building) => {
+                        // Towers share the podium's basement/stilt, so they don't get their own parking floors directly
+                        if (b.id.includes('-tower')) return;
+
                         const parkingArea = b.area || 500;
                         const capacityPerFloor = Math.floor((parkingArea * 0.75) / 12.5);
 
@@ -1733,6 +1846,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         }
                     });
                 }
+
 
                 // Check ground coverage if available
                 let effectiveCoverage = p.maxCoverage !== undefined ? p.maxCoverage : plotStub.maxCoverage;
@@ -1873,7 +1987,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     type: 'Utility',
                                     utilityType: UtilityType.HVAC
                                 });
-                                b.numFloors += 1;
                                 b.height += 2.5;
                             }
 
@@ -1887,7 +2000,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     type: 'Utility',
                                     utilityType: UtilityType.Electrical
                                 });
-                                b.numFloors += 1;
                                 b.height += 3.0; // Increase total height
                             }
                         });
@@ -2322,6 +2434,18 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set(produce((draft: BuildingState) => {
                 // Toggle the specific component
                 draft.componentVisibility[component] = !draft.componentVisibility[component];
+
+                // If turning ON a global component, clear all per-building internalsVisible overrides
+                // so the global flag takes precedence (the user is switching to "global" mode)
+                if (draft.componentVisibility[component]) {
+                    for (const plot of draft.plots) {
+                        for (const building of plot.buildings) {
+                            if (building.internalsVisible !== undefined) {
+                                building.internalsVisible = undefined; // Reset to "follow global"
+                            }
+                        }
+                    }
+                }
 
                 // Auto-enable ghostMode if any component is now visible
                 const anyVisible = Object.values(draft.componentVisibility).some(v => v);
@@ -2809,34 +2933,44 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 for (const plot of draft.plots) {
                     const building = plot.buildings.find(b => b.id === buildingId);
                     if (building) {
-                        const oldNumFloors = building.numFloors ?? building.floors.length;
+                        const parkingCount = building.floors.filter(f => f.type === 'Parking').length;
+                        const oldNumFloors = building.numFloors ?? (building.floors.length - parkingCount);
                         const oldTypicalHeight = building.typicalFloorHeight ?? building.floors[0]?.height ?? 3;
+
+                        console.log(`[DEBUG updateBuilding ENTRY] id=${building.id}, props.numFloors=${props.numFloors}, building.numFloors=${building.numFloors}, floors.length=${building.floors.length}, parkingCount=${parkingCount}, oldNumFloors=${oldNumFloors}`);
 
                         Object.assign(building, props);
 
+                        // numFloors represents OCCUPIABLE floors only (excludes parking/utility)
                         const newNumFloors = building.numFloors ?? oldNumFloors;
                         const newTypicalHeight = building.typicalFloorHeight ?? oldTypicalHeight;
+                        console.log(`[DEBUG updateBuilding AFTER ASSIGN] building.numFloors=${building.numFloors}, newNumFloors=${newNumFloors}`);
 
                         if (props.numFloors !== undefined || props.typicalFloorHeight !== undefined) {
                             // Preserve special floors (Parking, Utility)
-                            const specialFloors = building.floors.filter(f => f.type === 'Parking');
-                            const standardFloors = building.floors.filter(f => f.type !== 'Parking');
+                            const specialFloors = building.floors.filter(f => f.type === 'Parking' || f.type === 'Utility');
+                            const standardFloors = building.floors.filter(f => f.type !== 'Parking' && f.type !== 'Utility');
 
                             let newFloors: Floor[];
 
                             const mix = building.programMix;
                             if (mix && building.intendedUse === BuildingIntendedUse.MixedUse) {
                                 // --- MIXED USE: Recompute from stored percentages ---
-                                // Stack order (bottom→top): Commercial → Institutional → Hospitality → Residential
+                                // Stack order (bottom→top): Retail -> Institutional -> Hospitality -> Office -> Residential
                                 const commFloors  = Math.round(newNumFloors * (mix.commercial  / 100));
+                                
+                                const retailFloors = commFloors > 0 ? Math.max(1, Math.floor(commFloors * 0.4)) : 0;
+                                const officeFloors = Math.max(0, commFloors - retailFloors);
+                                
                                 const instFloors  = Math.round(newNumFloors * (mix.institutional / 100));
                                 const hospFloors  = Math.round(newNumFloors * (mix.hospitality  / 100));
                                 const resFloors   = Math.max(0, newNumFloors - commFloors - instFloors - hospFloors);
 
                                 const segments: Array<{ use: BuildingIntendedUse; count: number }> = [
-                                    { use: BuildingIntendedUse.Commercial,   count: commFloors },
+                                    { use: BuildingIntendedUse.Retail,       count: retailFloors },
                                     { use: BuildingIntendedUse.Public,       count: instFloors },
                                     { use: BuildingIntendedUse.Hospitality,  count: hospFloors },
+                                    { use: BuildingIntendedUse.Office,       count: officeFloors },
                                     { use: BuildingIntendedUse.Residential,  count: resFloors  },
                                 ];
 
@@ -2846,7 +2980,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     const segColors = generateFloorColors(seg.count, seg.use);
                                     for (let k = 0; k < seg.count; k++) {
                                         newFloors.push({
-                                            id: standardFloors[idx]?.id || `floor-${Date.now()}-${idx}`,
+                                            id: standardFloors[idx]?.id || `floor-${crypto.randomUUID()}-${idx}`,
                                             height: newTypicalHeight,
                                             color: segColors[k] || '#cccccc',
                                             type: 'General' as const,
@@ -2858,25 +2992,139 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             } else {
                                 // --- NON-MIXED: Simple uniform regeneration ---
                                 const colors = generateFloorColors(newNumFloors, building.intendedUse);
-                                newFloors = Array.from({ length: newNumFloors }, (_, i) => ({
-                                    id: standardFloors[i]?.id || `floor-${Date.now()}-${i}`,
-                                    height: newTypicalHeight,
-                                    color: colors[i] || '#cccccc',
-                                    type: 'General' as const,
-                                    intendedUse: building.intendedUse,
-                                }));
+                                newFloors = Array.from({ length: newNumFloors }, (_, i) => {
+                                    const existing = standardFloors[i];
+                                    
+                                    // Calculate the correct level sequentially
+                                    let calculatedLevel = i;
+                                    if (building.id.includes('-tower')) {
+                                        const baseId = building.id.replace(/-tower$/, '');
+                                        const podium = plot.buildings.find(b => b.id === `${baseId}-podium`);
+                                        const podiumFloors = podium?.numFloors || 0;
+                                        calculatedLevel = podiumFloors + i;
+                                    }
+
+                                    return {
+                                        ...existing,
+                                        id: existing?.id || `floor-${crypto.randomUUID()}-${i}`,
+                                        height: newTypicalHeight,
+                                        color: colors[i] || '#cccccc',
+                                        type: 'General' as const,
+                                        intendedUse: building.intendedUse,
+                                        level: existing?.level ?? calculatedLevel
+                                    };
+                                });
                             }
 
                             building.floors = [...specialFloors, ...newFloors];
-                            building.height = newNumFloors * newTypicalHeight;
-                        }
+                            building.height = building.floors.reduce((sum, f) => sum + (f.height || 0), 0);
+                            console.log(`[DEBUG] updateBuilding: Regenerated floors for ${building.id}. Total floors: ${building.floors.length}. newNumFloors: ${newNumFloors}. newFloors length: ${newFloors.length}`);
+
+
+                            // --- RE-MULTIPLY UNITS FOR NEW FLOOR COUNT ---
+                            // Get template units from the first occupiable floor that has units
+                            const occupiableFloors = newFloors.filter(f =>
+                                (f.level === undefined || f.level >= 0) &&
+                                f.type !== 'Parking' &&
+                                f.type !== 'Utility'
+                            );
+
+                            if (building.units && building.units.length > 0 && occupiableFloors.length > 0) {
+                                // Find all existing units for any single floor as the template
+                                const existingFloorIds = new Set(building.units.map(u => u.floorId));
+                                const templateFloorId = [...existingFloorIds][0];
+                                const templateUnits = building.units.filter(u => u.floorId === templateFloorId);
+
+                                if (templateUnits.length > 0) {
+                                    const regeneratedUnits: Unit[] = [];
+                                    occupiableFloors.forEach(floor => {
+                                        templateUnits.forEach(tmpl => {
+                                            const baseUnitId = tmpl.id.includes('-u-') ? tmpl.id.split('-u-').pop() : tmpl.id;
+                                            regeneratedUnits.push({
+                                                ...tmpl,
+                                                id: `${floor.id}-u-${baseUnitId}`,
+                                                floorId: floor.id,
+                                            });
+                                        });
+                                    });
+                                    building.units = regeneratedUnits;
+                                }
+                            }
+
+                            // --- RECOMPUTE LAYOUT (CORE / ELECTRICAL / HVAC) FOR NEW FLOOR COUNT ---
+                            if (building.geometry) {
+                                try {
+                                    const freshLayout = generateBuildingLayout(
+                                        building.geometry as Feature<Polygon | MultiPolygon>,
+                                        {
+                                            intendedUse: building.intendedUse as any,
+                                            numFloors: newNumFloors,
+                                            floorHeight: newTypicalHeight,
+                                            // Pass the stored alignmentRotation so the grid is axis-aligned
+                                            alignmentRotation: building.alignmentRotation ?? 0,
+                                        }
+                                    );
+                                    if (freshLayout.cores && freshLayout.cores.length > 0) {
+                                        building.cores = freshLayout.cores;
+                                    }
+                                    if (freshLayout.utilities && freshLayout.utilities.length > 0) {
+                                        building.internalUtilities = freshLayout.utilities;
+                                    }
+                                    // NOTE: Units are NOT overwritten from fresh layout.
+                                    // The template-based multiplication above already handles
+                                    // unit scaling proportionally. Fresh layout recalculates
+                                    // the grid from scratch which produces different unit counts.
+
+                                } catch (e) {
+                                    console.warn('[updateBuilding] Failed to recompute layout on floor change:', e);
+                                }
+                            }
+
+                        } // end if (props.numFloors !== undefined || props.typicalFloorHeight !== undefined)
 
                         if (props.geometry) {
                             building.area = turf.area(props.geometry);
                         }
 
+
                         building.numFloors = newNumFloors;
                         building.typicalFloorHeight = newTypicalHeight;
+
+                        // --- PODIUM/TOWER SYNC ---
+                        // When floors or height changes on a podium or tower, keep the paired building in sync.
+                        if (props.numFloors !== undefined || props.typicalFloorHeight !== undefined) {
+                            const baseId = buildingId.replace(/-podium$/, '').replace(/-tower$/, '');
+
+                            if (buildingId.endsWith('-podium')) {
+                                // This IS a podium — update the sibling tower's baseHeight (independent floor counts)
+                                const tower = plot.buildings.find(b => b.id === `${baseId}-tower`);
+                                if (tower) {
+                                    // Calculate physical above-ground roof elevation of the podium
+                                    // Only sum standard occupiable floors (exclude basements, parking, utilities)
+                                    const podiumAboveGroundHeight = building.floors
+                                        .filter(f => !((f.level !== undefined && f.level < 0) || f.type === 'Parking') && f.type !== 'Utility')
+                                        .reduce((sum, f) => sum + (f.height || 0), 0);
+                                    
+                                    tower.baseHeight = podiumAboveGroundHeight; // podium roof = tower base
+
+                                    // Re-index tower floor levels to start after podium floors
+                                    const towerOccFloors = tower.floors.filter(f => f.type !== 'Parking' && f.type !== 'Utility');
+                                    towerOccFloors.forEach((f, i) => {
+                                        f.level = building.numFloors + i;
+                                    });
+                                }
+                            } else if (buildingId.endsWith('-tower')) {
+                                // This IS a tower — recompute our own baseHeight from the sibling podium
+                                const podium = plot.buildings.find(b => b.id === `${baseId}-podium`);
+                                if (podium) {
+                                    // Use podium's above-ground height (exclude basements, parking, utilities)
+                                    const podiumAboveGroundHeight = podium.floors
+                                        .filter(f => !((f.level !== undefined && f.level < 0) || f.type === 'Parking') && f.type !== 'Utility')
+                                        .reduce((sum, f) => sum + (f.height || 0), 0);
+                                    building.baseHeight = podiumAboveGroundHeight; // stay on top of podium
+                                }
+                            }
+                        }
 
                         break;
                     }
@@ -3246,7 +3494,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             b.utilities = [...internalUtils] as UtilityType[]; // Tag building
 
                             // Visual: Add HVAC Plant on Roof
-                            if (internalUtils.includes('HVAC')) {
+                             if (internalUtils.includes('HVAC')) {
                                 const hvacColor = UTILITY_COLORS[UtilityType.HVAC] || '#FFA500';
                                 b.floors.push({
                                     id: `floor-${b.id}-hvac`,
@@ -3255,7 +3503,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     type: 'Utility',
                                     utilityType: UtilityType.HVAC
                                 });
-                                b.numFloors += 1;
                                 b.height += 2.5;
                             }
 
@@ -3269,7 +3516,6 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     type: 'Utility',
                                     utilityType: UtilityType.Electrical
                                 });
-                                b.numFloors += 1;
                                 b.height += 3;
                                 b.baseHeight = (b.baseHeight || 0);
                             }
@@ -4073,7 +4319,12 @@ const useProjectData = () => {
         const totalBuildableArea = (project.totalPlotArea ?? consumedPlotArea) * far;
         const consumedBuildableArea = plots
             .flatMap(p => p.buildings)
-            .reduce((acc, b) => acc + b.area * b.floors.length, 0);
+            .reduce((acc, b) => {
+                // Use numFloors (the user-editable count) rather than floors.length
+                // which can include parking/utility floors and doesn't update reactively.
+                const effectiveFloors = b.numFloors ?? b.floors.filter(f => f.type !== 'Parking').length;
+                return acc + b.area * effectiveFloors;
+            }, 0);
 
         return {
             ...project,

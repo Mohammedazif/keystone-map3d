@@ -47,8 +47,11 @@ const getBuildingColor = (use: string | BuildingIntendedUse) => {
   const useStr = (use || '').toString().toLowerCase();
   if (useStr === 'residential') return '#4CAF50'; // Green
   if (useStr === 'commercial') return '#F44336'; // Red
+  if (useStr === 'retail') return '#FF4081';     // Hot Pink / Magenta
+  if (useStr === 'office') return '#29B6F6';     // Light Cyan Blue
   if (useStr === 'institutional') return '#2196F3'; // Blue
-  if (useStr === 'mixed use') return '#FBC02D'; // Yellow
+  if (useStr === 'public') return '#FF8C00';     // Orange
+  if (useStr === 'mixed use' || useStr === 'mixed-use') return '#FBC02D'; // Yellow
   if (useStr === 'industrial') return '#9C27B0'; // Purple
   if (useStr === 'hospitality') return '#E91E63'; // Pink
   return '#9E9E9E'; // Grey default
@@ -204,6 +207,10 @@ export function MapEditor({
           [
             `plot-base-${p.id}`,
             ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
+            ...p.buildings.map(b => `units-${b.id}`),
+            ...p.buildings.map(b => `cores-${b.id}`),
+            // Include all rendered util- layers dynamically by scanning existing layers
+            ...allMapLayers.filter(id => id.startsWith('util-')),
             ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
             ...p.greenAreas.map(g => `green-area-${g.id}`),
             ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
@@ -218,7 +225,21 @@ export function MapEditor({
         });
 
         if (features && features.length > 0) {
-          const feature = features[0];
+          // Filter out invisible internal layers before processing click
+          const { componentVisibility: cv, uiState: us, plots } = getStoreState();
+          const validFeatures = features.filter(f => {
+            const lid = f.layer?.id;
+            if (!lid) return false;
+            const isInternal = lid.startsWith('cores-') || lid.startsWith('units-') || lid.startsWith('util-');
+            if (isInternal) {
+                // If the layer is currently rendered fully transparent, ignore it for clicks
+                const opacity = map.current?.getPaintProperty(lid, 'fill-extrusion-opacity');
+                if (opacity === 0) return false;
+            }
+            return true;
+          });
+          if (validFeatures.length === 0) return;
+          const feature = validFeatures[0];
           const layerId = feature.layer?.id;
           if (!layerId) return;
 
@@ -236,6 +257,17 @@ export function MapEditor({
                 break;
               }
             }
+          } else if (layerId.startsWith('units-')) {
+            const unitId = feature.properties?.unitId;
+            if (unitId) actions.selectObject(unitId, 'Unit');
+          } else if (layerId.startsWith('cores-')) {
+            const coreId = feature.properties?.coreId;
+            if (coreId) actions.selectObject(coreId, 'Core');
+          } else if (layerId.startsWith('util-')) {
+            // util layer IDs format: `util-${buildingId}-${utilId}`
+            const parts = layerId.split('-');
+            const utilId = parts.slice(2).join('-'); // handles uuid format correctly
+            if (utilId) actions.selectObject(utilId, 'UtilityArea');
           } else if (layerId.startsWith('buildable-area-')) {
             const buildableAreaId = layerId.replace('buildable-area-', '');
             for (const plot of plotsRendering) {
@@ -431,7 +463,8 @@ export function MapEditor({
 
       // GENERATE & ADD TEXTURES
       // Always remove + re-add so changes to texture-generator take effect immediately.
-      const buildingTypes = ['Residential', 'Commercial', 'Institutional', 'Public', 'Mixed Use', 'Industrial', 'Hospitality'];
+      const buildingTypes = ['Residential', 'Commercial', 'Retail', 'Office', 'Institutional', 'Public', 'Mixed Use', 'Industrial', 'Hospitality'];
+
       buildingTypes.forEach(type => {
         const color = getBuildingColor(type as BuildingIntendedUse);
         const img = generateBuildingTexture(type as any, color);
@@ -1834,7 +1867,13 @@ export function MapEditor({
             !((f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking')
           );
           const superstructureHeight = superstructureFloorsCalc.reduce((sum, f) => sum + (f.height || 3), 0);
-          const visualBuildingTop = (building.baseHeight || 0) + (shouldLiftForBasements ? totalBasementHeight : 0) + superstructureHeight;
+          // Exclude Utility floors - they are not rendered, so should not inflate building height
+          const superstructureFloorsCalcFiltered = building.floors.filter(f =>
+            !((f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking') &&
+            f.type !== 'Utility'
+          );
+          const superstructureHeightFinal = superstructureFloorsCalcFiltered.reduce((sum, f) => sum + (f.height || 3), 0);
+          const visualBuildingTop = (building.baseHeight || 0) + (shouldLiftForBasements ? totalBasementHeight : 0) + superstructureHeightFinal;
           const effectiveBase = (building.baseHeight || 0) + (shouldLiftForBasements ? totalBasementHeight : 0);
 
           // --- RENDER INTERNAL LAYOUT (UTILITIES -> CORES & UNITS) FIRST ---
@@ -1857,13 +1896,25 @@ export function MapEditor({
 
               if (util.type === 'Electrical') {
                 const isSelected = selectedObjectId?.id === util.id;
-                utilOpacity = componentVisibility.electrical ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
+                if (building.internalsVisible === false) {
+                  utilOpacity = 0.0;
+                } else if (building.internalsVisible === true) {
+                  utilOpacity = uiState.ghostMode ? 0.8 : 1.0;
+                } else {
+                  utilOpacity = componentVisibility.electrical ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
+                }
 
-                utilBase = (building.baseHeight || 0) + heightOffset;
-                utilHeight = buildingTop + heightOffset;
+                utilBase = effectiveBase;  // Start at effective ground (accounts for basement lift)
+                utilHeight = visualBuildingTop;
                 utilColor = '#FFD700';
               } else if (util.type === 'HVAC') {
-                utilOpacity = componentVisibility.hvac ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
+                if (building.internalsVisible === false) {
+                  utilOpacity = 0.0;
+                } else if (building.internalsVisible === true) {
+                  utilOpacity = uiState.ghostMode ? 0.8 : 1.0;
+                } else {
+                  utilOpacity = componentVisibility.hvac ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
+                }
                 utilBase = buildingTop + heightOffset;
                 utilHeight = buildingTop + 3.0 + heightOffset;
                 utilColor = '#C0C0C0';
@@ -1900,121 +1951,147 @@ export function MapEditor({
             });
           }
 
-          // Cores
-          if (building.cores) {
-            building.cores.forEach((core: Core) => {
-              const layerId = `core-${building.id}-${core.id}`;
-              renderedIds.add(layerId);
+          // Pre-compute floor heights map for accurate 3D placement
+          const floorDict: Record<string, { baseHeight: number, height: number }> = {};
+          let fdCurrentBase = building.baseHeight || 0;
+          floorsToRender.forEach(f => {
+            floorDict[f.id] = { baseHeight: fdCurrentBase, height: fdCurrentBase + f.height };
+            fdCurrentBase += f.height;
+          });
 
-              const isCoreSelected = selectedObjectId?.id === core.id;
-              // Opacity Update: Match Electrical style (0.8) for consistent "Solid" look in Ghost Mode
-              let coreOpacity = 0.0;
+          // Cores Layer (Unified) – each core spans the full building height
+          if (building.cores && floorsToRender) {
+            const layerId = `cores-${building.id}`;
+            renderedIds.add(layerId);
+
+            let coreOpacity = 0.0;
+            if (building.internalsVisible === false) {
+              coreOpacity = 0.0;
+            } else if (building.internalsVisible === true) {
+              coreOpacity = uiState.ghostMode ? 0.8 : 1.0;
+            } else {
               if (componentVisibility.cores) {
                 coreOpacity = uiState.ghostMode ? 0.8 : 1.0;
               } else if (anyComponentVisible) {
-                // If focusing on something else, hide it
-                // UNLESS Ghost Mode is active? No, usually 'anyComponentVisible' implies singular focus.
-                // But for "X-ray" feel, maybe keep it?
-                // Adhering to strict specific focus:
                 coreOpacity = 0.0;
-              } else if (uiState.ghostMode || isCoreSelected) {
-                coreOpacity = isCoreSelected ? 1.0 : 0.8;
+              } else if (uiState.ghostMode) {
+                coreOpacity = 0.8;
               }
+            }
 
-              const coreGeo = {
+            // Deduplicate by base coreId (format: floorId-c-originalId → we use the original id)
+            // Since we may have one logical core per floor, render one representative per unique geometry
+            const seenGeoKeys = new Set<string>();
+            const features: Feature[] = [];
+            building.cores.forEach((core: Core) => {
+              // Use a geometry fingerprint to deduplicate identical footprints
+              const geoKey = JSON.stringify(core.geometry.geometry.coordinates);
+              if (seenGeoKeys.has(geoKey)) return;
+              seenGeoKeys.add(geoKey);
+
+              features.push({
                 ...core.geometry,
                 properties: {
+                  ...core.geometry.properties,
                   height: visualBuildingTop,
-                  base_height: building.baseHeight || 0
+                  base_height: effectiveBase,  // Use effectiveBase for consistency
+                  coreId: core.id
                 }
-              };
-
-              // Texture Logic: Disable texture in ghost mode for clean solid look
-              const usePattern = !uiState.ghostMode;
-              const patternName = 'texture-Institutional';
-
-              let cSource = mapInstance.getSource(layerId) as GeoJSONSource;
-              if (cSource) cSource.setData(coreGeo);
-              else mapInstance.addSource(layerId, { type: 'geojson', data: coreGeo });
-
-              if (!mapInstance.getLayer(layerId)) {
-                // Initial Layer Add
-                const paintProps: any = {
-                  'fill-extrusion-color': '#9370DB', // Medium Purple
-                  'fill-extrusion-height': ['get', 'height'],
-                  'fill-extrusion-base': ['get', 'base_height'],
-                  'fill-extrusion-opacity': coreOpacity
-                };
-                if (usePattern) paintProps['fill-extrusion-pattern'] = patternName;
-
-                mapInstance.addLayer({
-                  id: layerId,
-                  type: 'fill-extrusion',
-                  source: layerId,
-                  paint: paintProps
-                }, LABELS_LAYER_ID);
-              } else {
-                // Update Properties
-                mapInstance.setPaintProperty(layerId, 'fill-extrusion-opacity', coreOpacity);
-
-                if (usePattern) {
-                  mapInstance.setPaintProperty(layerId, 'fill-extrusion-pattern', patternName);
-                  mapInstance.setPaintProperty(layerId, 'fill-extrusion-color', '#ffffff'); // White base for texture
-                } else {
-                  mapInstance.setPaintProperty(layerId, 'fill-extrusion-pattern', null as any); // Remove texture
-                  mapInstance.setPaintProperty(layerId, 'fill-extrusion-color', '#9370DB'); // Show Purple
-                }
-              }
+              } as Feature);
             });
+
+            const coreGeoData = { type: 'FeatureCollection', features } as FeatureCollection;
+            const usePattern = !(uiState.ghostMode || building.internalsVisible === true);
+            const patternName = 'texture-Institutional';
+
+            let cSource = mapInstance.getSource(layerId) as GeoJSONSource;
+            if (cSource) cSource.setData(coreGeoData as any);
+            else mapInstance.addSource(layerId, { type: 'geojson', data: coreGeoData as any });
+
+            if (!mapInstance.getLayer(layerId)) {
+              const paintProps: any = {
+                'fill-extrusion-color': '#9370DB',
+                'fill-extrusion-height': ['get', 'height'],
+                'fill-extrusion-base': ['get', 'base_height'],
+                'fill-extrusion-opacity': coreOpacity
+              };
+              if (usePattern) paintProps['fill-extrusion-pattern'] = patternName;
+              mapInstance.addLayer({ id: layerId, type: 'fill-extrusion', source: layerId, paint: paintProps }, LABELS_LAYER_ID);
+            } else {
+              mapInstance.setPaintProperty(layerId, 'fill-extrusion-opacity', coreOpacity);
+              if (usePattern) {
+                mapInstance.setPaintProperty(layerId, 'fill-extrusion-pattern', patternName);
+                mapInstance.setPaintProperty(layerId, 'fill-extrusion-color', '#ffffff');
+              } else {
+                mapInstance.setPaintProperty(layerId, 'fill-extrusion-pattern', undefined as any);
+                mapInstance.setPaintProperty(layerId, 'fill-extrusion-color', '#9370DB');
+              }
+            }
           }
 
-          // Units
-          if (building.units) {
-            building.units.forEach((unit: Unit) => {
-              const layerId = `unit-${building.id}-${unit.id}`;
-              renderedIds.add(layerId);
+          // Units Layer (Unified) – per-floor instances
+          if (building.units && floorsToRender) {
+            const layerId = `units-${building.id}`;
+            renderedIds.add(layerId);
 
-              // Unit Opacity: INCREASED to 0.8 (was 0.1) as per user request to look "like electrical"
-              let unitOpacity = 0.0;
+            let unitOpacity = 0.0;
+            if (building.internalsVisible === false) {
+              unitOpacity = 0.0;
+            } else if (building.internalsVisible === true) {
+              unitOpacity = uiState.ghostMode ? 0.8 : 1.0;
+            } else {
               if (componentVisibility.units) {
                 unitOpacity = uiState.ghostMode ? 0.8 : 1.0;
               } else if (anyComponentVisible) {
                 unitOpacity = 0.0;
               } else if (uiState.ghostMode) {
-                unitOpacity = 0.8; // Match Electrical/Cores
+                unitOpacity = 0.8;
               }
+            }
 
-              const geometry = {
+            const SLAB_GAP = 0.35; // metres left unoccupied at top of each floor (visible slab line)
+            const features: Feature[] = [];
+            building.units.forEach((unit: Unit) => {
+              const fBounds = floorDict[unit.floorId || ''];
+              if (!fBounds) return;
+
+              // Shorten the unit extrusion slightly to leave a visible slab at each floor boundary
+              const unitTop = Math.max(fBounds.baseHeight, fBounds.height - SLAB_GAP);
+
+              features.push({
                 ...unit.geometry,
                 properties: {
                   ...unit.geometry.properties,
-                  ...unit.geometry.properties,
-                  height: visualBuildingTop,
-                  base_height: effectiveBase,
-                  color: unit.color || '#ADD8E6'
+                  height: unitTop,
+                  base_height: fBounds.baseHeight,
+                  color: unit.color || '#ADD8E6',
+                  unitId: unit.id
                 }
-              };
-
-              let source = mapInstance.getSource(layerId) as GeoJSONSource;
-              if (source) source.setData(geometry);
-              else mapInstance.addSource(layerId, { type: 'geojson', data: geometry });
-
-              if (!mapInstance.getLayer(layerId)) {
-                mapInstance.addLayer({
-                  id: layerId,
-                  type: 'fill-extrusion',
-                  source: layerId,
-                  paint: {
-                    'fill-extrusion-color': ['get', 'color'],
-                    'fill-extrusion-height': ['get', 'height'],
-                    'fill-extrusion-base': ['get', 'base_height'],
-                    'fill-extrusion-opacity': unitOpacity
-                  }
-                }, LABELS_LAYER_ID);
-              } else {
-                mapInstance.setPaintProperty(layerId, 'fill-extrusion-opacity', unitOpacity);
-              }
+              } as Feature);
             });
+
+            const geometryData = { type: 'FeatureCollection', features } as FeatureCollection;
+
+            let source = mapInstance.getSource(layerId) as GeoJSONSource;
+            if (source) source.setData(geometryData as any);
+            else mapInstance.addSource(layerId, { type: 'geojson', data: geometryData as any });
+
+            if (!mapInstance.getLayer(layerId)) {
+              mapInstance.addLayer({
+                id: layerId,
+                type: 'fill-extrusion',
+                source: layerId,
+                paint: {
+                  'fill-extrusion-color': ['get', 'color'],
+                  'fill-extrusion-height': ['get', 'height'],
+                  'fill-extrusion-base': ['get', 'base_height'],
+                  'fill-extrusion-opacity': unitOpacity
+                }
+              }, LABELS_LAYER_ID);
+            } else {
+              mapInstance.setPaintProperty(layerId, 'fill-extrusion-opacity', unitOpacity);
+              mapInstance.setPaintProperty(layerId, 'fill-extrusion-color', ['get', 'color']);
+            }
           }
 
           // --- RENDER FLOORS (SHELL) LAST (BACKGROUND/CONTEXT) ---
@@ -2109,11 +2186,11 @@ export function MapEditor({
 
             // NEW OPACITY LOGIC for Floors - "Skeleton Mode"
             let opacity = userOpacity;
-            if (anyComponentVisible) {
-              // If focused on internals, make WALLS invisible (0.0)
+            if (building.internalsVisible === true || anyComponentVisible) {
+              // If focused on internals globally OR specifically for this building, make WALLS invisible (0.0)
               opacity = 0.0;
               // Exception: If showing basements, basement floors stay visible
-              if (componentVisibility.basements && floor.parkingType === 'Basement') {
+              if ((componentVisibility.basements || building.internalsVisible === true) && floor.parkingType === 'Basement') {
                 opacity = 0.9;
               }
             } else if (uiState.ghostMode) {
@@ -2172,8 +2249,8 @@ export function MapEditor({
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', patternName);
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', '#ffffff');
               } else {
-                // Use null to unset property in strict Mapbox TS/JS
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', null); // Clear pattern
+                // Use undefined to unset property in strict Mapbox TS/JS
+                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', undefined); // Clear pattern
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', ['get', 'color']);
               }
             }
@@ -2556,7 +2633,7 @@ export function MapEditor({
     if (currentStyle && currentStyle.layers) {
       currentStyle.layers.forEach(layer => {
         const layerId = layer.id;
-        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('util-') || layerId.startsWith('utility-area-') || layerId.startsWith('core-') || layerId.startsWith('unit-') || layerId.startsWith('electrical-') || layerId.startsWith('hvac-') || layerId.startsWith('gates-');
+        const isManagedByPlots = layerId.startsWith('plot-') || layerId.startsWith('building-') || layerId.startsWith('building-floor-fill-') || layerId.startsWith('building-slab-') || layerId.startsWith('green-') || layerId.startsWith('parking-') || layerId.startsWith('buildable-') || layerId.startsWith('util-') || layerId.startsWith('utility-area-') || layerId.startsWith('core-') || layerId.startsWith('unit-') || layerId.startsWith('units-') || layerId.startsWith('cores-') || layerId.startsWith('electrical-') || layerId.startsWith('hvac-') || layerId.startsWith('gates-');
 
         if (isManagedByPlots && !renderedIds.has(layerId) && layerId !== LABELS_LAYER_ID) {
           if (mapInstance.getLayer(layerId)) mapInstance.removeLayer(layerId);
@@ -2566,7 +2643,7 @@ export function MapEditor({
 
     if (currentStyle && currentStyle.sources) {
       Object.keys(currentStyle.sources).forEach(sourceId => {
-        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('util-') || sourceId.startsWith('utility-area-') || sourceId.startsWith('core-') || sourceId.startsWith('unit-') || sourceId.startsWith('electrical-') || sourceId.startsWith('hvac-') || sourceId.startsWith('gates-');
+        const isManagedByPlots = sourceId.startsWith('plot-') || sourceId.startsWith('building-') || sourceId.startsWith('building-floor-fill-') || sourceId.startsWith('building-slab-') || sourceId.startsWith('green-') || sourceId.startsWith('parking-') || sourceId.startsWith('buildable-') || sourceId.startsWith('util-') || sourceId.startsWith('utility-area-') || sourceId.startsWith('core-') || sourceId.startsWith('unit-') || sourceId.startsWith('units-') || sourceId.startsWith('cores-') || sourceId.startsWith('electrical-') || sourceId.startsWith('hvac-') || sourceId.startsWith('gates-');
 
         if (isManagedByPlots && !renderedIds.has(sourceId) && sourceId !== LABELS_SOURCE_ID) {
           const style = mapInstance.getStyle();
@@ -2595,12 +2672,28 @@ export function MapEditor({
     const onMouseMove = (e: mapboxgl.MapMouseEvent) => {
       // Query specific interactive layers
       // We check for: Buildings (hit layer), Utilities (prefix), Roads
+      const { componentVisibility: cv, uiState: us, plots } = getStoreState();
+      const internalsVisible = cv.units || cv.cores || cv.electrical || cv.hvac || us.ghostMode;
+
       const features = m.queryRenderedFeatures(e.point).filter(f => {
-        return f.layer && f.layer.id && (
-          f.layer.id === 'all-buildings-hit-layer' ||
-          f.layer.id.startsWith('utility-area-') ||
-          f.layer.id.startsWith('parking-area-') ||
-          f.layer.id.startsWith('gates-circle-')
+        const lid = f.layer?.id;
+        if (!lid) return false;
+        
+        const isInternal = lid.startsWith('cores-') || lid.startsWith('units-') || lid.startsWith('util-');
+        if (isInternal) {
+            // Check actual painted opacity to perfectly match what's visible
+            const opacity = m.getPaintProperty(lid, 'fill-extrusion-opacity');
+            if (opacity === 0) return false;
+        }
+        
+        return (
+          lid === 'all-buildings-hit-layer' ||
+          lid.startsWith('utility-area-') ||
+          lid.startsWith('parking-area-') ||
+          lid.startsWith('gates-circle-') ||
+          lid.startsWith('cores-') ||
+          lid.startsWith('units-') ||
+          lid.startsWith('util-')
         );
       });
 
@@ -2656,6 +2749,29 @@ export function MapEditor({
         } else if (f.layer?.id.startsWith('gates-circle-')) {
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || 'Gate'}</div>
+          `;
+        } else if (f.layer?.id.startsWith('cores-')) {
+          const area = turf.area(f as any);
+          html = `
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">Core</div>
+            <div class="text-xs text-muted-foreground" style="color: #525252;">Vertical Circulation</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Footprint Area: ${area.toFixed(1)} m²</div>
+          `;
+        } else if (f.layer?.id.startsWith('util-')) {
+          const typeLabel = props.type || 'Utility Shaft';
+          const area = turf.area(f as any);
+          html = `
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || typeLabel}</div>
+            <div class="text-xs text-muted-foreground" style="color: #525252;">Internal ${typeLabel}</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Footprint Area: ${area.toFixed(1)} m²</div>
+          `;
+        } else if (f.layer?.id.startsWith('units-')) {
+          const typeLabel = props.type || 'Unit';
+          const area = turf.area(f as any);
+          html = `
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${typeLabel}</div>
+            <div class="text-xs text-muted-foreground" style="color: #525252;">Internal Unit Layout</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${area.toFixed(1)} m²</div>
           `;
         }
 

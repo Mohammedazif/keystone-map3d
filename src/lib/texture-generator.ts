@@ -1,4 +1,4 @@
-export type BuildingTextureType = 'Residential' | 'Commercial' | 'Institutional' | 'Mixed Use' | 'Industrial' | 'Hospitality' | 'Public';
+export type BuildingTextureType = 'Residential' | 'Commercial' | 'Retail' | 'Office' | 'Institutional' | 'Mixed Use' | 'Industrial' | 'Hospitality' | 'Public';
 
 /**
  * Generates a vertical mullion strip texture for buildings.
@@ -26,6 +26,12 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
             break;
         case 'Commercial':
             cols = 6; mullionWidth = 1; glassTintAlpha = 0.45; centerDividerWidth = 0;
+            break;
+        case 'Retail':
+            cols = 3; mullionWidth = 4; glassTintAlpha = 0.50; centerDividerWidth = 0; // Large storefront style
+            break;
+        case 'Office':
+            cols = 8; mullionWidth = 1; glassTintAlpha = 0.45; centerDividerWidth = 2; // Denser mullions
             break;
         case 'Hospitality':
             cols = 3; mullionWidth = 3; glassTintAlpha = 0.38; centerDividerWidth = 6;
