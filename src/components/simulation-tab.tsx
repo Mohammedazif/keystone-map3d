@@ -48,14 +48,12 @@ export function SimulationTab({
 
     return (
         <div className="flex flex-col h-full">
-            <CardHeader className="py-2 px-3 flex-shrink-0 border-b">
-                <CardTitle className="text-sm flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <Sun className="h-4 w-4 text-orange-500" />
-                        <span>Scenario Simulation</span>
-                    </div>
-                </CardTitle>
-            </CardHeader>
+            <div className="p-4 border-b shrink-0">
+                <h2 className="text-lg font-semibold flex items-center gap-2">
+                    <Sun className="h-5 w-5 text-orange-500" />
+                    Scenario Simulation
+                </h2>
+            </div>
 
             <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-3 space-y-4 scrollbar-thin">
                 {/* Master Toggle */}

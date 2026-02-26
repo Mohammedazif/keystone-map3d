@@ -38,10 +38,6 @@ export function ProjectInfoPanel({ embedded = false }: { embedded?: boolean }) {
                 </CardHeader>
             )}
             <div className={cn(embedded ? "" : "p-6 pt-0 space-y-4")}>
-                {/* Note: CardContent has p-6 by default. If embedded, we probably want minimal padding or handle it in parent. 
-                   I'll assume parent adds padding. But let's check content. 
-                   Original CardContent had className="space-y-4". 
-               */}
                 <div className={cn("space-y-4", embedded ? "p-3" : "")}>
                     <div className="space-y-2">
                         <div className="flex justify-between items-center text-sm">

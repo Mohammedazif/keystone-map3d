@@ -29,7 +29,6 @@ export function NewRegulationDialog({ isOpen, onOpenChange, onCreate, isSaving }
     const handleSubmit = async () => {
         if (!location || !type) return;
         await onCreate(location, type);
-        // Reset form on successful creation (handled in parent component)
         setLocation('');
         setType('');
     }

@@ -76,12 +76,10 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
 
     const totalParts = costCategories.reduce((s, c) => s + c.value, 0) || 1;
 
-    // Build cumulative S-curve data (12-month construction spend, typical S-curve shape)
     const totalMonths = Math.max(6, Math.round(estimates.timeline?.total_months || 12));
     const sCurve: number[] = [];
     for (let m = 1; m <= totalMonths; m++) {
-        const t = m / totalMonths; // 0-1
-        // S-curve: logistic-ish ramp (slow start, fast middle, slow end)
+        const t = m / totalMonths;
         const spend = totalCost / (1 + Math.exp(-10 * (t - 0.5)));
         sCurve.push(spend);
     }
@@ -91,7 +89,6 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
     const points = sCurve.map((v, i) =>
         `${(i / (sCurve.length - 1)) * svgW},${svgH - (v / maxSpend) * (svgH - 6) - 2}`
     ).join(' ');
-    // Revenue line — flat line once construction done (only appears at handover)
     const revY = svgH - (totalRev / maxSpend) * (svgH - 6) - 2;
     const revLineY = Math.max(2, revY);
 
@@ -350,7 +347,6 @@ function FeasibilityTab() {
                 const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
                 const newGates = generateVastuGates(plot.geometry, center, plot.roadAccessSides || []);
                 if (newGates.length > 0) {
-                    // Remove existing auto-generated gates (standard and Vastu), keep manual ones
                     const existingEntries = (plot.entries || []).filter(e => !e.name?.toLowerCase().includes('gate'));
                     actions.updatePlot(plot.id, { entries: [...existingEntries, ...newGates] });
                 }
@@ -367,7 +363,6 @@ function FeasibilityTab() {
 
     if (!metrics) return <div className="p-4 text-center text-muted-foreground">Calculations pending...</div>;
 
-    // Extract dynamic limits from regulations
     const maxFAR = regulations?.geometry?.floor_area_ratio?.value || activeProject?.feasibilityParams?.efficiencyTarget || 2.5;
     const minGreenCover = greenStandards?.constraints?.minGreenCover ? greenStandards.constraints.minGreenCover * 100 : 15;
     const minOpenSpace = greenStandards?.constraints?.minOpenSpace ? greenStandards.constraints.minOpenSpace * 100 : 30;
@@ -420,7 +415,6 @@ function FeasibilityTab() {
                 { label: "Brahmasthan Open", status: 'pass' },
                 { label: "Service Placement", status: metrics.compliance.vastu > 80 ? 'pass' : 'warn' },
             ],
-            // Special Control for Vastu
             control: (
                 <div className="space-y-2 mt-2 pt-2 border-t border-border/50">
                     <div className="flex items-center space-x-2">
@@ -581,7 +575,7 @@ function FeasibilityTab() {
                                     (estimates.timeline?.phases?.foundation || 0) + 
                                     (estimates.timeline?.phases?.structure || 0) + 
                                     (estimates.timeline?.phases?.finishing || 0) +
-                                    (estimates.cost_breakdown?.contingency ? 2 : 2) // Assuming 2mo contingency
+                                    (estimates.cost_breakdown?.contingency ? 2 : 2) 
                                 ) - (estimates.timeline?.total_months || 0)).toFixed(1)} mo</span>
                             </div>
                             <div className="flex justify-between">
@@ -647,10 +641,8 @@ export function FeasibilityDashboard() {
     const uiState = useBuildingStore(state => state.uiState);
     const setOpen = useBuildingStore(state => state.actions.setFeasibilityPanelOpen);
 
-    // Default to open if not set
     const isOpen = uiState.isFeasibilityPanelOpen ?? true;
 
-    // Fetch estimates ONCE here — shared by Cost & Time simulator tabs so they don't re-fetch on tab switch
     const activeProjectData = useProjectData();
     const metricsForSim = useDevelopmentMetrics(activeProjectData);
     const { estimates: simEstimates, isLoading: simLoading } = useProjectEstimates(activeProjectData, metricsForSim);
@@ -675,7 +667,7 @@ export function FeasibilityDashboard() {
                     </Button>
                 </CardHeader>
 
-                {/* Content Area - Only render/visible when open to save performance */}
+                {/* Content Area*/}
                 <div className={cn(
                     "flex-1 min-h-0 w-full transition-opacity duration-300",
                     isOpen ? "opacity-100" : "opacity-0 pointer-events-none"

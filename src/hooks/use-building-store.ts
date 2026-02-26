@@ -26,7 +26,7 @@ import { ComplianceEngine } from '@/lib/engines/compliance-engine';
 import { collection, doc, getDocs, setDoc, deleteDoc, writeBatch, getDoc, query, where } from 'firebase/firestore';
 import useAuthStore from './use-auth-store';
 
-export type DrawingObjectType = 'Plot' | 'Zone' | 'Building' | 'Road';
+export type DrawingObjectType = 'Plot' | 'Zone' | 'Building' | 'Road' | 'Move';
 
 type ZoneType = 'BuildableArea' | 'GreenArea' | 'ParkingArea' | 'UtilityArea';
 
@@ -56,6 +56,10 @@ interface BuildingState {
     uiState: { showVastuCompass: boolean; isFeasibilityPanelOpen: boolean; ghostMode: boolean }; // New UI State
     componentVisibility: { electrical: boolean; hvac: boolean; basements: boolean; cores: boolean; units: boolean };
     aiScenarios: (AiScenario | AiMassingScenario)[] | null;
+    activeBhuvanLayer: string | null;
+    activeBhuvanOpacity: number;
+    bhuvanData: any | null;
+    isFetchingBhuvan: boolean;
     isLoading: boolean;
     active: boolean;
     isSaving: boolean;
@@ -126,6 +130,13 @@ interface BuildingState {
 
         setLocationData: (data: any) => void;
         toggleAmenityVisibility: (category: string) => void;
+
+        setActiveBhuvanLayer: (layerId: string | null) => void;
+        setBhuvanOpacity: (opacity: number) => void;
+        setBhuvanData: (data: any | null, isFetching?: boolean) => void;
+        moveObject: (plotId: string, objectId: string, objectType: SelectableObjectType, deltaLng: number, deltaLat: number) => void;
+        recalculateGreenAreas: (plotId: string) => void;
+
 
         undo: () => void;
         redo: () => void;
@@ -435,6 +446,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false, ghostMode: false },
     componentVisibility: { electrical: false, hvac: false, basements: false, cores: false, units: false },
     aiScenarios: null,
+    activeBhuvanLayer: null,
+    activeBhuvanOpacity: 0.6,
+    bhuvanData: null,
+    isFetchingBhuvan: false,
     isLoading: true,
     active: false,
     isSaving: false,
@@ -2449,7 +2464,23 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
         toggleGhostMode: (show?: boolean) => {
             set(produce((draft: BuildingState) => {
-                draft.uiState.ghostMode = show !== undefined ? show : !draft.uiState.ghostMode;
+                draft.uiState.ghostMode = (typeof show === 'boolean') ? show : !draft.uiState.ghostMode;
+                // When turning ghost mode OFF, fully reset ALL visibility state so buildings render normally
+                if (!draft.uiState.ghostMode) {
+                    draft.componentVisibility = {
+                        electrical: false,
+                        hvac: false,
+                        basements: false,
+                        cores: false,
+                        units: false,
+                    };
+                    // Also clear any per-building internalsVisible overrides
+                    for (const plot of draft.plots) {
+                        for (const building of plot.buildings) {
+                            building.internalsVisible = undefined;
+                        }
+                    }
+                }
                 toast({ title: draft.uiState.ghostMode ? "Ghost Mode Enabled" : "Ghost Mode Disabled", description: "Internal structures are now " + (draft.uiState.ghostMode ? "visible" : "hidden") });
             }));
         },
@@ -2665,6 +2696,14 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         startDrawing: (objectType: DrawingObjectType, activePlotId: string | null = null) => {
             set(
                 produce(draft => {
+                    // Toggle off if already active
+                    if (draft.drawingState.objectType === objectType) {
+                        draft.drawingState.objectType = null;
+                        draft.drawingState.isDrawing = false;
+                        draft.drawingPoints = [];
+                        return;
+                    }
+
                     draft.selectedObjectId = null;
                     draft.drawingPoints = [];
                     const newActivePlotId = objectType === 'Plot' ? null : activePlotId;
@@ -2677,8 +2716,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         }
                     }
 
+                    // Move is not a 'drawing' operation in terms of UI overlays, but it uses the objectType state.
+                    const isDrawing = objectType !== 'Move';
+
                     draft.drawingState = {
-                        isDrawing: true,
+                        isDrawing,
                         objectType,
                         activePlotId: newActivePlotId,
                         roadWidth
@@ -2912,7 +2954,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             });
         },
         selectObject: (id: string | null, type: SelectableObjectType | null) => {
-            get().actions.resetDrawing();
+            if (get().drawingState.objectType !== 'Move') {
+                get().actions.resetDrawing();
+            }
             if (!id || !type) {
                 set({ selectedObjectId: null });
                 return;
@@ -2920,21 +2964,65 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
             const { plots } = get();
             let selectedObjectCentroid: Feature<Point> | null = null;
+            let zoomLevel = 16;
             for (const plot of plots) {
                 if (type === 'Plot' && plot.id === id) {
                     selectedObjectCentroid = plot.centroid;
+                    zoomLevel = 17;
                     break;
                 }
-                const allObjects = [...plot.buildings, ...plot.greenAreas, ...plot.parkingAreas, ...plot.buildableAreas];
-                const foundObject = allObjects.find(obj => obj.id === id);
-                if (foundObject) {
-                    selectedObjectCentroid = foundObject.centroid;
+                
+                // Search in main plot objects
+                const mainObjects = [...plot.buildings, ...plot.greenAreas, ...plot.parkingAreas, ...plot.buildableAreas, ...(plot.utilityAreas || [])];
+                const foundMain = mainObjects.find(obj => obj.id === id);
+                if (foundMain) {
+                    selectedObjectCentroid = (foundMain as any).centroid;
+                    if (type === 'GreenArea') {
+                        zoomLevel = 17; // Open space same as plot
+                    } else if (type === 'Building' || type === 'ParkingArea' || type === 'BuildableArea') {
+                        zoomLevel = 18;
+                    } else {
+                        zoomLevel = 19;
+                    }
+                    break;
+                }
+
+                // Search in internal building objects
+                for (const b of plot.buildings) {
+                    const internalObjects = [...(b.internalUtilities || []), ...(b.cores || []), ...(b.units || [])];
+                    const foundInternal = internalObjects.find((obj: any) => obj.id === id);
+                    if (foundInternal) {
+                        selectedObjectCentroid = (foundInternal as any).centroid || (foundInternal.geometry ? turf.centroid(foundInternal.geometry) : null);
+                        zoomLevel = 21; // Focus tightly on units/cores
+                        break;
+                    }
+                }
+                if (selectedObjectCentroid) break;
+
+                // Search in entry points
+                const foundEntry = (plot.entries || []).find(e => e.id === id);
+                if (foundEntry) {
+                    selectedObjectCentroid = turf.point(foundEntry.position);
+                    zoomLevel = 21;
+                    break;
+                }
+
+                // Search in labels
+                const foundLabel = (plot.labels || []).find(l => l.id === id);
+                if (foundLabel) {
+                    selectedObjectCentroid = turf.point(foundLabel.position);
+                    zoomLevel = 21;
                     break;
                 }
             }
 
-            if (selectedObjectCentroid) {
-                window.dispatchEvent(new CustomEvent('flyTo', { detail: { center: selectedObjectCentroid.geometry.coordinates } }));
+            if (selectedObjectCentroid && get().drawingState.objectType !== 'Move') {
+                window.dispatchEvent(new CustomEvent('flyTo', { 
+                    detail: { 
+                        center: selectedObjectCentroid.geometry.coordinates,
+                        zoom: zoomLevel
+                    } 
+                }));
             }
 
             set(produce((draft: BuildingState) => {
@@ -4233,6 +4321,224 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ isLoading: false });
             }
         },
+
+        // ============================================================
+        // THEMATIC SERVICES
+        // ============================================================
+        setActiveBhuvanLayer: (layerId: string | null) => {
+            set({ activeBhuvanLayer: layerId, bhuvanData: null, isFetchingBhuvan: false });
+        },
+
+        setBhuvanOpacity: (opacity: number) => {
+            set({ activeBhuvanOpacity: opacity });
+        },
+
+        setBhuvanData: (data: any | null, isFetching: boolean = false) => {
+            set({ bhuvanData: data, isFetchingBhuvan: isFetching });
+        },
+
+        moveObject: (plotId: string, objectId: string, objectType: SelectableObjectType, deltaLng: number, deltaLat: number) => {
+            if (deltaLng === 0 && deltaLat === 0) return;
+
+            set(produce((draft: BuildingState) => {
+                const plot = draft.plots.find(p => p.id === plotId);
+                if (!plot) return;
+
+                let targetObject: any;
+                if (objectType === 'Building') {
+                    targetObject = plot.buildings.find(b => b.id === objectId);
+                } else if (objectType === 'GreenArea') {
+                    targetObject = plot.greenAreas.find(g => g.id === objectId);
+                } else if (objectType === 'ParkingArea') {
+                    targetObject = plot.parkingAreas.find(p => p.id === objectId);
+                } else if (objectType === 'UtilityArea') {
+                    targetObject = plot.utilityAreas.find(u => u.id === objectId);
+                }
+
+                if (!targetObject || !targetObject.geometry) return;
+
+                // Function to translate an object AND all its parts
+                const translateBuilding = (building: Building) => {
+                    const distance = Math.sqrt(deltaLng * deltaLng + deltaLat * deltaLat);
+                    const bearing = (Math.atan2(deltaLng, deltaLat) * 180) / Math.PI;
+
+                    // 1. Move Main Geometry
+                    building.geometry = turf.transformTranslate(building.geometry as any, distance, bearing, { units: 'degrees' });
+                    building.centroid = turf.centroid(building.geometry as any);
+
+                    // 2. Move Cores
+                    if (building.cores) {
+                        building.cores.forEach(core => {
+                            core.geometry = turf.transformTranslate(core.geometry, distance, bearing, { units: 'degrees' });
+                        });
+                    }
+
+                    // 3. Move Units
+                    if (building.units) {
+                        building.units.forEach(unit => {
+                            unit.geometry = turf.transformTranslate(unit.geometry, distance, bearing, { units: 'degrees' });
+                        });
+                    }
+
+                    // 4. Move Internal Utilities
+                    if (building.internalUtilities) {
+                        building.internalUtilities.forEach(util => {
+                            util.geometry = turf.transformTranslate(util.geometry, distance, bearing, { units: 'degrees' });
+                            util.centroid = turf.centroid(util.geometry);
+                        });
+                    }
+                };
+
+                if (objectType === 'Building') {
+                    const building = targetObject as Building;
+                    translateBuilding(building);
+
+                    // --- PODIUM/TOWER SYNC ---
+                    // If this is a podium or tower, move the paired building as well
+                    const baseId = building.id.replace(/-podium$/, '').replace(/-tower$/, '');
+                    const isPodium = building.id.endsWith('-podium');
+                    const isTower = building.id.endsWith('-tower');
+
+                    if (isPodium || isTower) {
+                        const pairId = isPodium ? `${baseId}-tower` : `${baseId}-podium`;
+                        const pairBuilding = plot.buildings.find(b => b.id === pairId);
+                        if (pairBuilding) {
+                            translateBuilding(pairBuilding);
+                        }
+                    }
+                } else {
+                    // Non-building object (GreenArea, UtilityArea, etc.)
+                    const distance = Math.sqrt(deltaLng * deltaLng + deltaLat * deltaLat);
+                    const bearing = (Math.atan2(deltaLng, deltaLat) * 180) / Math.PI;
+                    targetObject.geometry = turf.transformTranslate(targetObject.geometry, distance, bearing, { units: 'degrees' });
+                    targetObject.centroid = turf.centroid(targetObject.geometry);
+                }
+
+                // NOTE: Green area recalculation is NOT done here (moveObject is called on every mouse frame).
+                // Instead, call `recalculateGreenAreas(plotId)` once when the drag ends (mouseup).
+            }));
+        },
+
+        recalculateGreenAreas: (plotId: string) => {
+            // Read current state (plain, not proxied by Immer)
+            const state = get();
+            const plot = state.plots.find(p => p.id === plotId);
+            if (!plot) return;
+
+            try {
+                // Deep-clone all geometries to strip Immer Proxy wrappers
+                // turf.js cannot operate on Proxy objects reliably
+                const cloneBuildingGeoms = plot.buildings
+                    .filter(b => b.geometry)
+                    .map(b => JSON.parse(JSON.stringify(b.geometry)));
+                
+                const cloneUtilityGeoms = plot.utilityAreas
+                    .filter(u => u.geometry && !u.name?.includes('Peripheral Road') && !((u as any).level !== undefined && (u as any).level < 0))
+                    .map(u => JSON.parse(JSON.stringify(u.geometry)));
+                
+                const cloneParkingGeoms = plot.parkingAreas
+                    .filter(p => p.geometry)
+                    .map(p => JSON.parse(JSON.stringify(p.geometry)));
+
+                // Find the base area
+                let baseGeom: any = null;
+                if (plot.buildableAreas && plot.buildableAreas.length > 0) {
+                    baseGeom = JSON.parse(JSON.stringify(plot.buildableAreas[0].geometry));
+                    for (let i = 1; i < plot.buildableAreas.length; i++) {
+                        try {
+                            const next = JSON.parse(JSON.stringify(plot.buildableAreas[i].geometry));
+                            // @ts-ignore
+                            baseGeom = turf.union(baseGeom, next) || baseGeom;
+                        } catch { /* ignore */ }
+                    }
+                } else if (plot.geometry) {
+                    const plotGeomClone = JSON.parse(JSON.stringify(plot.geometry));
+                    const setbackDist = -(plot.setback || 4);
+                    baseGeom = turf.buffer(plotGeomClone, setbackDist, { units: 'meters' });
+                }
+
+                if (!baseGeom) return;
+
+                let remainingGeom: any = baseGeom;
+
+                // Subtract all buildings
+                for (const bGeom of cloneBuildingGeoms) {
+                    if (remainingGeom) {
+                        try {
+                            const buffered = turf.buffer(bGeom, 0.05, { units: 'meters' });
+                            // @ts-ignore
+                            const diff = turf.difference(remainingGeom, buffered);
+                            if (diff) remainingGeom = diff;
+                        } catch { /* ignore */ }
+                    }
+                }
+
+                // Subtract ground-level utilities
+                for (const uGeom of cloneUtilityGeoms) {
+                    if (remainingGeom) {
+                        try {
+                            const buffered = turf.buffer(uGeom, 0.05, { units: 'meters' });
+                            // @ts-ignore
+                            const diff = turf.difference(remainingGeom, buffered);
+                            if (diff) remainingGeom = diff;
+                        } catch { /* ignore */ }
+                    }
+                }
+
+                // Subtract parking
+                for (const pGeom of cloneParkingGeoms) {
+                    if (remainingGeom) {
+                        try {
+                            const buffered = turf.buffer(pGeom, 0.05, { units: 'meters' });
+                            // @ts-ignore
+                            const diff = turf.difference(remainingGeom, buffered);
+                            if (diff) remainingGeom = diff;
+                        } catch { /* ignore */ }
+                    }
+                }
+
+                // Build new green areas from remaining geometry
+                const newGreenAreas: GreenArea[] = [];
+                if (remainingGeom) {
+                    const greenPolygons: Feature<Polygon>[] = [];
+                    if (remainingGeom.geometry.type === 'Polygon') {
+                        greenPolygons.push(remainingGeom as Feature<Polygon>);
+                    } else if (remainingGeom.geometry.type === 'MultiPolygon') {
+                        // @ts-ignore
+                        const collection = turf.flatten(remainingGeom);
+                        collection.features.forEach((f: any) => {
+                            if (turf.area(f) > 10) greenPolygons.push(f as Feature<Polygon>);
+                        });
+                    }
+
+                    greenPolygons.forEach((poly, i) => {
+                        const areaSize = turf.area(poly);
+                        if (areaSize > 10) {
+                            newGreenAreas.push({
+                                id: `green-area-${plotId}-${i}`,
+                                geometry: poly,
+                                centroid: turf.centroid(poly),
+                                area: areaSize,
+                                name: 'Open Space',
+                                visible: true
+                            });
+                        }
+                    });
+                }
+
+                console.log(`[recalculateGreenAreas] Updated ${newGreenAreas.length} green areas for plot ${plotId}`);
+
+                // Now use produce() ONLY for the state assignment
+                set(produce((draft: BuildingState) => {
+                    const draftPlot = draft.plots.find(p => p.id === plotId);
+                    if (draftPlot) {
+                        draftPlot.greenAreas = newGreenAreas;
+                    }
+                }));
+            } catch (err) {
+                console.warn('[recalculateGreenAreas] Failed:', err);
+            }
+        },
     },
 }));
 
@@ -4345,15 +4651,13 @@ const useProjectData = () => {
         const consumedBuildableArea = plots
             .flatMap(p => p.buildings)
             .reduce((acc, b) => {
-                // Use numFloors (the user-editable count) rather than floors.length
-                // which can include parking/utility floors and doesn't update reactively.
                 const effectiveFloors = b.numFloors ?? b.floors.filter(f => f.type !== 'Parking').length;
                 return acc + b.area * effectiveFloors;
             }, 0);
 
         return {
             ...project,
-            plots, // Explicitly include active plots
+            plots,
             far,
             totalBuildableArea,
             consumedBuildableArea,

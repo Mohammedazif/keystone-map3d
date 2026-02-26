@@ -432,14 +432,12 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     return (
         <TooltipProvider>
             <Container className={cn("flex flex-col font-sans h-full", embedded ? "" : "w-full shadow-xl bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 max-h-[calc(100vh-200px)]")}>
-                {!embedded && (
-                    <CardHeader className="py-2 px-3 flex-shrink-0 border-b">
-                        <CardTitle className="text-sm flex items-center gap-2">
-                            <Sparkles className="h-4 w-4 text-primary" />
-                            Generate Design
-                        </CardTitle>
-                    </CardHeader>
-                )}
+                <div className="p-4 border-b shrink-0">
+                    <h2 className="text-lg font-semibold flex items-center gap-2">
+                        <Sparkles className="h-5 w-5 text-primary" />
+                        Design Strategy
+                    </h2>
+                </div>
 
                 <div className={cn("flex-1 overflow-y-auto overflow-x-hidden min-h-0", embedded ? "p-3 scrollbar-thin" : "p-3 space-y-4 scrollbar-thin")}>
                     {selectedPlot ? (
@@ -447,12 +445,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             {/* Generation Mode: Parametric Only */}
 
 
-                            {/* --- SECTION: Design Strategy --- */}
-                            <div className="flex items-center gap-2 pt-2 pb-1">
-                                <div className="h-px flex-1 bg-border/50"></div>
-                                <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Design Strategy</span>
-                                <div className="h-px flex-1 bg-border/50"></div>
-                            </div>
+
                             {/* Regulation / Zone Display (Read-Only) */}
                             {selectedPlot.regulation ? (
                                 <div className="space-y-1.5">

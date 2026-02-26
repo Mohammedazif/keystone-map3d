@@ -37,7 +37,6 @@ export function LocationConnectivityPanel() {
     const { toast } = useToast();
     const [isScanning, setIsScanning] = useState(false);
 
-    // Handler to fly map to amenity location
     const handleAmenityClick = useCallback((amenity: Amenity) => {
         useBuildingStore.setState({
             mapCommand: {
@@ -48,7 +47,6 @@ export function LocationConnectivityPanel() {
         });
     }, []);
 
-    // Get location from first plot's centroid (more accurate than project location)
     const center: [number, number] | null = React.useMemo(() => {
         if (plots.length > 0 && plots[0].geometry) {
             try {
@@ -65,7 +63,6 @@ export function LocationConnectivityPanel() {
 
     const existingAmenities = activeProject?.locationData?.amenities || [];
 
-    // State to track which categories are currently loading
     const [loadingCategories, setLoadingCategories] = useState<Set<string>>(new Set());
 
     const fetchCategory = useCallback(async (category: AmenityCategory) => {
@@ -74,10 +71,8 @@ export function LocationConnectivityPanel() {
         setLoadingCategories(prev => new Set(prev).add(category));
 
         try {
-            // Fetch just this category
             const results = await OverpassPlacesService.searchNearby(center, category);
 
-            // Merge with existing
             const current = activeProject?.locationData?.amenities || [];
             const other = current.filter((a: Amenity) => a.category !== category);
             const uniqueResults = [...other, ...results];
@@ -85,8 +80,7 @@ export function LocationConnectivityPanel() {
             actions.setLocationData(uniqueResults);
 
             if (results.length > 0) {
-                // Optional: distinct toast per category might be too much, maybe just silent update?
-                // toast({ title: "Updated", description: `Found ${results.length} ${category}s.` });
+                toast({ title: "Updated", description: `Found ${results.length} ${category}s.` });
             }
         } catch (error) {
             console.error(error);
@@ -108,8 +102,6 @@ export function LocationConnectivityPanel() {
 
         setIsScanning(true);
         try {
-            // Use bulk search to avoid Rate Limits (429)
-            // Extract all category IDs
             const allCategories = AMENITY_CATEGORIES.map(c => c.id);
 
             const results = await OverpassPlacesService.searchNearby(center, allCategories, 2000);
@@ -131,14 +123,13 @@ export function LocationConnectivityPanel() {
         items: existingAmenities.filter((a: Amenity) => a.category === cat.id)
     }));
 
-    // Helper to format distance nicely
     const formatDistance = (meters: number) => {
         if (meters < 1000) return `${meters}m`;
         return `${(meters / 1000).toFixed(1)}km`;
     };
 
     return (
-        <div className="h-full flex flex-col bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="h-full flex flex-col w-full max-h-[calc(100vh-200px)]">
             <div className="p-4 border-b space-y-4">
                 <div>
                     <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -200,9 +191,7 @@ export function LocationConnectivityPanel() {
                         type="multiple"
                         className="w-full space-y-4"
                         onValueChange={(values) => {
-                            // Check which values are new/expanded
                             values.forEach(category => {
-                                // If we haven't loaded this category and aren't currently loading it
                                 const hasData = existingAmenities.some((a: Amenity) => a.category === category);
                                 if (!hasData && !loadingCategories.has(category)) {
                                     fetchCategory(category as any);

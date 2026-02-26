@@ -11,7 +11,6 @@ export function useDevelopmentMetrics(project: Project | null): AdvancedKPIs | n
     return useMemo(() => {
         if (!project) return null;
 
-        // Pass fetched dynamic regulations to the engine
         const engine = new RegulationEngine(project, regulations, greenStandards, vastuRules, greenAnalysis);
         return engine.calculateMetrics();
 

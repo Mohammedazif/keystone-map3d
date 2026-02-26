@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Trash2, BookX, Calculator, Building2, Home } from "lucide-react";
+import { Trash2, BookX, Calculator, Building2, Home, Bookmark } from "lucide-react";
 import { ScenarioThumbnail } from "./scenario-thumbnail";
 import { cn } from "@/lib/utils";
 
@@ -47,14 +47,14 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
     };
 
     return (
-        <div className={cn("flex flex-col h-full", embedded ? "" : "p-4")}>
-
-            {/* Header (only show if not embedded, or simplified if embedded) */}
-            {!embedded && (
-                <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold">Saved Scenarios</h2>
-                </div>
-            )}
+        <div className={cn("flex flex-col h-full", embedded ? "" : "p-0")}>
+            {/* Header */}
+            <div className="p-4 border-b shrink-0">
+                <h2 className="text-lg font-semibold flex items-center gap-2">
+                    <Bookmark className="h-5 w-5 text-yellow-500" />
+                    Saved Scenarios
+                </h2>
+            </div>
 
             {/* Save Current Action */}
             <div className="mb-4 px-1">

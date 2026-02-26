@@ -1,14 +1,21 @@
 export type BuildingTextureType = 'Residential' | 'Commercial' | 'Retail' | 'Office' | 'Institutional' | 'Mixed Use' | 'Industrial' | 'Hospitality' | 'Public';
 
+function hexToRgba(hex: string, alpha: number): string {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
  * Generates a vertical mullion strip texture for buildings.
  * All types share the same approach (glass tint + white vertical lines)
  * to look consistent from all angles including top-down/roof view.
  * Columns and strip width vary per type for visual differentiation.
  */
-export function generateBuildingTexture(type: BuildingTextureType, baseColor: string): ImageData | null {
+export function generateBuildingTexture(type: BuildingTextureType, baseColor: string, opacity: number = 1.0): ImageData | null {
     const canvas = document.createElement('canvas');
-    const size = 128;
+    const size = 128; // Power of two required by WebGL
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -50,17 +57,32 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
             cols = 4; mullionWidth = 2; glassTintAlpha = 0.40; centerDividerWidth = 0;
     }
 
-    // Base building color
-    ctx.fillStyle = baseColor;
+    // Multiply structural alphas by the master opacity parameter
+    const finalGlassAlpha = glassTintAlpha * opacity;
+    const finalMullionAlpha = 0.55 * opacity;
+    const finalCenterAlpha = 0.30 * opacity;
+
+    // Base building color, tinted with opacity
+    if (baseColor.startsWith('#')) {
+        ctx.fillStyle = hexToRgba(baseColor, opacity);
+    } else {
+        // Fallback if named color passed or rgba string
+        ctx.globalAlpha = opacity;
+        ctx.fillStyle = baseColor;
+    }
+    
     ctx.fillRect(0, 0, size, size);
+    
+    // Reset global opacity back just in case
+    ctx.globalAlpha = 1.0;
 
     // Glass tint overlay
-    ctx.fillStyle = `rgba(200, 240, 255, ${glassTintAlpha})`;
+    ctx.fillStyle = `rgba(200, 240, 255, ${finalGlassAlpha})`;
     ctx.fillRect(0, 0, size, size);
 
     // Vertical mullion lines
     const colW = size / cols;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.fillStyle = `rgba(255, 255, 255, ${finalMullionAlpha})`;
     for (let c = 0; c <= cols; c++) {
         const x = Math.round(c * colW);
         ctx.fillRect(x - Math.floor(mullionWidth / 2), 0, mullionWidth, size);
@@ -68,7 +90,7 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
 
     // Optional center accent divider (thicker, slightly different opacity)
     if (centerDividerWidth > 0) {
-        ctx.fillStyle = 'rgba(200, 200, 200, 0.30)';
+        ctx.fillStyle = `rgba(200, 200, 200, ${finalCenterAlpha})`;
         ctx.fillRect(size / 2 - Math.floor(centerDividerWidth / 2), 0, centerDividerWidth, size);
     }
 

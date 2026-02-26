@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { useBuildingStore, type DrawingObjectType } from '@/hooks/use-building-store';
 import { useToast } from '@/hooks/use-toast';
-import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route } from 'lucide-react';
+import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route, Move } from 'lucide-react';
 import { Slider } from './ui/slider';
 import { Label } from './ui/label';
 import React from 'react';
@@ -42,7 +42,6 @@ export function DrawingToolbar() {
         if (selectedObjectId?.type === 'Plot') {
             activePlotId = selectedObjectId.id;
         } else if (plots.length > 0) {
-            // Sort to find the most recently created plot as a fallback
             activePlotId = [...plots].sort((a, b) => {
                 const bTime = b.id.includes('-') ? parseInt(b.id.split('-')[1]) : 0;
                 const aTime = a.id.includes('-') ? parseInt(a.id.split('-')[1]) : 0;
@@ -58,6 +57,7 @@ export function DrawingToolbar() {
         { name: 'Zone', icon: LandPlot, tooltip: 'Draw Custom Zone' },
         { name: 'Building', icon: Building2, tooltip: 'Draw Building' },
         { name: 'Road', icon: Route, tooltip: 'Draw Road (Polygon)' },
+        // { name: 'Move', icon: Move, tooltip: 'Move Objects' },
     ];
 
     const isPlotSelected = selectedObjectId?.type === 'Plot';

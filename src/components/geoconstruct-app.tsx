@@ -6,10 +6,11 @@ import { Toaster } from '@/components/ui/toaster';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf } from 'lucide-react';
+import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe } from 'lucide-react';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { LocationConnectivityPanel } from './location-connectivity-panel';
 import { GreenScorecardPanel } from './green-scorecard-panel';
+import { BhuvanPanel } from './bhuvan-panel';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useState, useEffect, useRef } from 'react';
@@ -48,6 +49,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const [solarDate, setSolarDate] = useState<Date>(() => new Date());
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('none');
   const [isDataPanelOpen, setIsDataPanelOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(384);
+  const isResizing = useRef(false);
 
   const selectedObjectId = useBuildingStore(s => s.selectedObjectId);
   const actions = useBuildingStore(s => s.actions);
@@ -61,7 +64,6 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const plots = useBuildingStore(s => s.plots);
   const uiState = useBuildingStore(s => s.uiState);
 
-  // Dynamic bottom clearance — stays above KPI bar whether open or collapsed
   const kpiOpen = uiState.isFeasibilityPanelOpen ?? true;
   const kpiBottom = kpiOpen ? 'calc(45vh + 8px)' : '58px';
 
@@ -88,13 +90,10 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
     return () => clearTimeout(timer);
   }, [isChatOpen, selectedObjectId]);
 
-  // Auto-switch to simulation tab when simulator is enabled
-  // And close right property panel by deselecting objects
   useEffect(() => {
     if (isSimulatorEnabled) {
       setActiveTab('simulation');
       setIsDataPanelOpen(true);
-      // Deselect any object to close the right properties panel
       if (selectedObjectId && selectedObjectId.type !== 'Plot') {
         actions.selectObject(null, null);
       }
@@ -119,6 +118,35 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
       window.removeEventListener('keydown', handleKeyDown);
     }
   }, [actions, drawingState.isDrawing, selectedObjectId, zoneDefinition.isDefining]);
+
+  // Sidebar Resize
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing.current) return;
+      const newWidth = Math.min(Math.max(384, e.clientX - 16), 600);
+      setSidebarWidth(newWidth);
+      window.dispatchEvent(new CustomEvent('resizeMap'));
+    };
+
+    const handleMouseUp = () => {
+      isResizing.current = false;
+      document.body.style.cursor = 'default';
+      window.dispatchEvent(new CustomEvent('resizeMap'));
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  const startResizing = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    document.body.style.cursor = 'col-resize';
+  };
 
 
   const locateMeButton = (
@@ -261,12 +289,18 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
 
           <DrawingToolbar />
 
-          {/* Hektar-style Sidebar */}
-          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 pointer-events-none" style={{ bottom: kpiBottom }}>
-            <div className="pointer-events-auto shrink-0 w-96">
+          {/*Sidebar */}
+          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 pointer-events-none group" style={{ bottom: kpiBottom, width: sidebarWidth }}>
+            <div className="pointer-events-auto shrink-0 w-full">
               <ProjectInfoPanel />
             </div>
-            <div className="pointer-events-auto min-h-0 w-96 flex flex-row bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-xl border shadow-xl overflow-hidden text-clip shrink max-h-full">
+            <div className="pointer-events-auto min-h-0 w-full flex flex-row bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-xl border shadow-xl overflow-hidden text-clip shrink max-h-full relative">
+              {/* Resize Handle */}
+              <div 
+                className="absolute right-0 top-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 transition-colors z-50 pointer-events-auto"
+                onMouseDown={startResizing}
+              />
+              
               <Tabs value={activeTab} onValueChange={setActiveTab} orientation="vertical" className="flex flex-row h-auto max-h-full w-full min-h-0">
                 <div className="w-14 bg-muted/30 border-r flex flex-col items-center py-4 gap-4 shrink-0">
                   <TabsList className="bg-transparent flex flex-col h-auto p-0 gap-4 w-full items-center">
@@ -276,11 +310,14 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                     <TabsTrigger value="explorer" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
                       <Layers className="h-5 w-5" />
                     </TabsTrigger>
+                    <TabsTrigger value="saved" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
+                      <Bookmark className="h-5 w-5" />
+                    </TabsTrigger>
                     <TabsTrigger value="simulation" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
                       <Sun className="h-5 w-5" />
                     </TabsTrigger>
-                    <TabsTrigger value="saved" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <Bookmark className="h-5 w-5" />
+                    <TabsTrigger value="bhuvan" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Thematic Services">
+                      <Globe className="h-5 w-5" />
                     </TabsTrigger>
                     <TabsTrigger value="scorecard" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
                       <Leaf className="h-5 w-5" />
@@ -303,7 +340,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                     <ProjectExplorer className="h-full" embedded={true} />
                   </TabsContent>
 
-                  <TabsContent value="simulation" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full bg-background/50">
+                  <TabsContent value="simulation" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
                     <SimulationTab
                       activeGreenRegulations={greenRegulations}
                       date={solarDate}
@@ -319,11 +356,14 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                     <SavedScenariosPanel embedded={true} />
                   </TabsContent>
 
-                  <TabsContent value="scorecard" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
+                  <TabsContent forceMount value="scorecard" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block data-[state=inactive]:hidden h-full">
                     <GreenScorecardPanel />
                   </TabsContent>
                   <TabsContent value="location" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
                     <LocationConnectivityPanel />
+                  </TabsContent>
+                  <TabsContent value="bhuvan" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
+                    <BhuvanPanel embedded={true} />
                   </TabsContent>
                 </div>
               </Tabs>

@@ -56,7 +56,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                 setIsLoadingGreenRegs(false);
             }
         };
-        if (open && step === 3) { // Only fetch when needed
+        if (open && step === 3) { 
             fetchGreenRegs();
         }
     }, [open, step]);
@@ -68,17 +68,13 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
         return acc;
     }, {} as Record<string, any[]>);
 
-    // Helper to find the "best" (latest) regulation for a group
     const getBestRegIdForType = (type: string) => {
         const regs = groupedGreenRegs[type] || [];
         if (regs.length === 0) return null;
-        // Sort by name descending (assuming Version 6.0 > v.2019 > v2015)
-        // This is a simple heuristic; ideally we'd have a 'version' or 'date' field
         const sorted = [...regs].sort((a, b) => b.name.localeCompare(a.name));
         return sorted[0].id;
     };
 
-    // Fetch regulations when location changes
     useEffect(() => {
         const fetchRegulations = async () => {
             if (!location) {
@@ -150,7 +146,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
     const handleOpenChange = (newOpen: boolean) => {
         setOpen(newOpen);
         if (!newOpen) {
-            resetForm(); // Reset on close
+            resetForm();
         }
     };
 

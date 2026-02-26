@@ -1,7 +1,7 @@
 ﻿import { useBuildingStore, UTILITY_COLORS } from '@/hooks/use-building-store';
 import { BUILDING_MATERIALS, hslToRgb } from '@/lib/color-utils';
 import { useToast } from '@/hooks/use-toast';
-import { BuildingIntendedUse, GreenRegulationData, UtilityType, Building, Core, Unit, Plot, GreenArea, ParkingArea, BuildableArea, UtilityArea } from '@/lib/types';
+import { BuildingIntendedUse, GreenRegulationData, UtilityType, Building, Core, Unit, Plot, GreenArea, ParkingArea, BuildableArea, UtilityArea, SelectableObjectType } from '@/lib/types';
 import { Feature, Polygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
@@ -16,7 +16,7 @@ import { generateBuildingTexture } from '@/lib/texture-generator';
 import { WindStreamlineLayer } from '@/lib/wind-streamline-layer';
 import { Amenity } from '@/services/mapbox-places-service';
 import { OverpassPlacesService } from '@/services/overpass-places-service';
-
+import { buildBhuvanLayerName, getIndianStateCode, BHUVAN_THEMES } from '@/lib/bhuvan-utils';
 
 declare global {
   interface Window {
@@ -32,6 +32,8 @@ const DRAWING_OUTLINE_LAYER_ID = 'drawing-outline-layer';
 const FIRST_POINT_COLOR = '#F5A623';
 const LABELS_SOURCE_ID = 'building-labels-source';
 const LABELS_LAYER_ID = 'building-labels-layer';
+const SELECTION_HIGHLIGHT_SOURCE_ID = 'selection-highlight-source';
+const SELECTION_HIGHLIGHT_LAYER_ID = 'selection-highlight-layer';
 
 // Helper to darken/lighten hex color
 const adjustColorBrightness = (hex: string, percent: number) => {
@@ -68,6 +70,7 @@ interface MapEditorProps {
   analysisMode: AnalysisMode;
   setAnalysisMode: (m: AnalysisMode) => void;
   activeGreenRegulations?: GreenRegulationData[];
+  children?: React.ReactNode;
 }
 
 export function MapEditor({
@@ -78,7 +81,8 @@ export function MapEditor({
   setIsSimulatorEnabled,
   analysisMode,
   setAnalysisMode,
-  activeGreenRegulations = []
+  activeGreenRegulations = [],
+  children
 }: MapEditorProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<Map | null>(null);
@@ -93,7 +97,13 @@ export function MapEditor({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); // Default primary color
   const hasNavigatedRef = useRef(false); // Track if we've navigated in this component instance
-  const windStreamlineLayer = useRef<WindStreamlineLayer | null>(null);
+  const windStreamlineLayer = useRef<WindStreamlineLayer|null>(null);
+
+  // Dragging state
+  const isDraggingRef = useRef(false);
+  const dragStartPosRef = useRef<mapboxgl.LngLat | null>(null);
+  const draggedObjectRef = useRef<{ id: string; type: SelectableObjectType; plotId: string } | null>(null);
+
 
 
 
@@ -110,81 +120,262 @@ export function MapEditor({
   const componentVisibility = useBuildingStore(s => s.componentVisibility);
   const activeProjectId = useBuildingStore(s => s.activeProjectId);
   const projects = useBuildingStore(s => s.projects);
-
+  const activeBhuvanLayer = useBuildingStore(s => s.activeBhuvanLayer);
 
   const activeProject = projects.find(p => p.id === activeProjectId);
   const { regulations } = useRegulations(activeProject || null);
-
-
-
-
-
   const { toast } = useToast();
+  const getStoreState = useCallback(() => useBuildingStore.getState(), []);
 
-  const getStoreState = useBuildingStore.getState;
+  // Map elements that are currently rendered/visible
+  const plotsRendering = plots;
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const computedStyle = getComputedStyle(document.documentElement);
-      const primaryHslRaw = computedStyle.getPropertyValue('--primary').trim();
-      if (primaryHslRaw) {
-        // Mapbox expects comma-separated HSL values, not space-separated
-        const commaSeparatedHsl = primaryHslRaw.replace(/\s+/g, ',');
-        setPrimaryColor(`hsl(${commaSeparatedHsl})`);
+
+  const finishRoad = useCallback(() => {
+    if (drawingPoints.length < 2) return;
+    const line = turf.lineString(drawingPoints);
+    if (actions.finishDrawing(line)) {
+      actions.resetDrawing();
+    }
+  }, [drawingPoints, actions]);
+
+  const closePolygon = useCallback(() => {
+    if (drawingPoints.length < 3) return;
+    try {
+      const polygon = turf.polygon([[...drawingPoints, drawingPoints[0]]]);
+      if (actions.finishDrawing(polygon)) {
+        actions.resetDrawing();
       }
-    }
-  }, []);
-
-  // Compute effective plots to render (Scenario Preview vs Actual)
-  const plotsRendering = useMemo(() => {
-    // FIX: Do not show temporary scenarios on the map immediately.
-    // The user wants to see them only after selecting one.
-    // const scenarioPlots = (tempScenarios || []).flatMap(s => s.plots);
-    // return scenarioPlots.length > 0 ? scenarioPlots : plots;
-    return plots;
-  }, [plots]);
-
-  const closePolygon = useCallback(async () => {
-    const { drawingPoints, drawingState } = getStoreState();
-    if (drawingPoints.length < 3 || !drawingState.isDrawing) return;
-
-    const finalPoints = [...drawingPoints, drawingPoints[0]];
-    const polygonFeature = turf.polygon([finalPoints]);
-    const centroid = turf.centroid(polygonFeature);
-
-
-    const success = actions.finishDrawing(polygonFeature);
-    if (!success) {
-      // Toast message is now handled inside the store for more specific errors.
-      // Generic fallback in case the store doesn't provide one.
-      const lastToast = toast({
-        title: 'Drawing Error',
-        description: 'Could not create the object. Ensure it is drawn correctly and within required boundaries.',
-      });
-    }
-
-  }, [actions, getStoreState, toast]);
-
-  const finishRoad = useCallback(async () => {
-    const { drawingPoints, drawingState } = getStoreState();
-    if (drawingPoints.length < 2 || !drawingState.isDrawing || drawingState.objectType !== 'Road') return;
-
-    const lineFeature = turf.lineString(drawingPoints);
-    const success = actions.finishDrawing(lineFeature);
-
-    if (!success) {
+    } catch (e) {
+      console.error('Error closing polygon:', e);
       toast({
+        variant: 'destructive',
         title: 'Drawing Error',
-        description: 'Could not create the road. Ensure it intersects a plot boundary.',
+        description: 'Failed to close polygon. Please check your points.',
       });
     }
-  }, [actions, getStoreState, toast]);
+  }, [drawingPoints, actions, toast]);
+
+
+  const handleMouseDown = useCallback((e: mapboxgl.MapLayerMouseEvent) => {
+    const { drawingState, plots } = getStoreState();
+    if (drawingState.objectType !== 'Move') return;
+
+    const mapInst = map.current;
+    if (!mapInst) return;
+
+    // Only target main movable objects — NOT internals (cores, units, internal utils)
+    const allMapLayers = mapInst.getStyle().layers.map(l => l.id);
+    const draggableLayers = plots.flatMap(p => 
+      [
+        ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
+        ...p.greenAreas.map(g => `green-area-${g.id}`),
+        ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
+        ...p.utilityAreas.map(u => `utility-area-${u.id}`),
+        ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
+      ]
+    ).filter(id => allMapLayers.includes(id));
+
+    console.log('[Move] Draggable layers found:', draggableLayers.length);
+
+    if (draggableLayers.length === 0) return;
+
+    const features = mapInst.queryRenderedFeatures(e.point, { layers: draggableLayers });
+    console.log('[Move] Features at click point:', features?.length, features?.map(f => f.layer?.id));
+
+    if (!features || features.length === 0) return;
+
+    const feature = features[0];
+    const props = feature.properties || {};
+    const layerId = feature.layer?.id;
+    if (!layerId) return;
+
+    let id = props.id || '';
+    let type: SelectableObjectType = 'Building';
+    let plotId = '';
+
+    // Extract object ID and type from the layer ID
+    if (layerId.startsWith('building-floor-fill-')) {
+      // Format: building-floor-fill-{floorId}-{buildingId}
+      // Building IDs contain dashes (e.g., bldg-1737...), so we match against known IDs
+      type = 'Building';
+      for (const p of plots) {
+        const matchedBuilding = p.buildings.find(b => layerId.endsWith(`-${b.id}`));
+        if (matchedBuilding) {
+          id = matchedBuilding.id;
+          break;
+        }
+      }
+    } else if (layerId.startsWith('green-area-')) {
+      id = layerId.replace('green-area-', '');
+      type = 'GreenArea';
+    } else if (layerId.startsWith('parking-area-')) {
+      id = layerId.replace('parking-area-', '');
+      type = 'ParkingArea';
+    } else if (layerId.startsWith('utility-area-')) {
+      id = layerId.replace('utility-area-', '');
+      type = 'UtilityArea';
+    } else if (layerId.startsWith('buildable-area-')) {
+      id = layerId.replace('buildable-area-', '');
+      type = 'BuildableArea';
+    }
+
+    console.log('[Move] Identified object:', { id, type, layerId });
+
+    if (!id) return;
+
+    // Find the plot that owns this object
+    const targetPlot = plots.find(p => 
+      (type === 'Building' && p.buildings.some(b => b.id === id)) ||
+      (type === 'GreenArea' && p.greenAreas.some(g => g.id === id)) ||
+      (type === 'ParkingArea' && p.parkingAreas.some(pa => pa.id === id)) ||
+      (type === 'UtilityArea' && p.utilityAreas.some(u => u.id === id)) ||
+      (type === 'BuildableArea' && p.buildableAreas.some(b => b.id === id))
+    );
+    
+    if (targetPlot) {
+      plotId = targetPlot.id;
+      console.log('[Move] Starting drag:', { id, type, plotId });
+      actions.selectObject(id, type);
+      isDraggingRef.current = true;
+      dragStartPosRef.current = e.lngLat;
+      draggedObjectRef.current = { id, type, plotId };
+      mapInst.dragPan.disable();
+      mapInst.getCanvas().style.cursor = 'grabbing';
+    } else {
+      console.warn('[Move] Could not find parent plot for:', { id, type });
+    }
+  }, [getStoreState]);
+
+  const handleMouseUp = useCallback(() => {
+    if (isDraggingRef.current) {
+      const draggedPlotId = draggedObjectRef.current?.plotId;
+      isDraggingRef.current = false;
+      draggedObjectRef.current = null;
+      dragStartPosRef.current = null;
+      if (map.current) {
+        map.current.dragPan.enable();
+        map.current.getCanvas().style.cursor = '';
+      }
+      // Recalculate green areas after the object has been moved
+      if (draggedPlotId) {
+        actions.recalculateGreenAreas(draggedPlotId);
+      }
+      actions.saveCurrentProject();
+    }
+  }, [actions]);
+
+  const handleDragMove = useCallback((e: mapboxgl.MapLayerMouseEvent) => {
+    if (!isDraggingRef.current || !draggedObjectRef.current || !dragStartPosRef.current) return;
+
+    const currentPos = e.lngLat;
+    const deltaLng = currentPos.lng - dragStartPosRef.current.lng;
+    const deltaLat = currentPos.lat - dragStartPosRef.current.lat;
+
+    if (deltaLng === 0 && deltaLat === 0) return;
+
+    actions.moveObject(
+      draggedObjectRef.current.plotId,
+      draggedObjectRef.current.id,
+      draggedObjectRef.current.type,
+      deltaLng,
+      deltaLat
+    );
+
+    // Update start pos for next move
+    dragStartPosRef.current = currentPos;
+  }, [actions]);
+
+
 
   const handleMapClick = useCallback(
     (e: mapboxgl.MapLayerMouseEvent) => {
-      if (!map.current || !map.current.isStyleLoaded()) return;
+      const mapInst = map.current;
+      if (!mapInst || !mapInst.isStyleLoaded()) return;
 
-      const { drawingState, drawingPoints } = getStoreState();
+      const { drawingState, drawingPoints, activeBhuvanLayer, plots } = getStoreState();
+
+      // In Move mode, handleMouseDown handles all interactions — skip click processing
+      if (drawingState.objectType === 'Move') return;
+
+      if (activeBhuvanLayer) {
+        if (actions) actions.setBhuvanData(null, true);
+        const mapInst = map.current;
+        if (mapInst) {
+          // We create a tiny 10x10 pixel bounding box exactly where the user clicked.
+          // Because Mapbox allows 3D pitch/rotation, a simple lat/lng buffer isn't accurate for WMS.
+          // By unprojecting screen pixels back to lat/lng, we get a perfect 2D map query.
+          const pxBuffer = 5;
+          const sw = mapInst.unproject([e.point.x - pxBuffer, e.point.y + pxBuffer]);
+          const ne = mapInst.unproject([e.point.x + pxBuffer, e.point.y - pxBuffer]);
+          
+          const bbox = `${sw.lng},${sw.lat},${ne.lng},${ne.lat}`;
+          
+          const width = 10;
+          const height = 10;
+          const x = 5;
+          const y = 5;
+
+          // Detect state code for the query layer name
+          let stateCode = 'IN';
+          if (plots.length > 0 && plots[0].geometry && plots[0].geometry.geometry) {
+             const geom = plots[0].geometry.geometry as Polygon;
+             if (geom.coordinates && geom.coordinates[0] && geom.coordinates[0][0]) {
+               const coords = geom.coordinates[0][0];
+               stateCode = getIndianStateCode(coords[1], coords[0]);
+             }
+          }
+
+          const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode);
+
+          // Use our local API proxy to bypass CORS
+          const wmsUrl = new URL(window.location.origin + '/api/bhuvan');
+          wmsUrl.searchParams.set('service', 'WMS');
+          wmsUrl.searchParams.set('version', '1.1.1');
+          wmsUrl.searchParams.set('request', 'GetFeatureInfo');
+          wmsUrl.searchParams.set('layers', layerName);
+          wmsUrl.searchParams.set('query_layers', layerName);
+          wmsUrl.searchParams.set('feature_count', '1');
+          wmsUrl.searchParams.set('info_format', 'text/html');
+          wmsUrl.searchParams.set('format', 'image/png');
+          wmsUrl.searchParams.set('srs', 'EPSG:4326');
+          wmsUrl.searchParams.set('bbox', bbox);
+          wmsUrl.searchParams.set('width', Math.floor(width).toString());
+          wmsUrl.searchParams.set('height', Math.floor(height).toString());
+          wmsUrl.searchParams.set('x', Math.floor(x).toString());
+          wmsUrl.searchParams.set('y', Math.floor(y).toString());
+
+          // Debug log the exact URL we are proxying
+          console.log('Fetching Bhuvan Feature Info (Proxied):', decodeURIComponent(wmsUrl.toString()));
+
+          fetch(wmsUrl.toString())
+            .then(res => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.text();
+            })
+            .then(text => {
+              // Bhuvan GetFeatureInfo often returns HTML with internal styles
+              
+              // Validate that it's not a generic error XML
+              if (text.includes('ServiceException')) {
+                 console.error('Bhuvan Service Exception:', text);
+                 actions.setBhuvanData('Error: Invalid query parameters or layer not available here.', false);
+                 return;
+              }
+              
+              // Only set data if there is actual content, Bhuvan sometimes returns empty HTML shells
+              if (text.includes('<body></body>') || text.trim() === '' || text.length < 50) {
+                 actions.setBhuvanData('No specific thematic data found exactly at this point.', false);
+              } else {
+                 actions.setBhuvanData(text, false);
+              }
+            })
+            .catch(err => {
+              console.error('Bhuvan GetFeatureInfo error:', err);
+              actions.setBhuvanData('Error: Could not retrieve thematic data for this location.', false);
+            });
+        }
+      }
 
       if (drawingState.isDrawing) {
         const coords: [number, number] = [e.lngLat.lng, e.lngLat.lat];
@@ -203,15 +394,12 @@ export function MapEditor({
         actions.addDrawingPoint(coords);
       } else {
         // Logic for selecting objects on the map
-        const allMapLayers = map.current.getStyle().layers.map(l => l.id);
-        const clickableLayers = plotsRendering.flatMap(p =>
+        const { plots } = getStoreState();
+        const allMapLayers = mapInst.getStyle().layers.map(l => l.id);
+        const clickableLayers = plots.flatMap(p =>
           [
             `plot-base-${p.id}`,
             ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
-            ...p.buildings.map(b => `units-${b.id}`),
-            ...p.buildings.map(b => `cores-${b.id}`),
-            // Include all rendered util- layers dynamically by scanning existing layers
-            ...allMapLayers.filter(id => id.startsWith('util-')),
             ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
             ...p.greenAreas.map(g => `green-area-${g.id}`),
             ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
@@ -221,62 +409,50 @@ export function MapEditor({
 
         if (clickableLayers.length === 0) return;
 
-        const features = map.current.queryRenderedFeatures(e.point, {
+        const features = mapInst.queryRenderedFeatures(e.point, {
           layers: clickableLayers,
         });
 
         if (features && features.length > 0) {
-          // Filter out invisible internal layers before processing click
-          const { componentVisibility: cv, uiState: us, plots } = getStoreState();
-          const validFeatures = features.filter(f => {
-            const lid = f.layer?.id;
-            if (!lid) return false;
-            const isInternal = lid.startsWith('cores-') || lid.startsWith('units-') || lid.startsWith('util-');
-            if (isInternal) {
-                // If the layer is currently rendered fully transparent, ignore it for clicks
-                const opacity = map.current?.getPaintProperty(lid, 'fill-extrusion-opacity');
-                if (opacity === 0) return false;
+          // Prioritize buildings over plots
+          const prioritizedTypes = [
+            'building-floor-fill-',
+            'green-area-',
+            'parking-area-',
+            'utility-area-',
+            'buildable-area-',
+            'plot-base-'
+          ];
+
+          let feature = features[0];
+          for (const prefix of prioritizedTypes) {
+            const found = features.find(f => f.layer?.id?.startsWith(prefix));
+            if (found) {
+              feature = found;
+              break;
             }
-            return true;
-          });
-          if (validFeatures.length === 0) return;
-          const feature = validFeatures[0];
+          }
+
           const layerId = feature.layer?.id;
           if (!layerId) return;
 
-          if (layerId.startsWith('plot-base-')) {
+          if (layerId.startsWith('building-floor-fill-')) {
+            // Building IDs contain dashes, so match against known IDs
+            for (const plot of plots) {
+              const matchedBuilding = plot.buildings.find(b => layerId.endsWith(`-${b.id}`));
+              if (matchedBuilding) {
+                actions.selectObject(matchedBuilding.id, 'Building');
+                break;
+              }
+            }
+          } else if (layerId.startsWith('plot-base-')) {
             const plotId = layerId.replace('plot-base-', '');
-            if (plotsRendering.some(p => p.id === plotId)) {
+            if (plots.some(p => p.id === plotId)) {
               actions.selectObject(plotId, 'Plot');
             }
-          } else if (layerId.startsWith('building-floor-fill-')) {
-            const buildingId = layerId.split('-').pop();
-            if (!buildingId) return;
-            for (const plot of plotsRendering) {
-              if (plot.buildings.some(b => b.id === buildingId)) {
-                actions.selectObject(buildingId, 'Building');
-                break;
-              }
-            }
-          } else if (layerId.startsWith('units-')) {
-            const unitId = feature.properties?.unitId;
-            if (unitId) actions.selectObject(unitId, 'Unit');
-          } else if (layerId.startsWith('cores-')) {
-            const coreId = feature.properties?.coreId;
-            if (coreId) actions.selectObject(coreId, 'Core');
-          } else if (layerId.startsWith('util-')) {
-            // util layer IDs format: `util-${buildingId}-${utilId}`
-            const parts = layerId.split('-');
-            const utilId = parts.slice(2).join('-'); // handles uuid format correctly
-            if (utilId) actions.selectObject(utilId, 'UtilityArea');
           } else if (layerId.startsWith('buildable-area-')) {
             const buildableAreaId = layerId.replace('buildable-area-', '');
-            for (const plot of plotsRendering) {
-              if (plot.buildableAreas.some(b => b.id === buildableAreaId)) {
-                actions.selectObject(buildableAreaId, 'BuildableArea');
-                break;
-              }
-            }
+            actions.selectObject(buildableAreaId, 'BuildableArea');
           } else if (layerId.startsWith('green-area-')) {
             const greenAreaId = layerId.replace('green-area-', '');
             actions.selectObject(greenAreaId, 'GreenArea');
@@ -287,10 +463,13 @@ export function MapEditor({
             const utilityAreaId = layerId.replace('utility-area-', '');
             actions.selectObject(utilityAreaId, 'UtilityArea');
           }
+        } else {
+          // Clicked on empty space (or non-clickable layer)
+          actions.selectObject(null, null);
         }
       }
     },
-    [closePolygon, actions, getStoreState, plotsRendering]
+    [closePolygon, actions, getStoreState]
   );
 
   const handleMouseMove = useCallback((e: mapboxgl.MapLayerMouseEvent) => {
@@ -323,16 +502,12 @@ export function MapEditor({
         }
       }
     } else {
+      const { plots } = getStoreState();
       const allMapLayers = map.current.getStyle().layers.map(l => l.id);
-      const hoverableLayers = plotsRendering.flatMap(p =>
+      const hoverableLayers = plots.flatMap(p =>
         [
           `plot-base-${p.id}`,
           ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
-          `buildable-area-${p.buildableAreas.map(b => b.id).join(',')}`, // Bug in original? Fix here?
-          // Original was: ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
-          // Wait, I should match the original logic exactly unless I want to fix bugs.
-          // Original:
-          // ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
           ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
           ...p.greenAreas.map(g => `green-area-${g.id}`),
           ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
@@ -348,7 +523,7 @@ export function MapEditor({
       }
     }
   },
-    [getStoreState, plotsRendering]
+    [getStoreState]
   );
 
   const locateUser = useCallback(() => {
@@ -415,7 +590,13 @@ export function MapEditor({
       if (!map.current) return;
       const customEvent = event as CustomEvent;
       const { center, zoom } = customEvent.detail;
-      map.current.flyTo({ center, zoom: zoom || 16, essential: true });
+      map.current.flyTo({
+        center,
+        zoom: zoom || 18,
+        pitch: 45,
+        essential: true,
+        duration: 800,
+      });
     }
     const handleFinishRoad = () => finishRoad();
 
@@ -468,9 +649,9 @@ export function MapEditor({
 
       buildingTypes.forEach(type => {
         const color = getBuildingColor(type as BuildingIntendedUse);
-        const img = generateBuildingTexture(type as any, color);
+        const img = generateBuildingTexture(type as any, color, 1.0);
         if (img) {
-          const key = `texture-${type}`;
+          const key = `texture-${type}-1.0`;
           if (mapInstance.hasImage(key)) mapInstance.removeImage(key);
           mapInstance.addImage(key, img, { pixelRatio: 2 });
         }
@@ -542,11 +723,24 @@ export function MapEditor({
     });
 
     mapInstance.on('click', handleMapClick);
+    mapInstance.on('mousedown', handleMouseDown);
+    mapInstance.on('mousemove', handleMouseMove);
+    mapInstance.on('mousemove', handleDragMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+
 
     return () => {
       const mapInst = map.current;
       if (!mapInst) return;
+      mapInst.off('click', handleMapClick);
+      mapInst.off('mousedown', handleMouseDown);
+      mapInst.off('mousemove', handleMouseMove);
+      mapInst.off('mousemove', handleDragMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+
       mapInst.remove();
+
       map.current = null;
     };
 
@@ -598,11 +792,10 @@ export function MapEditor({
       }
     }
 
-    // Priority 2: Use project location if no plots exist
     if (activeProject?.location && typeof activeProject.location === 'object') {
       const { lat, lng } = activeProject.location as { lat: number, lng: number };
       if (lat && lng) {
-        console.log('âœˆï¸ Flying to project location:', { lat, lng });
+        console.log('âœˆï¸  Flying to project location:', { lat, lng });
         map.current.flyTo({
           center: [lng, lat],
           zoom: 16,
@@ -620,14 +813,11 @@ export function MapEditor({
     }
   }, [isMapLoaded, plots, activeProject, activeProjectId, actions]);
 
-  // Keep a stable ref to plots so road detection doesn't re-register on every plot update
   const plotsRef = useRef(plots);
   useEffect(() => { plotsRef.current = plots; }, [plots]);
 
-  // Track in-flight road detections to prevent redundant toasts/requests
   const pendingRoadDetections = useRef<Set<string>>(new Set());
 
-  // Automatic Road Detection — only registers once per map load
   useEffect(() => {
     if (!map.current || !isMapLoaded) return;
 
@@ -637,29 +827,19 @@ export function MapEditor({
       plotsRef.current.forEach(plot => {
         if (!plot.geometry || !plot.visible) return;
 
-        // "Fetch Once" Logic: Skip if already detected or currently in flight
         if (plot.roadAccessSides !== undefined || pendingRoadDetections.current.has(plot.id)) return;
 
         pendingRoadDetections.current.add(plot.id);
         console.log(`[Road Debug] Detecting roads for Plot ${plot.id} using Source Query...`);
 
-        // Use querySourceFeatures to get raw vector data from 'composite' source
-        // This bypasses style visibility/layer naming issues in Mapbox Standard
         const roadFeatures = map.current!.querySourceFeatures('composite', {
           sourceLayer: 'road'
         });
 
-        // Filter roads that are close to the plot
-        // We need to check intersection with the plot's expanded bounding box
-        const searchPoly = turf.buffer(plot.geometry as any, 0.05, { units: 'kilometers' }); // 50m buffer
+        const searchPoly = turf.buffer(plot.geometry as any, 0.05, { units: 'kilometers' });
 
         const relevantRoads = roadFeatures.filter(f => {
-          // Geometry must be LineString or MultiLineString
           if (f.geometry.type !== 'LineString' && f.geometry.type !== 'MultiLineString') return false;
-
-          // Check intersection with our buffered plot
-          // Note: features from querySourceFeatures might be split across tiles, causing duplicates
-          // But for detection, duplicates are acceptable.
           return turf.booleanIntersects(searchPoly as any, f as any);
         });
 
@@ -673,19 +853,15 @@ export function MapEditor({
           console.log(`[Road Debug] Found ${relevantRoads.length} roads near plot.`);
         }
 
-        // determineAccessSides helper (Strict Proximity)
         const determineAccessSides = (features: any[]) => {
           const bbox = turf.bbox(plot.geometry);
           const [minX, minY, maxX, maxY] = bbox;
 
-          // Define 4 edge lines of the plot bounding box
           const nLine = turf.lineString([[minX, maxY], [maxX, maxY]]);
           const sLine = turf.lineString([[minX, minY], [maxX, minY]]);
           const eLine = turf.lineString([[maxX, minY], [maxX, maxY]]);
           const wLine = turf.lineString([[minX, minY], [minX, maxY]]);
 
-          // Create detection zones (20m buffer around each edge)
-          // Note: using 0.025 km = 25m to be safe but precise
           const bufferDist = 0.025;
           const nZone = turf.buffer(nLine, bufferDist, { units: 'kilometers' });
           const sZone = turf.buffer(sLine, bufferDist, { units: 'kilometers' });
@@ -695,9 +871,6 @@ export function MapEditor({
           const accessSides = new Set<string>();
 
           features.forEach(rf => {
-            // Check intersection with each zone
-            // turf.booleanIntersects handles LineString vs Polygon (Zone)
-            // We cast to 'any' to avoid some strict typing issues with turf/geojson versions if mismatched
             if (turf.booleanIntersects(rf as any, nZone as any)) accessSides.add('N');
             if (turf.booleanIntersects(rf as any, sZone as any)) accessSides.add('S');
             if (turf.booleanIntersects(rf as any, eZone as any)) accessSides.add('E');
@@ -726,8 +899,7 @@ export function MapEditor({
         } else {
           if (plots[0] === plot) console.log(`[Road Debug] No local roads found. Trying Overpass API...`);
 
-          // Fallback: Use Overpass API with retry logic
-          const searchArea = turf.buffer(plot.geometry as any, 0.1, { units: 'kilometers' }); // 100m buffer
+          const searchArea = turf.buffer(plot.geometry as any, 0.1, { units: 'kilometers' });
           const searchBbox = turf.bbox(searchArea);
 
           OverpassPlacesService.fetchRoads(searchBbox as [number, number, number, number])
@@ -738,7 +910,6 @@ export function MapEditor({
 
               console.log(`[Road Debug] Overpass returned ${osmRoads.length} roads. Access:`, newSides);
 
-              // Save result (IMPORTANT: Save even if empty to prevent re-fetch loop)
               actions.updatePlot(plot.id, { roadAccessSides: newSides });
 
               if (hasChanged && newSides.length > 0) {
@@ -760,8 +931,71 @@ export function MapEditor({
 
     map.current.on('idle', detectRoads);
     return () => { map.current?.off('idle', detectRoads); };
-    // Only re-register when map loads — plots are read via plotsRef to avoid re-registering on every plot update
   }, [isMapLoaded, actions]);
+
+  useEffect(() => {
+    const mapInst = map.current;
+    if (!mapInst || !isMapLoaded || !styleLoaded) return;
+
+    const sourceId = 'bhuvan-wms';
+    const layerId = 'bhuvan-layer';
+
+    if (activeBhuvanLayer) {
+      if (mapInst.getLayer(layerId)) mapInst.removeLayer(layerId);
+      if (mapInst.getSource(sourceId)) mapInst.removeSource(sourceId);
+
+      const { plots } = getStoreState();
+      let stateCode = 'IN';
+      if (plots.length > 0 && plots[0].geometry && plots[0].geometry.geometry) {
+        const geom = plots[0].geometry.geometry as Polygon;
+        if (geom.coordinates && geom.coordinates[0] && geom.coordinates[0][0]) {
+          const coords = geom.coordinates[0][0];
+          stateCode = getIndianStateCode(coords[1], coords[0]);
+        }
+      }
+
+      const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode);
+
+      const tileProxyBase = `/api/bhuvan?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(layerName)}&width=256&height=256&srs=EPSG:3857&format=image%2Fpng&transparent=true`;
+
+      mapInst.addSource(sourceId, {
+        type: 'raster',
+        tiles: [
+          `${tileProxyBase}&bbox={bbox-epsg-3857}`
+        ],
+        tileSize: 256
+      });
+
+      const firstSymbolId = mapInst.getStyle()?.layers?.find(l => l.type === 'symbol')?.id;
+      mapInst.addLayer(
+        {
+          id: layerId,
+          type: 'raster',
+          source: sourceId,
+          paint: {
+            'raster-opacity': getStoreState().activeBhuvanOpacity
+          }
+        },
+        firstSymbolId 
+      );
+    }
+
+    return () => {
+       if (mapInst.getStyle() && mapInst.getLayer(layerId)) mapInst.removeLayer(layerId);
+       if (mapInst.getStyle() && mapInst.getSource(sourceId)) mapInst.removeSource(sourceId);
+    };
+  }, [activeBhuvanLayer, isMapLoaded, styleLoaded, actions, getStoreState]);
+
+  useEffect(() => {
+    const mapInst = map.current;
+    if (mapInst && isMapLoaded && styleLoaded && activeBhuvanLayer) {
+      const layerId = 'bhuvan-layer';
+      const { activeBhuvanOpacity } = getStoreState();
+      if (mapInst.getStyle() && mapInst.getLayer(layerId)) {
+        mapInst.setPaintProperty(layerId, 'raster-opacity', activeBhuvanOpacity);
+      }
+    }
+  }, [getStoreState().activeBhuvanOpacity, activeBhuvanLayer, isMapLoaded, styleLoaded, getStoreState]);
 
   useEffect(() => {
     if (!isMapLoaded || !isThreeboxLoaded || !map.current) return;
@@ -805,7 +1039,6 @@ export function MapEditor({
             window.tb.renderer.shadowMap.type = window.THREE.PCFSoftShadowMap;
           }
 
-          console.log('Threebox initialized with shared depth buffer');
         }
       },
       render: function (gl, matrix) {
@@ -813,7 +1046,6 @@ export function MapEditor({
           try {
             window.tb.update();
           } catch (e) {
-            // Suppress repeating errors
           }
         }
       },
@@ -821,11 +1053,9 @@ export function MapEditor({
 
   }, [isMapLoaded, isThreeboxLoaded]);
 
-  // Vastu Compass Rendering
   useEffect(() => {
     if (!window.tb || !isMapLoaded) return;
 
-    // 1. Cleanup existing objects using our kept references
     vastuObjectsRef.current.forEach(obj => {
       try {
         window.tb.remove(obj);
@@ -835,17 +1065,14 @@ export function MapEditor({
     });
     vastuObjectsRef.current = [];
 
-    // 2. Add if enabled
     if (uiState?.showVastuCompass && plots.length > 0) {
       const THREE = window.tb.THREE || window.THREE;
       if (!THREE) return;
 
       plots.forEach(plot => {
-        // Calculate bbox center for accurate positioning
         const bbox = turf.bbox(plot.geometry);
         const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
 
-        // Radius: Make it fit within plot
         const r = Math.sqrt(plot.area / Math.PI) * 0.5;
 
         const compassGroup = createShaktiChakraGroup(THREE, r);
@@ -878,13 +1105,9 @@ export function MapEditor({
 
 
 
-
-
-  // Render Amenity Markers
   useEffect(() => {
     if (!map.current || !isMapLoaded) return;
 
-    // Clear existing markers
     markers.current.forEach(marker => marker.remove());
     markers.current = [];
 
@@ -892,7 +1115,6 @@ export function MapEditor({
     if (!amenities || amenities.length === 0) return;
 
     amenities.forEach((amenity: Amenity) => {
-      // Create element
       const el = document.createElement('div');
       el.className = 'amenity-marker';
       el.style.width = '24px';
@@ -917,7 +1139,6 @@ export function MapEditor({
 
       el.style.backgroundColor = color;
 
-      // Create Popup
       const popup = new mapboxgl.Popup({ offset: 25 })
         .setHTML(`
           <div style="padding: 5px;">
@@ -937,36 +1158,27 @@ export function MapEditor({
       markers.current.push(marker);
     });
 
-    // Optional: Fit bounds? Maybe too intrusive on every update.
-    // For now, let the user pan/zoom manually or use simple flyTo on setLocationData action if needed.
-
   }, [isMapLoaded, activeProject?.locationData?.amenities]);
 
 
-  // Move cleanupOverlays to a reusable callback
   const cleanupOverlays = useCallback(() => {
     if (!map.current) return;
 
-    // Cleanup Mapbox Heatmap Layer
     const heatmapId = 'solar-ground-heatmap';
     if (map.current.getLayer(heatmapId)) map.current.removeLayer(heatmapId);
 
-    // Cleanup Wall Analysis Layer
     const wallLayerId = 'analysis-walls';
     const wallSourceId = 'analysis-walls-source';
     if (map.current.getLayer(wallLayerId)) map.current.removeLayer(wallLayerId);
 
-    // Cleanup Wind Direction Layer (old arrows)
     const windDirId = 'wind-direction';
     if (map.current.getLayer(windDirId)) map.current.removeLayer(windDirId);
 
-    // Cleanup Wind Streamline Layer
     if (windStreamlineLayer.current && map.current.getLayer('wind-streamlines')) {
       map.current.removeLayer('wind-streamlines');
       windStreamlineLayer.current = null;
     }
 
-    // Now cleanup sources after layers are gone
     if (map.current.getSource(heatmapId)) map.current.removeSource(heatmapId);
     if (map.current.getSource(wallSourceId)) map.current.removeSource(wallSourceId);
     if (map.current.getSource(windDirId)) map.current.removeSource(windDirId);
@@ -984,8 +1196,7 @@ export function MapEditor({
     }
   }, []);
 
-  // Execute Map Commands (e.g., flyTo from Location Panel)
-  useEffect(() => {
+useEffect(() => {
     if (!map.current || !isMapLoaded || !mapCommand) return;
 
     if (mapCommand.type === 'flyTo') {
@@ -996,12 +1207,10 @@ export function MapEditor({
         duration: 1500
       });
 
-      // Clear the command after executing
       useBuildingStore.setState({ mapCommand: null });
     }
   }, [mapCommand, isMapLoaded]);
 
-  // Monitor toggle to reset analysis
   useEffect(() => {
     if (!isSimulatorEnabled) {
       setAnalysisMode('none');
@@ -1015,7 +1224,6 @@ export function MapEditor({
 
     plots.forEach(plot => {
       plot.buildings.forEach(building => {
-        // Reset each building's floors to their original color (or forced color)
         const colorToApply = forcedColor || getBuildingColor(building.intendedUse);
 
         building.floors.forEach(floor => {
@@ -1033,7 +1241,6 @@ export function MapEditor({
     });
   };
 
-  // Effect: Run Visual Analysis when mode/date changes or buildings change
   useEffect(() => {
     if (!isMapLoaded) return;
 
@@ -1044,9 +1251,7 @@ export function MapEditor({
       return;
     }
 
-    // For analysis modes: small debounce to batch rapid changes
     const timer = setTimeout(async () => {
-      // Collect buildings from STORE
       const allBuildings = plots.flatMap(p => p.buildings);
 
       if (allBuildings.length === 0) {
@@ -1056,10 +1261,10 @@ export function MapEditor({
 
       console.log(`[MAP EDITOR] Running ${analysisMode} on ${allBuildings.length} buildings...`);
 
-      cleanupOverlays(); // Clear previous results before adding new ones
-      resetBuildingColors('#eeeeee'); // Reset buildings to neutral grey so walls are visible
+      cleanupOverlays();
+      resetBuildingColors('#eeeeee');
 
-      // ── STEP 0: Fetch weather data FIRST so ALL analysis phases use it ──
+      // ── Fetch weather data ──
       let weatherData: any = null;
       if (plots.length > 0 && plots[0].geometry) {
         try {
@@ -1072,12 +1277,11 @@ export function MapEditor({
         }
       }
 
-      // --- STEP 1: PER-FACE WALL ANALYSIS (now with weatherData) ---
+      // ── PER-FACE WALL ANALYSIS ──
       const wallFeatures = await runWallAnalysis(allBuildings, allBuildings, analysisMode, solarDate, activeGreenRegulations, weatherData);
 
       console.log('[MAP EDITOR] Wall Analysis complete, features:', { count: wallFeatures.features.length });
 
-      // Mapbox-native fill-extrusion for building analysis
       const wallLayerId = 'analysis-walls';
       const wallSourceId = 'analysis-walls-source';
 
@@ -1100,16 +1304,15 @@ export function MapEditor({
               'fill-extrusion-opacity': 0.85,
               'fill-extrusion-vertical-gradient': true
             }
-          }, LABELS_LAYER_ID); // Place below labels
+          }, LABELS_LAYER_ID);
         }
       }
 
-      // --- STEP 2: GROUND HEATMAP ANALYSIS ---
+      // ── GROUND HEATMAP ANALYSIS ──
       if (map.current && plots.length > 0) {
         try {
           console.log('[MAP EDITOR] Running Ground Analysis...');
           
-          // 2a. Run Ground Analysis (Heatmap)
           const groundPoints = await runGroundAnalysis(
             plots[0].geometry,
             allBuildings,
@@ -1119,7 +1322,6 @@ export function MapEditor({
             weatherData
           );
 
-          // 2b. Run Visual Analysis (Building Stats)
           const buildingResults = await runVisualAnalysis(
             allBuildings,
             allBuildings,
@@ -1129,7 +1331,7 @@ export function MapEditor({
             weatherData
           );
 
-          // NEW: Calculate Aggregate Stats and Update Project State
+          // ── Calculate Aggregate Stats and Update Project State ──
           const stats = calculateAggregateStats(buildingResults, analysisMode, allBuildings, activeGreenRegulations);
           console.log('[MAP EDITOR] Analysis Stats:', stats);
 
@@ -1158,7 +1360,6 @@ export function MapEditor({
                   try {
                     map.current!.setPaintProperty(layerId, 'fill-extrusion-color', analysisColor);
                   } catch (e) {
-                    // Layer might not support color change
                   }
                 }
               });
@@ -1166,7 +1367,7 @@ export function MapEditor({
             console.log(`[MAP EDITOR] Applied analysis colors to ${buildingResults.size} buildings`);
           }
 
-          // Apply colors to ground heatmap
+          // ── Apply colors to ground heatmap ──
           const heatmapId = 'solar-ground-heatmap';
 
           if (groundPoints && groundPoints.features.length > 0) {
@@ -1180,9 +1381,6 @@ export function MapEditor({
             }
 
             if (!map.current.getLayer(heatmapId)) {
-              // Determine color ramp based on mode
-              // For Wind/Sun: Use Compliance Ramp (Red=Bad, Green=Good)
-              // This matches the building wall colors for visual consistency
               let colorRamp: any[];
 
               if (analysisMode === 'wind' || analysisMode === 'sun-hours' || analysisMode === 'daylight') {
@@ -1247,19 +1445,17 @@ export function MapEditor({
                 type: 'heatmap',
                 source: heatmapId,
                 paint: {
-                  // Weight based on 'weight' property (0-1)
                   'heatmap-weight': ['get', 'weight'] as any,
-                  // Intensity increases with zoom
                   'heatmap-intensity': [
                     'interpolate', ['linear'], ['zoom'],
-                    15, 0.7,  // Slightly reduced from 0.8
-                    18, 1.8   // Slightly reduced from 2.0
+                    15, 0.7,
+                    18, 1.8
                   ] as any,
                   'heatmap-color': colorRamp as any,
                   'heatmap-radius': [
                     'interpolate', ['linear'], ['zoom'],
-                    15, 20,  // Reduced from 30
-                    20, 40   // Reduced from 50
+                    15, 20,
+                    20, 40
                   ] as any,
                   'heatmap-opacity': 0.7
                 }
@@ -1268,33 +1464,25 @@ export function MapEditor({
 
             // --- WIND STREAMLINES (Animated) ---
             if (analysisMode === 'wind') {
-              // Remove old arrow layer if it exists
               const windDirId = 'wind-direction';
               if (map.current.getLayer(windDirId)) {
                 map.current.removeLayer(windDirId);
               }
-
-              // Get current wind direction from weather data
               const currentHour = solarDate.getHours();
               const windDir = (weatherData && weatherData.hourly) ? weatherData.hourly.windDirection[currentHour] : 45;
 
-              // Add streamline layer if not already added
               if (!windStreamlineLayer.current) {
                 windStreamlineLayer.current = new WindStreamlineLayer('wind-streamlines');
 
-                // Add layer to map
                 if (!map.current.getLayer('wind-streamlines')) {
                   map.current.addLayer(windStreamlineLayer.current as any, LABELS_LAYER_ID);
                 }
 
-                // Initialize with buildings and wind direction
                 windStreamlineLayer.current.initialize(allBuildings, windDir);
               } else {
-                // Update direction dynamically
                 windStreamlineLayer.current.updateWindDirection(windDir);
               }
 
-              // Update bounds when map moves
               const updateBounds = () => {
                 if (windStreamlineLayer.current) {
                   windStreamlineLayer.current.updateBounds();
@@ -1321,14 +1509,13 @@ export function MapEditor({
     const mapInstance = map.current;
     if (!mapInstance) return;
 
-    // Helper to manage Three.js lights
     const updateThreeLights = (azimuth: number, altitude: number, enabled: boolean) => {
       if (!window.tb) return;
 
       const THREE = window.tb.THREE || window.THREE;
       if (!THREE) return;
 
-      const scene = window.tb.world; // Use world as root
+      const scene = window.tb.world;
       if (!scene) return;
 
       const LIGHT_GROUP_NAME = 'simulation-lights-group';
@@ -1343,19 +1530,6 @@ export function MapEditor({
       lightGroup.clear();
 
       if (enabled) {
-        // Convert to Threebox/Mapbox World coords logic
-        // Mapbox World: Z up.
-        // Sun Az/Alt -> Vector
-        // We use the same logic as Analysis Engine for consistency
-        const lat = 28.6; // Dummy, unused for vector direction if we have Az/Alt
-        // ... actually we just need normalized vector
-
-        // Azimuth 0 = South, PI/2 = West (from sun-utils)
-        // Three.js: X=East, Y=North
-        // x = sin(az)*cos(alt)
-        // y = -cos(az)*cos(alt)
-        // z = sin(alt)
-
         const dist = 1000;
         const x = dist * Math.sin(azimuth) * Math.cos(altitude);
         const y = dist * -1 * Math.cos(azimuth) * Math.cos(altitude);
@@ -1383,9 +1557,6 @@ export function MapEditor({
         lightGroup.add(ambient);
 
       } else {
-        // Default Threebox Lighting (if any?)
-        // Usually Threebox has default lights if 'defaultLights' is true.
-        // If we want to restore defaults, we might just leave this group empty.
       }
 
       if (window.tb) window.tb.repaint();
@@ -1394,25 +1565,12 @@ export function MapEditor({
 
     if (isSimulatorEnabled) {
       const center = mapInstance.getCenter();
-      // Dynamically require to avoid top-level import issues if not needed
       const { getSunPosition } = require('@/lib/sun-utils');
       const { azimuth, altitude } = getSunPosition(solarDate, center.lat, center.lng);
 
-      // 1. Sync Mapbox Native Light (for fill-extrusion)
-      // Azimuth: Sun 0(S) -> Map 180(S). Sun 90(W) -> Map 270(W).
-      // Map = (SunDeg + 180) % 360
       const azDeg = (azimuth * 180 / Math.PI + 180) % 360;
-
-      // Polar: Sun Alt 0 -> Map Polar 90. Sun Alt 90 -> Map Polar 0.
       const polarDeg = 90 - (altitude * 180 / Math.PI);
-
-      // Safety clamp
-      // Safety clamp
       const safePolar = Math.max(0, Math.min(90, polarDeg));
-
-      // 1. Sync Mapbox Standard Style Lighting
-      // Mapbox Standard style uses 'lightPreset' config and handles sun position automatically based on that preset.
-      // We map our solar time to these presets.
 
       const hour = solarDate.getHours();
       let preset = 'day';
@@ -1424,33 +1582,18 @@ export function MapEditor({
       if (mapInstance.getStyle()?.name === 'Mapbox Standard') {
         try {
           mapInstance.setConfigProperty('basemap', 'lightPreset', preset);
-          // We can also try to enable shadows if not already
           mapInstance.setConfigProperty('basemap', 'show3dObjects', true);
         } catch (e) {
           console.warn('Failed to set lightPreset', e);
         }
       } else {
-        // Fallback for non-standard styles (if any)
         try {
-          // @ts-ignore - simple check to avoid TS errors if types aren't updated
+          // @ts-ignore
           if (mapInstance.setLights) {
-            // Use new API if needed, but for now just skip to avoid errors
           }
         } catch (e) { }
       }
 
-      // 2. Sync Threebox Lights (for heatmaps/other 3D)
-      // Note: We removed Threebox, but this function might still be called?
-
-
-      // Legacy Threebox Initialization Removed
-      // We now rely on pure Mapbox GL JS layers (fill-extrusion) which are more performant and consistent.
-
-      // --- MANAGE SOLAR LIGHTING ---
-      // Legacy Solar Lighting (Three.js) Removed
-      // TODO: Implement Mapbox Native Solar/Shadow API when needed.
-
-      // 2. Sync Threebox Lights
       updateThreeLights(azimuth, altitude, true);
 
     } else {
@@ -1473,9 +1616,6 @@ export function MapEditor({
     [plots]
   );
 
-  // Legacy Threebox Effect specific to markers and trees removed.
-  // We are moving to pure Mapbox GL JS rendering for consistency and performance.
-  // Effect to handle drawing state
   useEffect(() => {
     if (!isMapLoaded || !map.current) return;
     const mapInstance = map.current;
@@ -1498,7 +1638,6 @@ export function MapEditor({
 
       if (drawingPoints.length > 0) {
         if (drawingState.objectType === 'Road') {
-          // Road Preview: Show centerline + buffered fill separately
           if (drawingPoints.length === 1) {
             outlineData = turf.featureCollection([
               turf.point(drawingPoints[0])
@@ -1506,11 +1645,10 @@ export function MapEditor({
           } else if (drawingPoints.length >= 2) {
             const line = turf.lineString(drawingPoints);
             const buffered = turf.buffer(line, (drawingState.roadWidth / 2), { units: 'meters' });
-            outlineData = turf.featureCollection([line]); // Only centerline for outline layer
-            roadFillData = turf.featureCollection(buffered ? [buffered] : []); // Buffered polygon for fill
+            outlineData = turf.featureCollection([line]);
+            roadFillData = turf.featureCollection(buffered ? [buffered] : []);
           }
         } else {
-          // Standard Polygon/Point Preview
           if (drawingPoints.length > 1) {
             outlineData = turf.lineString(drawingPoints);
           }
@@ -1529,7 +1667,6 @@ export function MapEditor({
         });
       }
 
-      // Road fill preview layer
       if (roadFillSource) {
         roadFillSource.setData(roadFillData);
       } else if (drawingState.objectType === 'Road') {
@@ -1558,7 +1695,6 @@ export function MapEditor({
   }, [drawingState.isDrawing, drawingPoints, isMapLoaded, primaryColor]);
 
 
-  // Debug Effect: Trace Plots Data
   useEffect(() => {
     if (plots.length > 0) {
       console.log(`[MapEditor] ðŸ•µï¸ Plots Data Updated. Count: ${plots.length}`);
@@ -1574,15 +1710,96 @@ export function MapEditor({
       console.log(`[MapEditor] Plots array is empty.`);
     }
   }, [plots, uiState.ghostMode, componentVisibility]);
-
-  // Effect to render all plots and their contents
+  
+  // Selection Highlight Effect
   useEffect(() => {
-    console.log(`[MapEditor] Render Effect Triggered. isMapLoaded: ${isMapLoaded}, styleLoaded: ${styleLoaded}, mapRef: ${!!map.current}`);
+    if (!isMapLoaded || !styleLoaded || !map.current) return;
+    const mapInstance = map.current;
 
+    if (!selectedObjectId) {
+      const source = mapInstance.getSource(SELECTION_HIGHLIGHT_SOURCE_ID) as GeoJSONSource;
+      if (source) source.setData(turf.featureCollection([]));
+      return;
+    }
+
+    // Find the geometry for the selected object
+    let geometry: any = null;
+    const { id, type } = selectedObjectId;
+
+    // Search in plots and their children
+    for (const plot of plots) {
+      if (type === 'Plot' && plot.id === id) {
+        geometry = plot.geometry;
+        break;
+      }
+      
+      const objects = [
+        ...plot.buildings, 
+        ...plot.greenAreas, 
+        ...plot.parkingAreas, 
+        ...plot.buildableAreas,
+        ...(plot.utilityAreas || [])
+      ];
+      
+      const found = objects.find(obj => obj.id === id);
+      if (found) {
+        geometry = found.geometry;
+        break;
+      }
+
+      // Search in internal building objects
+      for (const b of plot.buildings) {
+        const internals = [...(b.internalUtilities || []), ...(b.cores || []), ...(b.units || [])];
+        const foundInternal = internals.find((obj: any) => obj.id === id);
+        if (foundInternal) {
+          geometry = foundInternal.geometry;
+          break;
+        }
+      }
+      if (geometry) break;
+    }
+
+    if (!geometry) return;
+
+    // Ensure we have a feature collection for the source
+    const featureData = turf.feature(geometry.type === 'Feature' ? geometry.geometry : geometry);
+
+    let source = mapInstance.getSource(SELECTION_HIGHLIGHT_SOURCE_ID) as GeoJSONSource;
+    if (!source) {
+      mapInstance.addSource(SELECTION_HIGHLIGHT_SOURCE_ID, {
+        type: 'geojson',
+        data: turf.featureCollection([featureData])
+      });
+    } else {
+      source.setData(turf.featureCollection([featureData]));
+    }
+
+    if (!mapInstance.getLayer(SELECTION_HIGHLIGHT_LAYER_ID)) {
+      mapInstance.addLayer({
+        id: SELECTION_HIGHLIGHT_LAYER_ID,
+        type: 'line',
+        source: SELECTION_HIGHLIGHT_SOURCE_ID,
+        paint: {
+          'line-color': '#F5A623',
+          'line-width': 4,
+          'line-opacity': 0.8,
+          'line-blur': 1
+        }
+      }, LABELS_LAYER_ID);
+    }
+
+    // Set a timer to clear the highlight after 3 seconds
+    const timer = setTimeout(() => {
+      const s = mapInstance.getSource(SELECTION_HIGHLIGHT_SOURCE_ID) as GeoJSONSource;
+      if (s) s.setData(turf.featureCollection([]));
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [selectedObjectId, plots, isMapLoaded, styleLoaded]);
+
+  useEffect(() => {
     if (!isMapLoaded || !styleLoaded || !map.current) {
       if (map.current && map.current.isStyleLoaded() && !styleLoaded) {
-        // Fallback: If map says style is loaded but state lags, force update
-        console.log("[MapEditor] Style check passed despite state lag. Updating state...");
         setStyleLoaded(true);
       } else {
         console.warn("[MapEditor] Render Effect SKIPPED due to map state.");
@@ -1591,7 +1808,6 @@ export function MapEditor({
     }
     const mapInstance = map.current;
 
-    // FIX: Hide standard Mapbox 3D buildings to prevent overlap glitch
     if (mapInstance.getLayer('building')) {
       mapInstance.setLayoutProperty('building', 'visibility', 'none');
     }
@@ -1600,11 +1816,8 @@ export function MapEditor({
     }
 
     const renderedIds = new Set<string>();
-    // Check if any specific component is focused/visible - Calculated once per render for entire map
     const anyComponentVisible = Object.values(componentVisibility).some(v => v);
 
-    // PRE-CLEANUP: Remove ALL old core/unit layers before rendering new ones
-    // This prevents ghost layers from persisting across renders
     const existingLayers = mapInstance.getStyle()?.layers || [];
     existingLayers.forEach(layer => {
       const layerId = layer.id;
@@ -1621,7 +1834,6 @@ export function MapEditor({
 
     const allLabels: Feature<Point, { label: string; id: string }>[] = [];
 
-    // Ensure the label layer and source exist before we do anything else
     if (!mapInstance.getSource(LABELS_SOURCE_ID)) {
       mapInstance.addSource(LABELS_SOURCE_ID, {
         type: 'geojson',
@@ -1648,15 +1860,13 @@ export function MapEditor({
           'text-halo-width': 1.5,
           'text-opacity': ['case',
             ['boolean', ['feature-state', 'hover'], false], 1,
-            ['==', ['get', 'linkedId'], 'SELECTED_ID_PLACEHOLDER'], 1, // We'll update this via setPaintProperty
+            ['==', ['get', 'linkedId'], 'SELECTED_ID_PLACEHOLDER'], 1,
             0
           ]
         },
       });
     }
 
-    // Effect to update label visibility based on selection/hover
-    // We do this separately to avoid full re-render
     if (mapInstance.getLayer(LABELS_LAYER_ID)) {
       mapInstance.setPaintProperty(LABELS_LAYER_ID, 'text-opacity', [
         'case',
@@ -1667,20 +1877,19 @@ export function MapEditor({
 
 
     plots.forEach(plot => {
-      // Add plot area label
       if (plot.centroid) {
         allLabels.push(
           turf.point(plot.centroid.geometry.coordinates, {
             label: `${plot.area.toFixed(0)} m²`,
             id: `plot-label-${plot.id}`,
-            linkedId: plot.id // Link to plot ID for selection highlight
+            linkedId: plot.id 
           })
         );
       }
 
-      // --- RENDER UTILITIES & PARKING FIRST (Bottom Layer) ---
+      // --- RENDER UTILITIES & PARKING FIRST ---
 
-      // 0. Green Areas (Moved to Bottom Layer)
+      // Green Areas (Moved to Bottom Layer)
       plot.greenAreas.forEach(area => {
         const areaId = area.id;
         renderedIds.add(areaId);
@@ -1696,23 +1905,36 @@ export function MapEditor({
         }
 
         if (!mapInstance.getLayer(areaId)) {
+          const isSelected = selectedObjectId && selectedObjectId.id === area.id && selectedObjectId.type === 'GreenArea';
+          const selectionColor = '#00fbff';
+
           mapInstance.addLayer({
             id: areaId,
             type: 'fill',
             source: areaId,
             paint: {
-              'fill-color': '#4ade80',
-              'fill-opacity': 0.5,
-              'fill-outline-color': '#22c55e'
+              'fill-color': isSelected ? selectionColor : '#4ade80',
+              'fill-opacity': isSelected ? 0.8 : 0.5,
+              'fill-outline-color': isSelected ? selectionColor : '#22c55e'
+            },
+            metadata: {
+              id: area.id,
+              type: 'GreenArea'
             }
           }, LABELS_LAYER_ID);
+        } else {
+          const isSelected = selectedObjectId && selectedObjectId.id === area.id && selectedObjectId.type === 'GreenArea';
+          const selectionColor = '#00fbff';
+          mapInstance.setPaintProperty(areaId, 'fill-color', isSelected ? selectionColor : '#4ade80');
+          mapInstance.setPaintProperty(areaId, 'fill-opacity', isSelected ? 0.8 : 0.5);
+          mapInstance.setPaintProperty(areaId, 'fill-outline-color', isSelected ? selectionColor : '#22c55e');
         }
       });
 
-      // 1. Parking Areas (Surface & Basements)
+      //Parking Areas (Surface & Basements)
       plot.parkingAreas.forEach(area => {
         const areaId = `parking-area-${area.id}`;
-        if (!area.geometry) return; // Skip invalid areas
+        if (!area.geometry) return;
 
         const areaData: Feature<Polygon> = {
           type: 'Feature',
@@ -1730,10 +1952,7 @@ export function MapEditor({
         if (source) source.setData(areaData);
         else mapInstance.addSource(areaId, { type: 'geojson', data: areaData });
 
-        // Ensure layer exists and correct type
         const existingRef = mapInstance.getLayer(areaId);
-        // If we want to change type (e.g. line to fill), remove it
-        // Surface parking is now Fill, Basement is Line
         const isBasement = (area.type === 'Basement');
         const desiredType = isBasement ? 'line' : 'fill';
 
@@ -1743,7 +1962,6 @@ export function MapEditor({
 
         if (!mapInstance.getLayer(areaId)) {
           if (isBasement) {
-            // Render Basement as dashed outline
             mapInstance.addLayer({
               id: areaId,
               type: 'line',
@@ -1756,28 +1974,35 @@ export function MapEditor({
               }
             }, LABELS_LAYER_ID);
           } else {
-            // Surface Parking: Visible Fill (Blue Grey)
+            const isSelected = selectedObjectId && selectedObjectId.id === area.id && selectedObjectId.type === 'ParkingArea';
+            const selectionColor = '#00fbff';
+
             mapInstance.addLayer({
               id: areaId,
               type: 'fill',
               source: areaId,
               paint: {
-                'fill-color': '#607D8B',
-                'fill-opacity': 0.5,
-                'fill-outline-color': '#455A64'
+                'fill-color': isSelected ? selectionColor : '#607D8B',
+                'fill-opacity': isSelected ? 0.8 : 0.5,
+                'fill-outline-color': isSelected ? selectionColor : '#455A64'
+              },
+              metadata: {
+                id: area.id,
+                type: 'ParkingArea'
               }
-            }, LABELS_LAYER_ID); // Render using Label ID as reference (top), but since this runs BEFORE buildings, buildings will be added AFTER (on top)
+            }, LABELS_LAYER_ID);
           }
         } else {
-          // Update Paint Props if needed
           if (!isBasement) {
-            mapInstance.setPaintProperty(areaId, 'fill-color', '#607D8B');
-            mapInstance.setPaintProperty(areaId, 'fill-opacity', 0.5);
+            const isSelected = selectedObjectId && selectedObjectId.id === area.id && selectedObjectId.type === 'ParkingArea';
+            const selectionColor = '#00fbff';
+            mapInstance.setPaintProperty(areaId, 'fill-color', isSelected ? selectionColor : '#607D8B');
+            mapInstance.setPaintProperty(areaId, 'fill-opacity', isSelected ? 0.8 : 0.5);
+            mapInstance.setPaintProperty(areaId, 'fill-outline-color', isSelected ? selectionColor : '#455A64');
           }
         }
       });
 
-      // 2. Utility Areas (Roads, STP, etc.)
       const utilitiesToRender = [...(plot.utilityAreas || [])];
 
       utilitiesToRender.forEach(u => {
@@ -1788,7 +2013,7 @@ export function MapEditor({
         renderedIds.add(areaId);
         renderedIds.add(`utility-area-label-${u.id}`);
 
-        if (!u.geometry) return; // Skip invalid utilities
+        if (!u.geometry) return;
 
         const featureData = {
           type: 'Feature',
@@ -1819,6 +2044,9 @@ export function MapEditor({
         const isRoad = u.type === 'Roads' || u.type === 'AppRoads' as any;
 
         if (!mapInstance.getLayer(areaId)) {
+          const isSelected = selectedObjectId && selectedObjectId.id === u.id && selectedObjectId.type === 'UtilityArea';
+          const selectionColor = '#00fbff';
+
           if (isRoad) {
             mapInstance.addLayer({
               id: areaId,
@@ -1826,13 +2054,16 @@ export function MapEditor({
               source: areaId,
               layout: { 'visibility': isVisible ? 'visible' : 'none' },
               paint: {
-                'fill-color': color,
-                'fill-opacity': 0.8,
-                'fill-outline-color': '#2c3e50'
+                'fill-color': isSelected ? selectionColor : color,
+                'fill-opacity': isSelected ? 0.9 : 0.8,
+                'fill-outline-color': isSelected ? selectionColor : '#2c3e50'
+              },
+              metadata: {
+                id: u.id,
+                type: 'UtilityArea'
               }
             }, LABELS_LAYER_ID);
 
-            // Add a dashed centerline for finished roads
             renderedIds.add(centerlineId);
             if (!mapInstance.getLayer(centerlineId)) {
               mapInstance.addLayer({
@@ -1849,44 +2080,51 @@ export function MapEditor({
               }, LABELS_LAYER_ID);
             }
           } else {
-            // 3D Extrusion for non-road utilities
+            const isSelected = selectedObjectId && selectedObjectId.id === u.id && selectedObjectId.type === 'UtilityArea';
+            const selectionColor = '#00fbff';
+
             mapInstance.addLayer({
               id: areaId,
               type: 'fill-extrusion',
               source: areaId,
               layout: { 'visibility': isVisible ? 'visible' : 'none' },
               paint: {
-                'fill-extrusion-color': color,
+                'fill-extrusion-color': isSelected ? selectionColor : color,
                 'fill-extrusion-height': 2.5,
-                'fill-extrusion-opacity': 0.7,
+                'fill-extrusion-opacity': isSelected ? 0.9 : 0.7,
                 'fill-extrusion-base': 0
+              },
+              metadata: {
+                id: u.id,
+                type: 'UtilityArea'
               }
             }, LABELS_LAYER_ID);
           }
         } else {
-          // Layer already exists — update paint and visibility
+          const isSelected = selectedObjectId && selectedObjectId.id === u.id && selectedObjectId.type === 'UtilityArea';
+          const selectionColor = '#00fbff';
+
           if (isRoad) {
             if (mapInstance.getLayer(areaId)?.type === 'fill') {
-              mapInstance.setPaintProperty(areaId, 'fill-color', color);
+              mapInstance.setPaintProperty(areaId, 'fill-color', isSelected ? selectionColor : color);
+              mapInstance.setPaintProperty(areaId, 'fill-opacity', isSelected ? 0.9 : 0.8);
+              mapInstance.setPaintProperty(areaId, 'fill-outline-color', isSelected ? selectionColor : '#2c3e50');
             }
           } else {
             if (mapInstance.getLayer(areaId)?.type === 'fill-extrusion') {
-              mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', color);
+              mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', isSelected ? selectionColor : color);
+              mapInstance.setPaintProperty(areaId, 'fill-extrusion-opacity', isSelected ? 0.9 : 0.7);
             }
           }
-          // Always sync visibility via setLayoutProperty (correct Mapbox approach)
           try {
             mapInstance.setLayoutProperty(areaId, 'visibility', isVisible ? 'visible' : 'none');
             if (mapInstance.getLayer(centerlineId)) {
               mapInstance.setLayoutProperty(centerlineId, 'visibility', isVisible ? 'visible' : 'none');
             }
           } catch (e) {
-            // Layer might not support visibility toggle in rare cases
           }
         }
       });
-
-      // Add building labels
 
       plot.buildings.forEach(building => {
         if (building.centroid) {
@@ -1896,20 +2134,12 @@ export function MapEditor({
             turf.point(building.centroid.geometry.coordinates, {
               label: labelText,
               id: `building-label-${building.id}`,
-              linkedId: building.id // Link to building ID for hover
+              linkedId: building.id
             })
           );
         }
 
-
-
-
-        // --- RENDER BUILDING FLOORS (NEW) ---
-        // --- RENDER BUILDING FLOORS (NEW) ---
-
-
         if (building.floors && building.floors.length > 0) {
-          // Separate basement and superstructure floors
           const basementFloors = building.floors.filter(f =>
             (f.level !== undefined && f.level < 0) || f.type === 'Parking'
           );
@@ -1917,49 +2147,37 @@ export function MapEditor({
             !((f.level !== undefined && f.level < 0) || f.type === 'Parking')
           );
 
-
-
-          // Determine which floors to render based on Ghost Mode and basement visibility toggle
           let floorsToRender = building.floors.filter(f => {
-            // Always hide utility floors
             if (f.type === 'Utility') return false;
 
             const isBasement = (f.level !== undefined && f.level < 0) || f.type === 'Parking';
-
-            // In Ghost Mode, respect the basement visibility toggle
             if (uiState.ghostMode) {
               if (isBasement) {
-                return componentVisibility.basements; // Only show basements if toggled on
+                return componentVisibility.basements;
               }
-              return true; // Show all non-basement floors
+              return true;
             }
 
-            // In normal mode, hide basements
             return !isBasement;
           });
 
-          // CRITICAL: Sort floors so basements (level < 0) render FIRST (at bottom of stack)
           floorsToRender = [...floorsToRender].sort((a, b) => {
             const aLevel = a.level ?? (a.type === 'Parking' ? -1 : 999);
             const bLevel = b.level ?? (b.type === 'Parking' ? -1 : 999);
-            return aLevel - bLevel; // Ascending: basements (-2, -1) before ground (0) before upper (1, 2, 3...)
+            return aLevel - bLevel;
           });
 
-          // --- CALCULATE OFFSETS FOR GHOST MODE ---
           const basementFloorsCalc = building.floors.filter(f =>
             (f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking'
           );
           const totalBasementHeight = basementFloorsCalc.reduce((sum, f) => sum + f.height, 0);
 
-          // Only lift building if basements are actually visible
-          const heightOffset = 0; // Always start at 0 (Ground)
+          const heightOffset = 0;
           const shouldLiftForBasements = uiState.ghostMode && componentVisibility.basements;
-          // Calculate Visual Top
           const superstructureFloorsCalc = building.floors.filter(f =>
             !((f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking')
           );
           const superstructureHeight = superstructureFloorsCalc.reduce((sum, f) => sum + (f.height || 3), 0);
-          // Exclude Utility floors - they are not rendered, so should not inflate building height
           const superstructureFloorsCalcFiltered = building.floors.filter(f =>
             !((f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking') &&
             f.type !== 'Utility'
@@ -1968,22 +2186,17 @@ export function MapEditor({
           const visualBuildingTop = (building.baseHeight || 0) + (shouldLiftForBasements ? totalBasementHeight : 0) + superstructureHeightFinal;
           const effectiveBase = (building.baseHeight || 0) + (shouldLiftForBasements ? totalBasementHeight : 0);
 
-          // --- RENDER INTERNAL LAYOUT (UTILITIES -> CORES & UNITS) FIRST ---
-          // Render Opaque internals BEFORE Transparent Shell to fix Depth Buffer occlusion
-
-          // Utilities (Render FIRST to be inside)
+          // --- RENDER INTERNAL LAYOUT (UTILITIES -> CORES & UNITS) ---
           if (building.internalUtilities) {
             building.internalUtilities.forEach((util: UtilityArea) => {
               const layerId = `util-${building.id}-${util.id}`;
               renderedIds.add(layerId);
 
-              // Electrical/HVAC Opacity: 0.8 in Ghost Mode (Solid-ish)
               let utilOpacity = 0.0;
               let utilHeight = 0;
               let utilBase = 0;
               let utilColor = '#CCCCCC';
 
-              // Building top calculation (Using shared calculation)
               const buildingTop = visualBuildingTop;
 
               if (util.type === 'Electrical') {
@@ -1996,7 +2209,7 @@ export function MapEditor({
                   utilOpacity = componentVisibility.electrical ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
                 }
 
-                utilBase = effectiveBase;  // Start at effective ground (accounts for basement lift)
+                utilBase = effectiveBase;
                 utilHeight = visualBuildingTop;
                 utilColor = '#FFD700';
               } else if (util.type === 'HVAC') {
@@ -2043,7 +2256,6 @@ export function MapEditor({
             });
           }
 
-          // Pre-compute floor heights map for accurate 3D placement
           const floorDict: Record<string, { baseHeight: number, height: number }> = {};
           let fdCurrentBase = building.baseHeight || 0;
           floorsToRender.forEach(f => {
@@ -2051,7 +2263,6 @@ export function MapEditor({
             fdCurrentBase += f.height;
           });
 
-          // Cores Layer (Unified) – each core spans the full building height
           if (building.cores && floorsToRender) {
             const layerId = `cores-${building.id}`;
             renderedIds.add(layerId);
@@ -2071,12 +2282,9 @@ export function MapEditor({
               }
             }
 
-            // Deduplicate by base coreId (format: floorId-c-originalId → we use the original id)
-            // Since we may have one logical core per floor, render one representative per unique geometry
             const seenGeoKeys = new Set<string>();
             const features: Feature[] = [];
             building.cores.forEach((core: Core) => {
-              // Use a geometry fingerprint to deduplicate identical footprints
               const geoKey = JSON.stringify(core.geometry.geometry.coordinates);
               if (seenGeoKeys.has(geoKey)) return;
               seenGeoKeys.add(geoKey);
@@ -2086,7 +2294,6 @@ export function MapEditor({
                 properties: {
                   ...core.geometry.properties,
                   height: visualBuildingTop,
-                  // Tower cores extend to ground level so the shaft visually passes through the podium
                   base_height: building.id.endsWith('-tower') ? 0 : effectiveBase,
                   coreId: core.id
                 }
@@ -2095,7 +2302,16 @@ export function MapEditor({
 
             const coreGeoData = { type: 'FeatureCollection', features } as FeatureCollection;
             const usePattern = !(uiState.ghostMode || building.internalsVisible === true);
-            const patternName = 'texture-Institutional';
+            let patternName = 'texture-Institutional';
+
+            if (usePattern) {
+              const opacityStr = coreOpacity.toFixed(1);
+              patternName = `texture-Institutional-${opacityStr}`;
+              if (!mapInstance.hasImage(patternName)) {
+                const img = generateBuildingTexture('Institutional', '#9370DB', coreOpacity);
+                if (img) mapInstance.addImage(patternName, img, { pixelRatio: 2 });
+              }
+            }
 
             let cSource = mapInstance.getSource(layerId) as GeoJSONSource;
             if (cSource) cSource.setData(coreGeoData as any);
@@ -2103,7 +2319,7 @@ export function MapEditor({
 
             if (!mapInstance.getLayer(layerId)) {
               const paintProps: any = {
-                'fill-extrusion-color': '#9370DB',
+                'fill-extrusion-color': usePattern ? '#ffffff' : '#9370DB',
                 'fill-extrusion-height': ['get', 'height'],
                 'fill-extrusion-base': ['get', 'base_height'],
                 'fill-extrusion-opacity': coreOpacity
@@ -2122,7 +2338,6 @@ export function MapEditor({
             }
           }
 
-          // Units Layer (Unified) – per-floor instances
           if (building.units && floorsToRender) {
             const layerId = `units-${building.id}`;
             renderedIds.add(layerId);
@@ -2142,13 +2357,12 @@ export function MapEditor({
               }
             }
 
-            const SLAB_GAP = 0.35; // metres left unoccupied at top of each floor (visible slab line)
+            const SLAB_GAP = 0.35;
             const features: Feature[] = [];
             building.units.forEach((unit: Unit) => {
               const fBounds = floorDict[unit.floorId || ''];
               if (!fBounds) return;
 
-              // Shorten the unit extrusion slightly to leave a visible slab at each floor boundary
               const unitTop = Math.max(fBounds.baseHeight, fBounds.height - SLAB_GAP);
 
               features.push({
@@ -2188,47 +2402,29 @@ export function MapEditor({
           }
 
           // --- RENDER FLOORS (SHELL) LAST (BACKGROUND/CONTEXT) ---
-          // Revert "Exploded View" - user rejected it.
-          // Render floors upwards from currentBase
-          // If basements are HIDDEN, start from ground (0) to keep building grounded
-          // If basements are VISIBLE, start from ground (0) and stack basements first
-          // NOTE: We do NOT add offsets here because 'floorsToRender' handles the stack order
           let currentBase = building.baseHeight || 0;
           floorsToRender.forEach((floor, fIndex) => {
-            // Determine Color: Grey for Parking/Basement, otherwise Building Intended Use
-            // Robust check for Parking (case-insensitive) just in case
             const typeLower = (floor.type || '').toLowerCase();
             const isBasementOrParking = (floor.level !== undefined && floor.level < 0) || typeLower === 'parking';
 
-            // CRITICAL FIX: Use floor-specific intended use if available (for Mixed Use vertical stacking)
-            // Fallback to building-level intended use if not set on floor
             const floorUse = floor.intendedUse || building.intendedUse;
 
             const builtColor = getBuildingColor(floorUse);
             const intendedColor = isBasementOrParking ? '#555555' : builtColor;
 
-            // --- Slabs & Walls Rendering Strategy ---
-            const slabHeight = 0.3; // 30cm Concrete Slab
-
-            // GEOMETRY REFINEMENT: Inset the wall to create balconies/overhangs
-            // This relieves the "sharp edge" / blocky look by adding depth
+            const slabHeight = 0.3;
             let wallGeometry = building.geometry;
             try {
-              // Inset by 0.5 meters to create a balcony effect
-              const buffered = turf.buffer(building.geometry, -0.0005, { units: 'kilometers' }); // 0.5m inset
+              const buffered = turf.buffer(building.geometry, -0.0005, { units: 'kilometers' });
               if (buffered) wallGeometry = buffered as any;
             } catch (e) {
               console.warn('Failed to buffer wall geometry', e);
             }
 
-            // 1. Render Structural Slab (White Concrete Band) - Uses ORIGINAL Geometry (Outer)
-            // UPDATE: Render Slabs even in Ghost Mode to provide "Skeleton" visual
             const slabLayerId = `building-slab-${floor.id}-${building.id}`;
             renderedIds.add(slabLayerId);
 
             const userOpacity = building.opacity !== undefined ? building.opacity : 1.0;
-
-            // Slab Opacity: Use user setting in Ordinary Mode. In Ghost Mode, set to 0.0.
             const slabOpacity = uiState.ghostMode ? 0.0 : userOpacity;
 
             const slabGeo = {
@@ -2237,7 +2433,7 @@ export function MapEditor({
                 ...building.geometry.properties,
                 height: currentBase + slabHeight,
                 base_height: currentBase,
-                color: '#EEEEEE' // White/Light Grey Concrete
+                color: '#EEEEEE'
               }
             };
 
@@ -2261,46 +2457,40 @@ export function MapEditor({
               mapInstance.setPaintProperty(slabLayerId, 'fill-extrusion-opacity', slabOpacity);
             }
 
-            // 2. Render Wall/Glass (Usage Colored) - Uses INSET Geometry (Inner)
             const floorTop = currentBase + floor.height;
             const floorLayerId = `building-floor-fill-${floor.id}-${building.id}`;
             renderedIds.add(floorLayerId);
 
-            // Ghost Mode Logic - Different opacity for basements vs superstructure
-            // Superstructure (Normal Floors): 0.0 Opacity (Invisible Skin) to show internal Units clearly
-            // Basements: 0.7 Opacity (Visible) - Ensure distinct from 0.0
-
-            // Check if any internal element of THIS building is selected (Granular Ghost Mode)
+            const isBuildingSelected = selectedObjectId && selectedObjectId.id === building.id && selectedObjectId.type === 'Building';
             const isInternalSelected = selectedObjectId && (
               building.internalUtilities?.some(u => u.id === selectedObjectId.id) ||
               building.cores?.some(c => c.id === selectedObjectId.id) ||
               building.units?.some(u => u.id === selectedObjectId.id)
             );
 
-            // NEW OPACITY LOGIC for Floors - "Skeleton Mode"
             let opacity = userOpacity;
             if (building.internalsVisible === true || anyComponentVisible) {
-              // If focused on internals globally OR specifically for this building, make WALLS invisible (0.0)
               opacity = 0.0;
-              // Exception: If showing basements, basement floors stay visible
               if ((componentVisibility.basements || building.internalsVisible === true) && floor.parkingType === 'Basement') {
                 opacity = 0.9;
               }
             } else if (uiState.ghostMode) {
-              // In Ghost Mode
-              if (floor.parkingType === 'Basement') opacity = 0.8; // User requested "add opacity for basement parking"
-              else opacity = 0.0; // INVISIBLE WALLS to fix "Glassy Block"
+              if (floor.parkingType === 'Basement') opacity = 0.8;
+              else opacity = 0.0;
             }
 
-            if (isInternalSelected) opacity = 1.0;
+            if (isInternalSelected || isBuildingSelected) opacity = userOpacity;
+
+            const selectionColor = '#00fbff'; // Bright cyan for selection
+            const finalColor = isBuildingSelected ? selectionColor : (intendedColor || floor.color || '#cccccc');
 
             const floorGeo = {
-              ...wallGeometry, // Use the Inset Geometry here!
+              ...wallGeometry,
               properties: {
                 ...building.geometry.properties,
-                height: floorTop, // Top of floor
-                base_height: currentBase + slabHeight, // Start *above* the slab
-                color: intendedColor || floor.color || '#cccccc'
+                height: floorTop,
+                base_height: currentBase + slabHeight,
+                color: finalColor
               }
             };
 
@@ -2309,19 +2499,28 @@ export function MapEditor({
             else mapInstance.addSource(floorLayerId, { type: 'geojson', data: floorGeo });
 
             if (!mapInstance.getLayer(floorLayerId)) {
-              // Determine if we should use a pattern
               const usePattern = !uiState.ghostMode && !isBasementOrParking;
-              // Use floor-specific texture if available (e.g. texture-Residential, texture-Commercial)
-              const patternName = `texture-${floorUse}`;
+              let patternName = `texture-${floorUse}`;
+
+              if (usePattern) {
+                // Generate texture with specific opacity on demand
+                const opacityStr = opacity.toFixed(1);
+                patternName = `texture-${floorUse}-${opacityStr}`;
+                if (!mapInstance.hasImage(patternName)) {
+                  const color = getBuildingColor(floorUse as any);
+                  const img = generateBuildingTexture(floorUse as any, color, opacity);
+                  if (img) mapInstance.addImage(patternName, img, { pixelRatio: 2 });
+                }
+              }
 
               const paintProps: any = {
-                'fill-extrusion-color': usePattern ? '#ffffff' : ['get', 'color'],
+                'fill-extrusion-color': isBuildingSelected ? selectionColor : (usePattern ? '#ffffff' : ['get', 'color']),
                 'fill-extrusion-height': ['get', 'height'],
                 'fill-extrusion-base': ['get', 'base_height'],
                 'fill-extrusion-opacity': opacity
               };
 
-              // Only add pattern if we intend to use it, to avoid "null/undefined" crash
+              
               if (usePattern) {
                 paintProps['fill-extrusion-pattern'] = patternName;
               }
@@ -2330,21 +2529,36 @@ export function MapEditor({
                 id: floorLayerId,
                 type: 'fill-extrusion',
                 source: floorLayerId,
-                paint: paintProps
+                paint: paintProps,
+                metadata: {
+                  id: building.id,
+                  type: 'Building'
+                }
               }, LABELS_LAYER_ID);
             } else {
               const usePattern = !uiState.ghostMode && !isBasementOrParking;
-              const patternName = `texture-${floorUse}`;
+              let patternName = `texture-${floorUse}`;
+
+              if (usePattern) {
+                // Generate texture with specific opacity on demand
+                const opacityStr = opacity.toFixed(1);
+                patternName = `texture-${floorUse}-${opacityStr}`;
+                if (!mapInstance.hasImage(patternName)) {
+                  const color = getBuildingColor(floorUse as any);
+                  const img = generateBuildingTexture(floorUse as any, color, opacity);
+                  if (img) mapInstance.addImage(patternName, img, { pixelRatio: 2 });
+                }
+              }
 
               mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-opacity', opacity);
               // Update Pattern & Color
               if (usePattern) {
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', patternName);
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', '#ffffff');
+                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', isBuildingSelected ? selectionColor : '#ffffff');
               } else {
                 // Use undefined to unset property in strict Mapbox TS/JS
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', undefined); // Clear pattern
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', ['get', 'color']);
+                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', isBuildingSelected ? selectionColor : ['get', 'color']);
               }
             }
 
@@ -2404,18 +2618,16 @@ export function MapEditor({
       labelsSource.setData(labelCollection);
     }
 
-    // Consolidate footprints
     const allBuildingFootprints: Feature<Polygon>[] = [];
 
     plotsRendering.forEach(plot => {
       const plotId = plot.id;
-      // Debug Rendering
       if (plotsRendering.length > 0 && plot === plotsRendering[0]) {
         console.log(`[MapEditor] Rendering Plot ${plotId}`, {
           geometryType: plot.geometry?.type,
           hasCoordinates: !!(plot.geometry as any)?.coordinates,
           isSelected: plotId === selectedObjectId?.id,
-          entriesCount: plot.entries?.length || 0 // Added entries debug
+          entriesCount: plot.entries?.length || 0
         });
       }
 
@@ -2450,7 +2662,6 @@ export function MapEditor({
       let geometryToRender = plot.geometry;
       let geometryType = geometryToRender?.type;
 
-      // Normalize Feature to Geometry
       if (geometryType === 'Feature' && (geometryToRender as any).geometry) {
         console.log(`[MapEditor] Normalizing Feature to Geometry for Plot ${plotId}`);
         geometryToRender = (geometryToRender as any).geometry;
@@ -2462,7 +2673,6 @@ export function MapEditor({
       let setbackPolygon = null;
       try {
         if (((geometryType as string) === 'Polygon' || (geometryType as string) === 'MultiPolygon') && plot.setback > 0) {
-          // turf.buffer works with Features too, but passing raw geometry is safer contextually
           setbackPolygon = turf.buffer(plot.geometry as any, -plot.setback, { units: 'meters' });
         }
       } catch (e) {
@@ -2472,13 +2682,12 @@ export function MapEditor({
 
       let sourceBase = mapInstance.getSource(plotBaseSourceId) as GeoJSONSource;
 
-      // Strict Validation on the Normalized Geometry
       let validNormalizedGeometry = geometryToRender;
       if (!validNormalizedGeometry || typeof validNormalizedGeometry !== 'object' || !validNormalizedGeometry.type || !(validNormalizedGeometry as any).coordinates) {
-        console.warn(`[MapEditor] âŒ Invalid Geometry Object for Plot ${plotId}`, validNormalizedGeometry);
+        console.warn(`[MapEditor] âŒ Invalid Geometry Object for Plot ${plotId}`, validNormalizedGeometry);
       }
 
-      const dataToRender = validNormalizedGeometry || plot.geometry; // Fallback to raw if normalization fails but maybe it's still renderable?
+      const dataToRender = validNormalizedGeometry || plot.geometry;
 
 
       if (sourceBase) {
@@ -2488,7 +2697,7 @@ export function MapEditor({
       }
 
       if (!mapInstance.getLayer(plotBaseLayerId)) {
-        if (dataToRender) { // Only add layer if source valid
+        if (dataToRender) {
           mapInstance.addLayer({
             id: plotBaseLayerId,
             type: 'fill',
@@ -2503,19 +2712,18 @@ export function MapEditor({
               'fill-opacity': [
                 'case',
                 ['==', plotId, selectedObjectId?.id || ''],
-                uiState.ghostMode ? 0.2 : 0.6, // Low opacity in Ghost Mode
+                uiState.ghostMode ? 0.2 : 0.6,
                 uiState.ghostMode ? 0.05 : 0.1
               ]
             }
           }, LABELS_LAYER_ID);
         }
       } else {
-        // Update selection highlight if layer exists
-        mapInstance.setPaintProperty(plotBaseLayerId, 'fill-color', '#4a5568'); // Always use base color, no green highlight
+        mapInstance.setPaintProperty(plotBaseLayerId, 'fill-color', '#4a5568');
         mapInstance.setPaintProperty(plotBaseLayerId, 'fill-opacity', [
           'case',
           ['==', plotId, selectedObjectId?.id || ''],
-          0.1, // Keep opacity low even when selected
+          0.1,
           0.1
         ]);
       }
@@ -2584,7 +2792,7 @@ export function MapEditor({
             'text-field': ['get', 'label'],
             'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
             'text-size': 12,
-            'text-offset': [0, 0], // Center
+            'text-offset': [0, 0],
             'text-anchor': 'center'
           },
           paint: {
@@ -2596,7 +2804,6 @@ export function MapEditor({
       }
 
       plot.buildings.forEach(building => {
-        // Accumulate footprints for single-layer rendering
         // @ts-ignore
         const feat = turf.feature(building.geometry.geometry, {
           id: building.id,
@@ -2619,9 +2826,6 @@ export function MapEditor({
 
         renderedIds.add(gateSourceId);
         renderedIds.add(gateCircleLayerId);
-        // renderedIds.add(gateLabelLayerId);
-
-        // Create GeoJSON feature collection from gates
         const gateFeatures = plot.entries.map(entry => ({
           type: 'Feature' as const,
           geometry: {
@@ -2641,7 +2845,6 @@ export function MapEditor({
           features: gateFeatures
         };
 
-        // Add or update source
         let gateSource = mapInstance.getSource(gateSourceId) as GeoJSONSource;
         if (gateSource) {
           gateSource.setData(gateCollection as any);
@@ -2652,7 +2855,6 @@ export function MapEditor({
           });
         }
 
-        // Add circle layer for gate markers
         if (!mapInstance.getLayer(gateCircleLayerId)) {
           mapInstance.addLayer({
             id: gateCircleLayerId,
@@ -2709,8 +2911,8 @@ export function MapEditor({
         id: allBuildingsLayerId,
         type: 'fill',
         source: allBuildingsSourceId,
-        paint: { 'fill-color': '#000', 'fill-opacity': 0 } // Invisible, hits only
-      }, LABELS_LAYER_ID); // Ensure it is below labels
+        paint: { 'fill-color': '#000', 'fill-opacity': 0 }
+      }, LABELS_LAYER_ID);
 
       mapInstance.on('mousemove', allBuildingsLayerId, (e) => {
         if (e.features && e.features.length > 0) {
@@ -2763,8 +2965,6 @@ export function MapEditor({
     });
 
     const onMouseMove = (e: mapboxgl.MapMouseEvent) => {
-      // Query specific interactive layers
-      // We check for: Buildings (hit layer), Utilities (prefix), Roads
       const { componentVisibility: cv, uiState: us, plots } = getStoreState();
       const internalsVisible = cv.units || cv.cores || cv.electrical || cv.hvac || us.ghostMode;
 
@@ -2774,7 +2974,6 @@ export function MapEditor({
         
         const isInternal = lid.startsWith('cores-') || lid.startsWith('units-') || lid.startsWith('util-');
         if (isInternal) {
-            // Check actual painted opacity to perfectly match what's visible
             const opacity = m.getPaintProperty(lid, 'fill-extrusion-opacity');
             if (opacity === 0) return false;
         }
@@ -2898,6 +3097,7 @@ export function MapEditor({
         }}
       />
       <div ref={mapContainer} className="w-full h-full" />
+      {children}
 
       {/* Terrain Toggle Button */}
       <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-1 flex items-center gap-1">
@@ -2906,14 +3106,12 @@ export function MapEditor({
             const newStatus = !isTerrainEnabled;
             setIsTerrainEnabled(newStatus);
             if (map.current) {
-              // Toggle Terrain: use null to fully deactivate (exaggeration:0 still activates
-              // the terrain pipeline and distorts fill-extrusion geometry)
               if (newStatus) {
                 map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.0 });
               } else {
                 (map.current as any).setTerrain(null);
               }
-              // Trigger repaint to update building elevations
+
               if (window.tb) window.tb.repaint();
             }
           }}

@@ -48,14 +48,10 @@ export const extractGreenLogic = ai.defineFlow(
         outputSchema: ExtractedGreenRegulationSchema,
     },
     async (input) => {
-        // For large documents, try to find the most relevant sections
         let relevantText = input.documentText;
 
-        // If document is very large, try to extract relevant sections
         if (input.documentText.length > 50000) {
             console.log('[ExtractGreenLogic] Large document detected, searching for relevant sections...');
-
-            // Expanded keywords for all major certification categories
             const keywords = [
                 // Site & General
                 'site planning', 'site selection', 'open space', 'ground coverage', 'green cover', 'landscape',
@@ -73,8 +69,6 @@ export const extractGreenLogic = ai.defineFlow(
                 'mandatory requirement', 'credit', 'prerequisite', 'points', 'intent'
             ];
 
-            // Split into chunks and find the most relevant ones. 
-            // INCREASED chunk size and count to capture more context for full certification
             const chunkSize = 8000;
             const chunks: { text: string; score: number; index: number }[] = [];
 
@@ -82,7 +76,6 @@ export const extractGreenLogic = ai.defineFlow(
                 const chunk = input.documentText.substring(i, i + chunkSize);
                 let score = 0;
 
-                // Score based on keyword matches
                 keywords.forEach(keyword => {
                     const matches = chunk.toLowerCase().match(new RegExp(keyword, 'g'));
                     if (matches) score += matches.length;
@@ -93,11 +86,9 @@ export const extractGreenLogic = ai.defineFlow(
                 }
             }
 
-            // Sort by score and take top chunks. INCREASED to top 18 to cover comprehensive document
             chunks.sort((a, b) => b.score - a.score);
             const topChunks = chunks.slice(0, 18);
 
-            // Sort by original position to maintain context
             topChunks.sort((a, b) => a.index - b.index);
 
             relevantText = topChunks.map(c => c.text).join('\n\n[...]\n\n');

@@ -42,11 +42,9 @@ export function NationalCodePanel() {
         setIsLoading(true);
         setError(null);
         try {
-            // 1. Fetch RAG documents via API
             const docResponse = await fetch('/api/index-national-code');
             const docData = await docResponse.json();
 
-            // 2. Fetch Baseline entries directly from Firestore
             const regsRef = collection(db, 'regulations');
             const q = query(regsRef, where('location', '==', 'National (NBC)'));
             const querySnapshot = await getDocs(q);
