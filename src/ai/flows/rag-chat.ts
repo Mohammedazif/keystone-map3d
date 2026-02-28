@@ -43,8 +43,14 @@ export const ragChat = ai.defineFlow(
 
         ${input.isGeneralMode ? "**MODE: GENERAL KNOWLEDGE (Using National/General standards, ignoring specific project location)**" : "**MODE: SPECIFIC PROJECT (Focusing on selected location)**"}
 
-        Building Context (if selected):
-        ${input.buildingContext ? JSON.stringify(JSON.parse(input.buildingContext).selectedBuilding, null, 2) : 'No building selected.'}
+        Context (if selected):
+        ${input.buildingContext ? (
+            JSON.parse(input.buildingContext).selectedBuilding 
+                ? 'Selected Building:\n' + JSON.stringify(JSON.parse(input.buildingContext).selectedBuilding, null, 2) 
+                : (JSON.parse(input.buildingContext).selectedPlot 
+                    ? 'Selected Plot:\n' + JSON.stringify(JSON.parse(input.buildingContext).selectedPlot, null, 2) 
+                    : 'No Object Selected.')
+        ) : 'No context provided.'}
 
         Current Project Location:
         ${input.isGeneralMode ? "GENERAL / NATIONAL (User requested general knowledge, e.g. NBC)" : (input.buildingContext ? JSON.parse(input.buildingContext).location : 'Unknown')}

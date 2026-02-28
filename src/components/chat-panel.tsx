@@ -4,12 +4,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Bot, Send, X, Loader2, Globe, MapPin } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { useSelectedBuilding, useBuildingStore } from '@/hooks/use-building-store';
+import { useSelectedBuilding, useSelectedPlot, useBuildingStore } from '@/hooks/use-building-store';
 import type { Message } from '@/lib/types';
 import { ScrollArea } from './ui/scroll-area';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { cn } from '@/lib/utils';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from './ui/card';
+import ReactMarkdown from 'react-markdown';
 
 export function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -17,6 +18,7 @@ export function ChatPanel() {
   const [isLoading, setIsLoading] = useState(false);
   const [isGeneralMode, setIsGeneralMode] = useState(false);
   const selectedBuilding = useSelectedBuilding();
+  const selectedPlot = useSelectedPlot();
   const mapLocation = useBuildingStore(state => state.mapLocation);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -28,24 +30,13 @@ export function ChatPanel() {
 
   useEffect(() => {
     if (messages.length === 0) {
-      setMessages([{ id: 'initial', role: 'assistant', content: 'Hello! Select a building and ask me about its feasibility.' }])
+      setMessages([{ id: 'initial', role: 'assistant', content: 'Hello! Select a building or plot and ask me about its feasibility.' }])
     }
   }, [messages.length])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
-
-    // Allow chatting even without selected building if just asking about location/regulations
-    // if (!selectedBuilding) {
-    //   const systemMessage: Message = {
-    //     id: Date.now().toString(),
-    //     role: 'system',
-    //     content: 'Please select a building before using the chat.',
-    //   };
-    //   setMessages(prev => [...prev, systemMessage]);
-    //   return;
-    // }
 
     const userMessage: Message = { id: Date.now().toString(), role: 'user', content: input };
     setMessages(prev => [...prev, userMessage]);
@@ -65,6 +56,43 @@ export function ChatPanel() {
               ...selectedBuilding,
               geometry: 'omitted',
               centroid: 'omitted'
+            } : null,
+            selectedPlot: selectedPlot ? {
+              ...selectedPlot,
+              geometry: 'omitted',
+              centroid: 'omitted',
+              buildings: selectedPlot.buildings.map(b => ({
+                id: b.id,
+                name: b.name,
+                type: b.intendedUse,
+                footprintArea: b.area,
+                height: b.height,
+                floors: b.numFloors,
+                totalFloors: b.totalFloors,
+                unitsCount: b.units?.length || 0,
+                coresCount: b.cores?.length || 0,
+                basementsCount: b.floors.filter(f => (f.level || 0) < 0).length,
+                basementParkingCapacity: b.floors.filter(f => f.type === 'Parking').reduce((sum, f) => sum + (f.parkingCapacity || 0), 0),
+                internalUtilities: b.internalUtilities?.map(u => ({
+                  type: u.type,
+                  area: u.area
+                })) || []
+              })),
+              siteUtilities: selectedPlot.utilityAreas.map(u => ({
+                name: u.name,
+                type: u.type,
+                area: u.area
+              })),
+              parkingAreas: selectedPlot.parkingAreas.map(p => ({
+                id: p.id,
+                name: p.name,
+                area: p.area,
+                capacity: p.capacity
+              })),
+              greenAreas: selectedPlot.greenAreas.map(g => ({
+                id: g.id,
+                area: g.area
+              }))
             } : null
           }
         }),
@@ -90,7 +118,13 @@ export function ChatPanel() {
     }
   };
 
-  const isChatDisabled = isLoading || (!selectedBuilding && !isGeneralMode);
+  const hasSelection = !!selectedBuilding || !!selectedPlot;
+  const isChatDisabled = isLoading || (!hasSelection && !isGeneralMode);
+
+  let placeholderText = "Select a building or plot...";
+  if (isGeneralMode) placeholderText = "Ask general regulation questions...";
+  else if (selectedBuilding) placeholderText = `Ask about '${selectedBuilding.name}'...`;
+  else if (selectedPlot) placeholderText = `Ask about ${selectedPlot.name || `Plot ${selectedPlot.id.substring(0, 4)}`}...`;
 
   return (
     <Card className="h-full flex flex-col bg-background/80 backdrop-blur-sm border-0 rounded-none">
@@ -133,14 +167,30 @@ export function ChatPanel() {
                 )}
                 <div
                   className={cn(
-                    'rounded-lg px-4 py-3 max-w-sm whitespace-pre-wrap text-sm',
+                    'rounded-lg px-4 py-3 max-w-sm text-sm',
                     message.role === 'user'
-                      ? 'bg-primary text-primary-foreground'
+                      ? 'bg-primary text-primary-foreground whitespace-pre-wrap'
                       : 'bg-secondary',
                     message.role === 'system' && 'bg-destructive/20 text-destructive-foreground'
                   )}
                 >
-                  {message.content}
+                  {message.role === 'user' ? (
+                    message.content
+                  ) : (
+                    <div className="prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:p-0">
+                      <ReactMarkdown
+                        components={{
+                          p: ({ node: _, ...props }) => <p className="mb-2 last:mb-0" {...props} />,
+                          ul: ({ node: _, ...props }) => <ul className="list-disc pl-4 mb-2 space-y-1" {...props} />,
+                          li: ({ node: _, ...props }) => <li className="pl-1" {...props} />,
+                          strong: ({ node: _, ...props }) => <strong className="font-semibold text-foreground" {...props} />,
+                          h3: ({ node: _, ...props }) => <h3 className="text-sm font-bold mt-3 mb-1 text-foreground" {...props} />,
+                        }}
+                      >
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
                 </div>
                 {message.role === 'user' && (
                   <Avatar className="h-8 w-8">
@@ -166,7 +216,7 @@ export function ChatPanel() {
       <CardFooter className="p-4 border-t bg-background/80 border-border">
         <form onSubmit={handleSubmit} className="relative w-full">
           <Textarea
-            placeholder={isGeneralMode ? "Ask general regulation questions..." : (selectedBuilding ? `Ask about '${selectedBuilding.name}'...` : "Select a building or ask about location...")}
+            placeholder={placeholderText}
             className="pr-16 resize-none bg-secondary/80 border-border focus:ring-primary"
             value={input}
             onChange={(e) => setInput(e.target.value)}
