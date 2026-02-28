@@ -2,8 +2,6 @@ import * as turf from '@turf/turf';
 import { generateBuildingLayout } from './layout-generator';
 import { Feature, Polygon, MultiPolygon, Point, LineString } from 'geojson';
 import { UnitTypology } from '../types';
-import { applyVariableSetbacks } from './setback-utils';
-import { AlgoParams } from './basic-generator';
 
 export interface GeometricTypologyParams {
     wingDepth?: number;
@@ -1545,11 +1543,9 @@ export function generatePointShapes(
     if (strategy === 2) targetSide = maxBuildingWidth;
 
     // 1. Valid Area
-    // @ts-ignore
-    const bufferedPlot = turf.buffer(plotGeometry, -setback, { units: 'meters' });
-    if (!bufferedPlot) return [];
-    // @ts-ignore
-    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    // NOTE: The plotGeometry chunk passed in already has setbacks applied from validAreaPoly.
+    // We do NOT apply setbacks again here to avoid double-shrinking the available area.
+    const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
     const simplified = turf.simplify(validArea, { tolerance: 0.000001, highQuality: true });
 
@@ -1559,7 +1555,10 @@ export function generatePointShapes(
 
     const candidates: { feature: Feature<Polygon>, score: number, variantId?: string }[] = [];
     const usedAreas: Feature<Polygon>[] = [...(obstacles || [])];
-    const spacing = 15; // Minimum spacing between towers
+    const spacing = params.sideSetback ?? 6; // Use regulation sideSetback as tower gap
+    
+    // Minimum corner distance constraint to avoid clumping (towers need breathing room at corners)
+    const cornerMargin = Math.max(spacing, 6);
 
     // --- PHASE 1: Corners ---
     for (let i = 0; i < coords.length - 1; i++) {
@@ -1627,8 +1626,8 @@ export function generatePointShapes(
             const edgeLength = turf.distance(p1, p2, { units: 'meters' });
             const bearing = turf.bearing(p1, p2);
 
-            let currentDist = maxBuildingWidth + spacing; // Start buffer
-            const endDist = edgeLength - (maxBuildingWidth + spacing);
+            let currentDist = minBuildingWidth + spacing / 2; // Start closer to corners
+            const endDist = edgeLength - (minBuildingWidth + spacing / 2);
 
             while (currentDist + minBuildingWidth <= endDist) {
                 try {
@@ -1652,7 +1651,7 @@ export function generatePointShapes(
                         const poly = turf.polygon([[v1, v2, v3, v4, v1]]);
                         // @ts-ignore
                         const intersect = turf.intersect(poly, validArea);
-                        if (intersect && turf.area(intersect) >= compSide * compSide * 0.95 && !checkCollision(poly, usedAreas)) {
+                        if (intersect && turf.area(intersect) >= compSide * compSide * 0.85 && !checkCollision(poly, usedAreas)) {
                             validPoly = poly;
                             winningSide = compSide;
                             winningRawSide = rawSide;
@@ -1676,10 +1675,10 @@ export function generatePointShapes(
                         usedAreas.push(validPoly);
                         currentDist += winningRawSide + spacing;
                     } else {
-                        currentDist += spacing;
+                        currentDist += minBuildingWidth / 2; // Smaller step on failure to find more spots
                     }
                 } catch (e) {
-                    currentDist += spacing;
+                    currentDist += minBuildingWidth / 2;
                 }
             }
         } catch (e) { }
@@ -1691,5 +1690,581 @@ export function generatePointShapes(
 
     const towerFeatures = candidates.map(c => c.feature);
     return applyCornerClearance(towerFeatures, 3);
+}
+
+
+/**
+ * Large-Footprint Generator for Commercial / Public / Industrial
+ * Creates 1–4 large rectangular buildings sized by site utilization.
+ *
+ * Strategy: Create rectangular buildings using coordinate math, place them
+ * within the plot, then clip to the plot boundary. No turf.buffer is used.
+ *
+ *   1 building  → Single rectangle centered in plot
+ *   2 buildings → Two rectangles side by side along longer axis
+ *   3 buildings → Three rectangles in a row along longer axis
+ *   4 buildings → 2×2 grid of rectangles
+ */
+export function generateLargeFootprint(
+    plotGeometry: Feature<Polygon | MultiPolygon>,
+    params: GeometricTypologyParams & { buildingCount?: number; mainSetback?: number }
+): Feature<Polygon>[] {
+    const {
+        obstacles,
+        sideSetback = 6,
+        frontSetback = 6,
+        rearSetback = 6,
+        roadAccessSides = [],
+        maxFootprint,
+        seed = 0
+    } = params;
+
+    const buildingCount = Math.max(1, Math.min(4, params.buildingCount ?? 2));
+
+    // Get workable polygon
+    let workArea: Feature<Polygon>;
+    if (plotGeometry.geometry.type === 'MultiPolygon') {
+        const largest = ensurePolygonFeature(plotGeometry);
+        if (!largest) {
+            console.warn('[LargeFootprint] Could not extract Polygon');
+            return [];
+        }
+        workArea = largest;
+    } else {
+        workArea = plotGeometry as Feature<Polygon>;
+    }
+
+    // NOTE: The plotGeometry chunk passed in already has UNIFORM mainSetback applied from validAreaPoly.
+    // We do NOT re-apply that uniform setback. BUT we DO need to apply EXTRA directional setbacks
+    // for front/rear/side if they differ from mainSetback.
+    // E.g., if mainSetback=6m and frontSetback=12m, the chunk is 6m inset on all sides,
+    // so we need 6m MORE on the front (road-facing) side.
+    const alreadyApplied = (params as any).mainSetback ?? 0;
+    const extraFront = Math.max(0, frontSetback - alreadyApplied);
+    const extraRear = Math.max(0, rearSetback - alreadyApplied);
+    const extraSide = Math.max(0, sideSetback - alreadyApplied);
+
+    console.log(`[LargeFootprint] Processing Directional Setbacks (Targeting: Front ${frontSetback}m, Rear ${rearSetback}m, Sides ${sideSetback}m)`);
+
+    // Apply extra side setback uniformly if needed
+    if (extraSide > 0) {
+        // @ts-ignore
+        const buffered = turf.buffer(workArea, -extraSide / 1000, { units: 'kilometers' });
+        if (buffered) {
+            const poly = ensurePolygonFeature(buffered);
+            if (poly) {
+                workArea = poly;
+                console.log(`[LargeFootprint] Applied extra side setback: ${extraSide}m`);
+            }
+        }
+    }
+
+    // Apply extra front/rear setback via bbox clipping (direction-aware)
+    if ((extraFront > 0 || extraRear > 0) && roadAccessSides.length > 0) {
+        const wBbox = turf.bbox(workArea);
+        const [wMinX, wMinY, wMaxX, wMaxY] = wBbox;
+
+        // Identify front (road-facing) and rear (opposite) sides
+        const frontSides = new Set(roadAccessSides.map((s: string) => s.charAt(0).toUpperCase()));
+        const rearSidesSet = new Set<string>();
+        frontSides.forEach(s => {
+            if (s === 'N') rearSidesSet.add('S');
+            if (s === 'S') rearSidesSet.add('N');
+            if (s === 'E') rearSidesSet.add('W');
+            if (s === 'W') rearSidesSet.add('E');
+        });
+        // If a side is both front and rear (corner plot), front wins
+        frontSides.forEach(s => rearSidesSet.delete(s));
+
+        // Cut helper: translate the polygon away from the edge, then intersect!
+        // This is a mathematically elegant way to offset specific edges even on angled plots.
+        const cutEdge = (edge: string, distance: number) => {
+            if (distance <= 0) return;
+            
+            // Determine direction to shift AWAY from the edge
+            let bearing = 0;
+            switch (edge) {
+                case 'N': bearing = 180; break; // Shift South
+                case 'S': bearing = 0; break;   // Shift North
+                case 'E': bearing = 270; break; // Shift West
+                case 'W': bearing = 90; break;  // Shift East
+            }
+
+            try {
+                // @ts-ignore
+                const shifted = turf.transformTranslate(workArea, distance, bearing, { units: 'meters' });
+                // @ts-ignore
+                const result = turf.intersect(workArea, shifted);
+                
+                if (result) {
+                    const poly = ensurePolygonFeature(result);
+                    if (poly) {
+                        workArea = poly;
+                        console.log(`[LargeFootprint] Set back ${edge} edge by ${distance}m (Total from boundary: ${(alreadyApplied + distance).toFixed(1)}m)`);
+                    }
+                }
+            } catch (e) {
+                console.warn(`[LargeFootprint] Failed to cut ${edge} edge via translate:`, e);
+            }
+        };
+
+        // Apply front setback cuts (road-facing sides)
+        frontSides.forEach(s => cutEdge(s, extraFront));
+        // Apply rear setback cuts (opposite to road)
+        rearSidesSet.forEach(s => cutEdge(s, extraRear));
+
+        console.log(`[LargeFootprint] After directional setbacks, area=${turf.area(workArea).toFixed(0)}m²`);
+    }
+
+    const plotArea = turf.area(workArea);
+    const bbox = turf.bbox(workArea);
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+
+    // Meter ↔ degree conversion factors for this location
+    const widthM = turf.distance([minLng, minLat], [maxLng, minLat], { units: 'meters' });
+    const heightM = turf.distance([minLng, minLat], [minLng, maxLat], { units: 'meters' });
+
+    if (widthM < 10 || heightM < 10) {
+        console.warn('[LargeFootprint] Plot too narrow');
+        return [];
+    }
+
+    const degPerMLng = (maxLng - minLng) / widthM;
+    const degPerMLat = (maxLat - minLat) / heightM;
+
+    // Centroid of workArea
+    const centroid = turf.centroid(workArea);
+    const [cLng, cLat] = centroid.geometry.coordinates;
+
+    // --- Continuous seed-based variation (unlimited scenarios) ---
+    const sr = (offset: number) => {
+        const x = Math.sin((seed + offset) * 9.8765) * 10000;
+        return x - Math.floor(x); // 0..1
+    };
+
+    // Determine layout direction using seed for continuous variation
+    const baseSplitAlongWidth = widthM >= heightM;
+    const aspectRatio = Math.max(widthM, heightM) / Math.min(widthM, heightM);
+    
+    // Use seed to decide: flip axis? (probability-based for continuous variation)
+    let splitAlongWidth = baseSplitAlongWidth;
+    if (aspectRatio < 2.5 && sr(1) > 0.5) {
+        splitAlongWidth = !baseSplitAlongWidth; // 50% chance to flip if aspect allows
+    }
+
+    // Gap multiplier: continuous range 1x to 3x based on seed
+    const gapMultiplier = 1 + sr(2) * 2; // 1.0 to 3.0 continuous
+
+    // Inter-building gap
+    const gapXM = Math.max(sideSetback * gapMultiplier, 3 * gapMultiplier);
+    const gapYM = Math.max(sideSetback * gapMultiplier, 3 * gapMultiplier);
+    
+    // We need both because for 4 buildings, it splits both ways
+    const gapLng = widthM > 0 ? (maxLng - minLng) * (gapXM / widthM) : 0;
+    const gapLat = heightM > 0 ? (maxLat - minLat) * (gapYM / heightM) : 0;
+
+    console.log(`[LargeFootprint] START: count=${buildingCount}, seed=${seed}, splitAlong=${splitAlongWidth ? 'width' : 'height'}, gapM=${gapMultiplier.toFixed(2)}`);
+    console.log(`[LargeFootprint] Bbox: ${widthM.toFixed(0)}×${heightM.toFixed(0)}m, gapX=${gapXM.toFixed(1)}m, gapY=${gapYM.toFixed(1)}m`);
+
+    const createFallbackRect = (cx: number, cy: number, wM: number, hM: number): Feature<Polygon> => {
+        const halfW = (wM / 2) * degPerMLng;
+        const halfH = (hM / 2) * degPerMLat;
+        return turf.polygon([[
+            [cx - halfW, cy - halfH],
+            [cx + halfW, cy - halfH],
+            [cx + halfW, cy + halfH],
+            [cx - halfW, cy + halfH],
+            [cx - halfW, cy - halfH],
+        ]]);
+    };
+
+    const slicePolygonToArea = (poly: Feature<Polygon>, targetArea: number, direction: 'N' | 'S' | 'E' | 'W'): Feature<Polygon> => {
+        const totalA = turf.area(poly);
+        if (targetArea >= totalA * 0.99) return poly;
+        
+        const b = turf.bbox(poly);
+        const huge = 1000;
+        let low = (direction === 'N' || direction === 'S') ? b[1] : b[0];
+        let high = (direction === 'N' || direction === 'S') ? b[3] : b[2];
+        
+        let bestPoly = poly;
+        
+        for (let i = 0; i < 25; i++) {
+            const current = (low + high) / 2;
+            let cutter: Feature<Polygon>;
+            if (direction === 'N') cutter = turf.bboxPolygon([b[0] - huge, current, b[2] + huge, b[3] + huge]);
+            else if (direction === 'S') cutter = turf.bboxPolygon([b[0] - huge, b[1] - huge, b[2] + huge, current]);
+            else if (direction === 'E') cutter = turf.bboxPolygon([current, b[1] - huge, b[2] + huge, b[3] + huge]);
+            else cutter = turf.bboxPolygon([b[0] - huge, b[1] - huge, current, b[3] + huge]);
+            
+            try {
+                // @ts-ignore
+                const intersected = turf.intersect(poly, cutter);
+                if (!intersected) {
+                    if (direction === 'N' || direction === 'E') high = current; else low = current;
+                    continue;
+                }
+                
+                let resPoly: Feature<Polygon> | null = null;
+                if (intersected.geometry.type === 'Polygon') resPoly = intersected as Feature<Polygon>;
+                else if (intersected.geometry.type === 'MultiPolygon') {
+                    // @ts-ignore
+                    const parts = turf.flatten(intersected);
+                    resPoly = parts.features.sort((x: any, y: any) => turf.area(y) - turf.area(x))[0];
+                }
+                if (!resPoly) continue;
+                
+                const area = turf.area(resPoly);
+                bestPoly = resPoly;
+                
+                if (Math.abs(area - targetArea) < targetArea * 0.02) break;
+                
+                if (direction === 'N' || direction === 'E') {
+                    if (area > targetArea) low = current; else high = current;
+                } else {
+                    if (area > targetArea) high = current; else low = current;
+                }
+            } catch (e) {
+                break;
+            }
+        }
+        bestPoly.properties = { ...bestPoly.properties, skipScale: true };
+        return bestPoly;
+    };
+
+    // Helper: clip workArea by a bbox and return all valid Polygon pieces
+    const clipShapeToBbox = (clipBbox: [number, number, number, number], label: string): Feature<Polygon>[] => {
+        const results: Feature<Polygon>[] = [];
+        try {
+            const clipPoly = turf.bboxPolygon(clipBbox);
+            // @ts-ignore
+            const clipped = turf.intersect(workArea, clipPoly);
+            if (clipped) {
+                if (clipped.geometry.type === 'Polygon') {
+                    results.push(clipped as Feature<Polygon>);
+                } else if (clipped.geometry.type === 'MultiPolygon') {
+                    // @ts-ignore
+                    const parts = turf.flatten(clipped);
+                    let maxArea = 0;
+                    let bestPart: Feature<Polygon> | null = null;
+                    parts.features.forEach((f: Feature<Polygon>) => {
+                        const a = turf.area(f);
+                        if (a > maxArea && a > 10) {
+                            maxArea = a;
+                            bestPart = f;
+                        }
+                    });
+                    if (bestPart) results.push(bestPart);
+                }
+                console.log(`[LargeFootprint] ${label}: ${results.length} pieces, total area=${results.reduce((s, f) => s + turf.area(f), 0).toFixed(0)}m²`);
+            } else {
+                console.warn(`[LargeFootprint] ${label}: no intersection`);
+            }
+        } catch (e) {
+            console.error(`[LargeFootprint] ${label}: clip error`, e);
+        }
+        return results;
+    };
+
+    // Generate plot-shaped building footprints
+    let rawBuildings: Feature<Polygon>[] = [];
+
+    const totalTarget = maxFootprint ?? (plotArea * 0.5);
+    const perBuildingTarget = totalTarget / buildingCount;
+
+    if (buildingCount === 1) {
+        // 7 variations for 1 building, cycling with seed
+        // 0=Center(buffer), 1=Front, 2=Rear, 3=Left, 4=Right, 5=Front-Left, 6=Front-Right
+        const variation = seed % 7;
+
+        console.log(`[LargeFootprint] 1 building: variation=${variation}, plotArea=${plotArea.toFixed(0)}m², target=${perBuildingTarget.toFixed(0)}m²`);
+        
+        let frontEdge = 'S';
+        if (roadAccessSides && roadAccessSides.length > 0) {
+            frontEdge = roadAccessSides[0].charAt(0).toUpperCase();
+        }
+
+        // Map directions based on front edge
+        const dirMap: Record<string, Record<string, 'N'|'S'|'E'|'W'>> = {
+            'S': { front: 'S', rear: 'N', left: 'W', right: 'E' },
+            'N': { front: 'N', rear: 'S', left: 'E', right: 'W' },
+            'E': { front: 'E', rear: 'W', left: 'N', right: 'S' },
+            'W': { front: 'W', rear: 'E', left: 'S', right: 'N' },
+        };
+        const dirs = dirMap[frontEdge] || dirMap['S'];
+
+        if (variation === 0) {
+            // Centered: use buffer inset (follows plot shape!)
+            rawBuildings.push(workArea);
+            // Will be scaled with buffer below
+        } else if (variation === 1) {
+            // Hug front edge
+            rawBuildings.push(slicePolygonToArea(workArea, perBuildingTarget, dirs.front));
+        } else if (variation === 2) {
+            // Hug rear edge
+            rawBuildings.push(slicePolygonToArea(workArea, perBuildingTarget, dirs.rear));
+        } else if (variation === 3) {
+            // Hug left side
+            rawBuildings.push(slicePolygonToArea(workArea, perBuildingTarget, dirs.left));
+        } else if (variation === 4) {
+            // Hug right side
+            rawBuildings.push(slicePolygonToArea(workArea, perBuildingTarget, dirs.right));
+        } else if (variation === 5) {
+            // Front-left corner: slice front then slice left
+            const frontSlice = slicePolygonToArea(workArea, plotArea * 0.7, dirs.front);
+            rawBuildings.push(slicePolygonToArea(frontSlice, perBuildingTarget, dirs.left));
+        } else {
+            // Front-right corner: slice front then slice right
+            const frontSlice = slicePolygonToArea(workArea, plotArea * 0.7, dirs.front);
+            rawBuildings.push(slicePolygonToArea(frontSlice, perBuildingTarget, dirs.right));
+        }
+
+    } else if (buildingCount <= 3) {
+        // 6 distinct strategies for 2-3 buildings, cycling with seed
+        const strategy = seed % 6;
+        
+        // Decide axis and proportions based on strategy
+        let useWidth = baseSplitAlongWidth;
+        let splitRatios: number[] = []; // Proportional sizes for each building
+        let stratGapMul = 1;
+        
+        switch (strategy) {
+            case 0: // Natural axis, equal splits
+                useWidth = baseSplitAlongWidth;
+                splitRatios = buildingCount === 2 ? [0.5, 0.5] : [0.33, 0.34, 0.33];
+                break;
+            case 1: // Opposite axis, equal splits (flipped direction)
+                useWidth = aspectRatio < 2.5 ? !baseSplitAlongWidth : baseSplitAlongWidth;
+                splitRatios = buildingCount === 2 ? [0.5, 0.5] : [0.33, 0.34, 0.33];
+                break;
+            case 2: // Natural axis, unequal (60/40 or 50/25/25)
+                useWidth = baseSplitAlongWidth;
+                splitRatios = buildingCount === 2 ? [0.6, 0.4] : [0.5, 0.25, 0.25];
+                break;
+            case 3: // Opposite axis, unequal
+                useWidth = aspectRatio < 2.5 ? !baseSplitAlongWidth : baseSplitAlongWidth;
+                splitRatios = buildingCount === 2 ? [0.4, 0.6] : [0.25, 0.5, 0.25];
+                break;
+            case 4: // Natural axis, extra wide gap
+                useWidth = baseSplitAlongWidth;
+                splitRatios = buildingCount === 2 ? [0.5, 0.5] : [0.33, 0.34, 0.33];
+                stratGapMul = 3;
+                break;
+            case 5: // Short axis, equal splits (bars across the narrow width)
+                useWidth = !baseSplitAlongWidth; // Force opposite of natural
+                splitRatios = buildingCount === 2 ? [0.5, 0.5] : [0.33, 0.34, 0.33];
+                stratGapMul = 1.5;
+                break;
+        }
+        
+        console.log(`[LargeFootprint] ${buildingCount} buildings: strategy=${strategy}, axis=${useWidth ? 'width' : 'height'}, ratios=[${splitRatios}], gapMul=${stratGapMul}`);
+
+        // Strip-based splitting
+        const localGapLng = widthM > 0 ? (maxLng - minLng) * (Math.max(sideSetback * stratGapMul, 3 * stratGapMul) / widthM) : 0;
+        const localGapLat = heightM > 0 ? (maxLat - minLat) * (Math.max(sideSetback * stratGapMul, 3 * stratGapMul) / heightM) : 0;
+
+        for (let i = 0; i < buildingCount; i++) {
+            let clipBbox: [number, number, number, number];
+                const ratio = splitRatios[i] || (1 / buildingCount);
+                
+                // Calculate cumulative start position
+                const prevRatioSum = splitRatios.slice(0, i).reduce((a, b) => a + b, 0);
+
+                if (useWidth) {
+                    const totalUsable = maxLng - minLng - localGapLng * (buildingCount - 1);
+                    const stripW = totalUsable * ratio;
+                    const sLng = minLng + prevRatioSum * totalUsable + i * localGapLng;
+                    const eLng = sLng + stripW;
+                    clipBbox = [sLng, minLat - 0.01, eLng, maxLat + 0.01];
+                } else {
+                    const totalUsable = maxLat - minLat - localGapLat * (buildingCount - 1);
+                    const stripH = totalUsable * ratio;
+                    const sLat = minLat + prevRatioSum * totalUsable + i * localGapLat;
+                    const eLat = sLat + stripH;
+                    clipBbox = [minLng - 0.01, sLat, maxLng + 0.01, eLat];
+                }
+
+                const pieces = clipShapeToBbox(clipBbox, `Strip${i}`);
+                if (pieces.length > 0) {
+                    rawBuildings.push(...pieces);
+                } else {
+                    console.warn(`[LargeFootprint] Strip ${i}: clip failed, using fallback rectangle`);
+                    const cx = useWidth ? (clipBbox[0] + clipBbox[2]) / 2 : cLng;
+                    const cy = useWidth ? cLat : (clipBbox[1] + clipBbox[3]) / 2;
+                    const fw = useWidth ? (clipBbox[2] - clipBbox[0]) / degPerMLng * 0.9 : widthM * 0.8;
+                    const fh = useWidth ? heightM * 0.8 : (clipBbox[3] - clipBbox[1]) / degPerMLat * 0.9;
+                    rawBuildings.push(createFallbackRect(cx, cy, fw, fh));
+                }
+            }
+    } else {
+        // 4 buildings: 2×2 grid using quadrant clips
+        // Continuous crosshair offset based on seed
+        const hShift = (sr(4) - 0.5) * 0.3; // -0.15 to +0.15 of range
+        const vShift = (sr(5) - 0.5) * 0.3;
+        
+        let midLng = (minLng + maxLng) / 2 + hShift * (maxLng - minLng);
+        let midLat = (minLat + maxLat) / 2 + vShift * (maxLat - minLat);
+        
+        const halfGapLng = gapLng / 2;
+        const halfGapLat = gapLat / 2;
+
+        const quadrants: { bbox: [number, number, number, number], label: string }[] = [
+            { bbox: [minLng - 0.01, minLat - 0.01, midLng - halfGapLng, midLat - halfGapLat], label: 'SW' },
+            { bbox: [midLng + halfGapLng, minLat - 0.01, maxLng + 0.01, midLat - halfGapLat], label: 'SE' },
+            { bbox: [minLng - 0.01, midLat + halfGapLat, midLng - halfGapLng, maxLat + 0.01], label: 'NW' },
+            { bbox: [midLng + halfGapLng, midLat + halfGapLat, maxLng + 0.01, maxLat + 0.01], label: 'NE' },
+        ];
+
+        for (const q of quadrants) {
+            const pieces = clipShapeToBbox(q.bbox, q.label);
+            if (pieces.length > 0) {
+                rawBuildings.push(...pieces);
+            } else {
+                const cx = (q.bbox[0] + q.bbox[2]) / 2;
+                const cy = (q.bbox[1] + q.bbox[3]) / 2;
+                rawBuildings.push(createFallbackRect(cx, cy, widthM * 0.35, heightM * 0.35));
+            }
+        }
+    }
+
+    console.log(`[LargeFootprint] Generated ${rawBuildings.length} plot-shaped footprints`);
+
+    // Scale footprints to match target area — use buffer inset (follows plot shape!)
+    const scaledBuildings: Feature<Polygon>[] = [];
+    rawBuildings.forEach((poly, idx) => {
+        try {
+            // Skip scaling for sliced polygons (already sized correctly)
+            if (poly.properties?.skipScale) {
+                scaledBuildings.push(poly);
+                console.log(`[LargeFootprint] Piece ${idx} kept at ${turf.area(poly).toFixed(0)}m² (pre-sliced)`);
+                return;
+            }
+
+            const currentArea = turf.area(poly);
+            if (currentArea > perBuildingTarget * 1.05) {
+                // Use binary search with turf.buffer for plot-conforming shrink
+                let lo = 0, hi = Math.min(widthM, heightM) / 2;
+                let bestBuf: any = poly;
+
+                for (let iter = 0; iter < 20; iter++) {
+                    const mid = (lo + hi) / 2;
+                    // @ts-ignore
+                    const buffered = turf.buffer(poly, -mid, { units: 'meters' });
+                    if (!buffered) { hi = mid; continue; }
+                    
+                    const bArea = turf.area(buffered);
+                    if (bArea < perBuildingTarget * 0.1) { hi = mid; continue; } // Too small
+                    
+                    bestBuf = buffered as Feature<Polygon>;
+                    
+                    if (Math.abs(bArea - perBuildingTarget) < perBuildingTarget * 0.03) break;
+                    
+                    if (bArea > perBuildingTarget) lo = mid; else hi = mid;
+                }
+
+                // Ensure it's a Polygon (buffer can return MultiPolygon)
+                let finalPoly: Feature<Polygon>;
+                if (bestBuf.geometry.type === 'MultiPolygon') {
+                    // @ts-ignore
+                    const parts = turf.flatten(bestBuf);
+                    finalPoly = parts.features.sort((a: any, b: any) => turf.area(b) - turf.area(a))[0];
+                } else {
+                    finalPoly = bestBuf as Feature<Polygon>;
+                }
+
+                scaledBuildings.push(finalPoly);
+                console.log(`[LargeFootprint] Piece ${idx} buffer-shrunk: ${currentArea.toFixed(0)}m² -> ${turf.area(finalPoly).toFixed(0)}m² (target ${perBuildingTarget.toFixed(0)}m²)`);
+            } else {
+                scaledBuildings.push(poly);
+                console.log(`[LargeFootprint] Piece ${idx} kept at ${currentArea.toFixed(0)}m² (target was ${perBuildingTarget.toFixed(0)}m²)`);
+            }
+        } catch (e) {
+            console.warn(`[LargeFootprint] Failed to scale piece ${idx}, using original`, e);
+            scaledBuildings.push(poly);
+        }
+    });
+
+    // Set properties for each building
+    const finalBuildings: Feature<Polygon>[] = [];
+    scaledBuildings.forEach((poly: Feature<Polygon>, idx: number) => {
+        try {
+            const area = turf.area(poly);
+            const coords = poly.geometry.coordinates[0];
+            let maxEdgeLen = 0;
+            let alignBearing = 0;
+            for (let j = 0; j < coords.length - 1; j++) {
+                const len = turf.distance(coords[j], coords[j + 1], { units: 'meters' });
+                if (len > maxEdgeLen) {
+                    maxEdgeLen = len;
+                    alignBearing = turf.bearing(coords[j], coords[j + 1]);
+                }
+            }
+
+            poly.properties = {
+                type: 'generated',
+                subtype: 'large-footprint',
+                area,
+                cores: [],
+                units: [],
+                entrances: [],
+                internalUtilities: [],
+                alignmentRotation: alignBearing,
+                scenarioId: `LargeFootprint-${buildingCount}-${idx}`,
+                score: area
+            };
+
+            // Try layout generation
+            try {
+                const layout = generateBuildingLayout(poly, {
+                    subtype: 'large-footprint',
+                    unitMix: params.unitMix,
+                    alignmentRotation: alignBearing
+                });
+                if (layout) {
+                    poly.properties.cores = layout.cores;
+                    poly.properties.units = layout.units;
+                    poly.properties.entrances = layout.entrances;
+                    poly.properties.internalUtilities = layout.utilities;
+                }
+            } catch (layoutErr) {
+                console.warn(`[LargeFootprint] Layout gen failed for building ${idx}`);
+            }
+
+            finalBuildings.push(poly);
+        } catch (e) {
+            console.error(`[LargeFootprint] Error for building ${idx}:`, e);
+        }
+    });
+
+    console.log(`[LargeFootprint] FINAL: ${finalBuildings.length}/${buildingCount} buildings. Total footprint: ${finalBuildings.reduce((s, b) => s + turf.area(b), 0).toFixed(0)}m²`);
+
+    return finalBuildings;
+}
+
+/** Helper: ensure a GeoJSON feature is a single Polygon */
+function ensurePolygonFeature(f: any): Feature<Polygon> | null {
+    if (!f || !f.geometry) return null;
+    if (f.geometry.type === 'Polygon') return f as Feature<Polygon>;
+    if (f.geometry.type === 'MultiPolygon') {
+        try {
+            // @ts-ignore
+            const parts = turf.flatten(f);
+            let best: Feature<Polygon> | null = null;
+            let bestArea = 0;
+            parts.features.forEach((p: any) => {
+                const a = turf.area(p);
+                if (a > bestArea) {
+                    bestArea = a;
+                    best = p as Feature<Polygon>;
+                }
+            });
+            return best;
+        } catch (e) {
+            if (f.geometry.coordinates && f.geometry.coordinates.length > 0) {
+                return turf.polygon(f.geometry.coordinates[0]) as Feature<Polygon>;
+            }
+        }
+    }
+    return null;
 }
 

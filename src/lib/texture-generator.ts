@@ -13,7 +13,7 @@ function hexToRgba(hex: string, alpha: number): string {
  * to look consistent from all angles including top-down/roof view.
  * Columns and strip width vary per type for visual differentiation.
  */
-export function generateBuildingTexture(type: BuildingTextureType, baseColor: string, opacity: number = 1.0): ImageData | null {
+export function generateBuildingTexture(type: BuildingTextureType, baseColor: string, opacity: number = 1.0, isSelected: boolean = false): ImageData | null {
     const canvas = document.createElement('canvas');
     const size = 128; // Power of two required by WebGL
     canvas.width = size;
@@ -92,6 +92,13 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
     if (centerDividerWidth > 0) {
         ctx.fillStyle = `rgba(200, 200, 200, ${finalCenterAlpha})`;
         ctx.fillRect(size / 2 - Math.floor(centerDividerWidth / 2), 0, centerDividerWidth, size);
+    }
+
+    // Selection border
+    if (isSelected) {
+        ctx.strokeStyle = '#00fbff';
+        ctx.lineWidth = 12; // Thicker border on a 128px canvas for visibility from zoom
+        ctx.strokeRect(0, 0, size, size);
     }
 
     return ctx.getImageData(0, 0, size, size);

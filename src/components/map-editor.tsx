@@ -4,6 +4,7 @@ import { useToast } from '@/hooks/use-toast';
 import { BuildingIntendedUse, GreenRegulationData, UtilityType, Building, Core, Unit, Plot, GreenArea, ParkingArea, BuildableArea, UtilityArea, SelectableObjectType } from '@/lib/types';
 import { Feature, Polygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
+import centerOfMass from '@turf/center-of-mass';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import Script from 'next/script';
@@ -17,6 +18,7 @@ import { WindStreamlineLayer } from '@/lib/wind-streamline-layer';
 import { Amenity } from '@/services/mapbox-places-service';
 import { OverpassPlacesService } from '@/services/overpass-places-service';
 import { buildBhuvanLayerName, getIndianStateCode, BHUVAN_THEMES } from '@/lib/bhuvan-utils';
+import { Map as MapIcon, Globe, Image as ImageIcon } from 'lucide-react';
 
 declare global {
   interface Window {
@@ -91,7 +93,7 @@ export function MapEditor({
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [styleLoaded, setStyleLoaded] = useState(false);
   const [isThreeboxLoaded, setIsThreeboxLoaded] = useState(false);
-  const [isTerrainEnabled, setIsTerrainEnabled] = useState(false); // Terrain OFF by default
+  const [mapStyleMode, setMapStyleMode] = useState<'map' | 'satellite' | 'terrain'>('map');
   const markers = useRef<Marker[]>([]);
   const vastuObjectsRef = useRef<any[]>([]);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -103,6 +105,10 @@ export function MapEditor({
   const isDraggingRef = useRef(false);
   const dragStartPosRef = useRef<mapboxgl.LngLat | null>(null);
   const draggedObjectRef = useRef<{ id: string; type: SelectableObjectType; plotId: string } | null>(null);
+
+  // Timed selection highlight: shows teal border for 3 seconds on selection
+  const [showSelectionHighlight, setShowSelectionHighlight] = useState(false);
+  const selectionHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 
 
@@ -126,6 +132,28 @@ export function MapEditor({
   const { regulations } = useRegulations(activeProject || null);
   const { toast } = useToast();
   const getStoreState = useCallback(() => useBuildingStore.getState(), []);
+
+  // When a building is selected, show teal highlight for 3 seconds then auto-clear
+  useEffect(() => {
+    if (selectedObjectId && selectedObjectId.type === 'Building') {
+      setShowSelectionHighlight(true);
+      // Clear any previous timer
+      if (selectionHighlightTimerRef.current) clearTimeout(selectionHighlightTimerRef.current);
+      selectionHighlightTimerRef.current = setTimeout(() => {
+        setShowSelectionHighlight(false);
+      }, 3000);
+    } else {
+      // Non-building selection: clear immediately
+      setShowSelectionHighlight(false);
+      if (selectionHighlightTimerRef.current) {
+        clearTimeout(selectionHighlightTimerRef.current);
+        selectionHighlightTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (selectionHighlightTimerRef.current) clearTimeout(selectionHighlightTimerRef.current);
+    };
+  }, [selectedObjectId]);
 
   // Map elements that are currently rendered/visible
   const plotsRendering = plots;
@@ -249,7 +277,8 @@ export function MapEditor({
 
   const handleMouseUp = useCallback(() => {
     if (isDraggingRef.current) {
-      const draggedPlotId = draggedObjectRef.current?.plotId;
+      const draggedObj = draggedObjectRef.current;
+      const draggedPlotId = draggedObj?.plotId;
       isDraggingRef.current = false;
       draggedObjectRef.current = null;
       dragStartPosRef.current = null;
@@ -257,13 +286,24 @@ export function MapEditor({
         map.current.dragPan.enable();
         map.current.getCanvas().style.cursor = '';
       }
-      // Recalculate green areas after the object has been moved
+
       if (draggedPlotId) {
-        actions.recalculateGreenAreas(draggedPlotId);
+        if (draggedObj?.type === 'UtilityArea') {
+          // For utility moves: always recalculate parking FIRST (reconstructs the ring),
+          // then green area (uses the updated parking geometry for proper subtraction)
+          actions.recalculateParkingAreas(draggedPlotId);
+          actions.recalculateGreenAreas(draggedPlotId);
+        } else {
+          // Non-utility objects (buildings, etc.) → recalculate both to keep in sync
+          actions.recalculateParkingAreas(draggedPlotId);
+          actions.recalculateGreenAreas(draggedPlotId);
+        }
       }
+
       actions.saveCurrentProject();
     }
   }, [actions]);
+
 
   const handleDragMove = useCallback((e: mapboxgl.MapLayerMouseEvent) => {
     if (!isDraggingRef.current || !draggedObjectRef.current || !dragStartPosRef.current) return;
@@ -393,8 +433,11 @@ export function MapEditor({
         }
         actions.addDrawingPoint(coords);
       } else {
+        // Only allow object selection when the Select tool is active
+        const { drawingState: currentDrawingState, plots } = getStoreState();
+        if (currentDrawingState.objectType !== 'Select') return;
+
         // Logic for selecting objects on the map
-        const { plots } = getStoreState();
         const allMapLayers = mapInst.getStyle().layers.map(l => l.id);
         const clickableLayers = plots.flatMap(p =>
           [
@@ -502,23 +545,31 @@ export function MapEditor({
         }
       }
     } else {
-      const { plots } = getStoreState();
-      const allMapLayers = map.current.getStyle().layers.map(l => l.id);
-      const hoverableLayers = plots.flatMap(p =>
-        [
-          `plot-base-${p.id}`,
-          ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
-          ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
-          ...p.greenAreas.map(g => `green-area-${g.id}`),
-          ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
-          ...p.utilityAreas.map(u => `utility-area-${u.id}`)
-        ]
-      ).filter(id => allMapLayers.includes(id));
+      const { plots, drawingState: currentDrawState } = getStoreState();
+      const isSelectMode = currentDrawState.objectType === 'Select';
 
-      if (hoverableLayers.length > 0) {
-        const features = map.current.queryRenderedFeatures(e.point, { layers: hoverableLayers });
-        map.current.getCanvas().style.cursor = features && features.length > 0 ? 'pointer' : 'grab';
+      if (isSelectMode) {
+        // In Select mode: show pointer on hoverable objects, default otherwise
+        const allMapLayers = map.current.getStyle().layers.map(l => l.id);
+        const hoverableLayers = plots.flatMap(p =>
+          [
+            `plot-base-${p.id}`,
+            ...p.buildings.flatMap(b => b.floors.map(f => `building-floor-fill-${f.id}-${b.id}`)),
+            ...p.buildableAreas.map(b => `buildable-area-${b.id}`),
+            ...p.greenAreas.map(g => `green-area-${g.id}`),
+            ...p.parkingAreas.map(pa => `parking-area-${pa.id}`),
+            ...p.utilityAreas.map(u => `utility-area-${u.id}`)
+          ]
+        ).filter(id => allMapLayers.includes(id));
+
+        if (hoverableLayers.length > 0) {
+          const features = map.current.queryRenderedFeatures(e.point, { layers: hoverableLayers });
+          map.current.getCanvas().style.cursor = features && features.length > 0 ? 'pointer' : 'default';
+        } else {
+          map.current.getCanvas().style.cursor = 'default';
+        }
       } else {
+        // Not in Select mode: default grab cursor
         map.current.getCanvas().style.cursor = 'grab';
       }
     }
@@ -711,6 +762,21 @@ export function MapEditor({
       } catch (e) {
         console.warn("Could not set show3dObjects config", e);
       }
+
+      // Add Satellite layer (hidden by default)
+      mapInstance.addSource('mapbox-satellite', {
+        type: 'raster',
+        url: 'mapbox://mapbox.satellite',
+        tileSize: 256
+      });
+      mapInstance.addLayer({
+        id: 'satellite-basemap',
+        type: 'raster',
+        source: 'mapbox-satellite',
+        layout: {
+          visibility: 'none'
+        }
+      });
 
       setIsMapLoaded(true);
     });
@@ -1070,8 +1136,10 @@ export function MapEditor({
       if (!THREE) return;
 
       plots.forEach(plot => {
-        const bbox = turf.bbox(plot.geometry);
-        const center: [number, number] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+        // Use true center of area for accurate Vastu placement on irregular plots
+        const trueCenter = centerOfMass(plot.geometry);
+        const centerCoords = trueCenter.geometry.coordinates;
+        const center: [number, number] = [centerCoords[0], centerCoords[1]];
 
         const r = Math.sqrt(plot.area / Math.PI) * 0.5;
 
@@ -1931,6 +1999,67 @@ useEffect(() => {
         }
       });
 
+      // Buildable Areas (Transparent Orange)
+      plot.buildableAreas.forEach(area => {
+        const areaId = `buildable-area-${area.id}`;
+        renderedIds.add(areaId);
+
+        let source = mapInstance.getSource(areaId) as GeoJSONSource;
+
+        if (!area.geometry) return;
+
+        if (source) {
+          source.setData(area.geometry as any);
+        } else {
+          mapInstance.addSource(areaId, { type: 'geojson', data: area.geometry as any });
+        }
+
+        const isSelected = selectedObjectId && selectedObjectId.id === area.id && selectedObjectId.type === 'BuildableArea';
+        const selectionColor = '#00fbff';
+
+        if (!mapInstance.getLayer(areaId)) {
+          mapInstance.addLayer({
+            id: areaId,
+            type: 'fill',
+            source: areaId,
+            paint: {
+              'fill-color': isSelected ? selectionColor : '#f59e0b',
+              'fill-opacity': isSelected ? 0.3 : 0.1,
+              'fill-outline-color': isSelected ? selectionColor : '#b45309'
+            },
+            metadata: {
+              id: area.id,
+              type: 'BuildableArea'
+            }
+          } as any, LABELS_LAYER_ID);
+
+          // Add a dashed border layer for better visibility
+          const borderId = `buildable-area-border-${area.id}`;
+          renderedIds.add(borderId);
+          mapInstance.addLayer({
+            id: borderId,
+            type: 'line',
+            source: areaId,
+            paint: {
+              'line-color': isSelected ? selectionColor : '#b45309',
+              'line-width': isSelected ? 3 : 2,
+              'line-dasharray': [2, 2]
+            }
+          }, LABELS_LAYER_ID);
+
+        } else {
+          mapInstance.setPaintProperty(areaId, 'fill-color', isSelected ? selectionColor : '#f59e0b');
+          mapInstance.setPaintProperty(areaId, 'fill-opacity', isSelected ? 0.3 : 0.1);
+          mapInstance.setPaintProperty(areaId, 'fill-outline-color', isSelected ? selectionColor : '#b45309');
+
+          const borderId = `buildable-area-border-${area.id}`;
+          if (mapInstance.getLayer(borderId)) {
+            mapInstance.setPaintProperty(borderId, 'line-color', isSelected ? selectionColor : '#b45309');
+            mapInstance.setPaintProperty(borderId, 'line-width', isSelected ? 3 : 2);
+          }
+        }
+      });
+
       //Parking Areas (Surface & Basements)
       plot.parkingAreas.forEach(area => {
         const areaId = `parking-area-${area.id}`;
@@ -2039,7 +2168,11 @@ useEffect(() => {
         else if (typeStr.includes('fire')) color = '#E91E63';
         else if (typeStr.includes('hvac')) color = '#FF9800';
         else if (typeStr.includes('gas')) color = '#795548';
+        else if (typeStr.includes('dg') || typeStr.includes('transformer')) color = '#3A4F2E'; // Olive Green
         else if (typeStr.includes('road')) color = '#546E7A';
+        else if (typeStr.includes('solar')) color = '#1A237E'; // Solar Indigo
+        else if (typeStr.includes('waste') || typeStr.includes('owc')) color = '#8D6E63'; // Brown
+        else if (typeStr.includes('admin')) color = '#FDD835'; // Yellow
 
         const isRoad = u.type === 'Roads' || u.type === 'AppRoads' as any;
 
@@ -2090,9 +2223,9 @@ useEffect(() => {
               layout: { 'visibility': isVisible ? 'visible' : 'none' },
               paint: {
                 'fill-extrusion-color': isSelected ? selectionColor : color,
-                'fill-extrusion-height': 2.5,
+                'fill-extrusion-height': u.type === 'Solar PV' as any ? 3.5 : 2.5,
                 'fill-extrusion-opacity': isSelected ? 0.9 : 0.7,
-                'fill-extrusion-base': 0
+                'fill-extrusion-base': u.type === 'Solar PV' as any ? 3.0 : 0
               },
               metadata: {
                 id: u.id,
@@ -2114,6 +2247,7 @@ useEffect(() => {
             if (mapInstance.getLayer(areaId)?.type === 'fill-extrusion') {
               mapInstance.setPaintProperty(areaId, 'fill-extrusion-color', isSelected ? selectionColor : color);
               mapInstance.setPaintProperty(areaId, 'fill-extrusion-opacity', isSelected ? 0.9 : 0.7);
+              mapInstance.setPaintProperty(areaId, 'fill-extrusion-base', u.type === 'Solar PV' as any ? 3.0 : 0);
             }
           }
           try {
@@ -2461,15 +2595,17 @@ useEffect(() => {
             const floorLayerId = `building-floor-fill-${floor.id}-${building.id}`;
             renderedIds.add(floorLayerId);
 
-            const isBuildingSelected = selectedObjectId && selectedObjectId.id === building.id && selectedObjectId.type === 'Building';
+            // Only highlight with teal during the 3-second flash window after selection
+            const isBuildingSelected = showSelectionHighlight && selectedObjectId && selectedObjectId.id === building.id && selectedObjectId.type === 'Building';
             const isInternalSelected = selectedObjectId && (
               building.internalUtilities?.some(u => u.id === selectedObjectId.id) ||
               building.cores?.some(c => c.id === selectedObjectId.id) ||
               building.units?.some(u => u.id === selectedObjectId.id)
             );
 
+            const isInternalMode = building.internalsVisible === true || anyComponentVisible;
             let opacity = userOpacity;
-            if (building.internalsVisible === true || anyComponentVisible) {
+            if (isInternalMode) {
               opacity = 0.0;
               if ((componentVisibility.basements || building.internalsVisible === true) && floor.parkingType === 'Basement') {
                 opacity = 0.9;
@@ -2479,7 +2615,13 @@ useEffect(() => {
               else opacity = 0.0;
             }
 
-            if (isInternalSelected || isBuildingSelected) opacity = userOpacity;
+            if (isInternalSelected || isBuildingSelected) {
+               if (isInternalMode) {
+                  opacity = 0.15; // Transparent shell to still see internals
+               } else {
+                  opacity = Math.max(0.6, userOpacity);
+               }
+            }
 
             const selectionColor = '#00fbff'; // Bright cyan for selection
             const finalColor = isBuildingSelected ? selectionColor : (intendedColor || floor.color || '#cccccc');
@@ -2504,17 +2646,17 @@ useEffect(() => {
 
               if (usePattern) {
                 // Generate texture with specific opacity on demand
-                const opacityStr = opacity.toFixed(1);
-                patternName = `texture-${floorUse}-${opacityStr}`;
+                const opacityStr = opacity.toFixed(2);
+                patternName = `texture-${floorUse}-${opacityStr}${isBuildingSelected ? '-selected' : ''}`;
                 if (!mapInstance.hasImage(patternName)) {
                   const color = getBuildingColor(floorUse as any);
-                  const img = generateBuildingTexture(floorUse as any, color, opacity);
+                  const img = generateBuildingTexture(floorUse as any, color, opacity, !!isBuildingSelected);
                   if (img) mapInstance.addImage(patternName, img, { pixelRatio: 2 });
                 }
               }
 
               const paintProps: any = {
-                'fill-extrusion-color': isBuildingSelected ? selectionColor : (usePattern ? '#ffffff' : ['get', 'color']),
+                'fill-extrusion-color': usePattern ? '#ffffff' : (isBuildingSelected ? selectionColor : ['get', 'color']),
                 'fill-extrusion-height': ['get', 'height'],
                 'fill-extrusion-base': ['get', 'base_height'],
                 'fill-extrusion-opacity': opacity
@@ -2541,11 +2683,11 @@ useEffect(() => {
 
               if (usePattern) {
                 // Generate texture with specific opacity on demand
-                const opacityStr = opacity.toFixed(1);
-                patternName = `texture-${floorUse}-${opacityStr}`;
+                const opacityStr = opacity.toFixed(2);
+                patternName = `texture-${floorUse}-${opacityStr}${isBuildingSelected ? '-selected' : ''}`;
                 if (!mapInstance.hasImage(patternName)) {
                   const color = getBuildingColor(floorUse as any);
-                  const img = generateBuildingTexture(floorUse as any, color, opacity);
+                  const img = generateBuildingTexture(floorUse as any, color, opacity, !!isBuildingSelected);
                   if (img) mapInstance.addImage(patternName, img, { pixelRatio: 2 });
                 }
               }
@@ -2554,7 +2696,7 @@ useEffect(() => {
               // Update Pattern & Color
               if (usePattern) {
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', patternName);
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', isBuildingSelected ? selectionColor : '#ffffff');
+                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', '#ffffff');
               } else {
                 // Use undefined to unset property in strict Mapbox TS/JS
                 mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', undefined); // Clear pattern
@@ -3099,26 +3241,46 @@ useEffect(() => {
       <div ref={mapContainer} className="w-full h-full" />
       {children}
 
-      {/* Terrain Toggle Button */}
+      {/* Map Styles & Terrain Toggle */}
       <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-1 flex items-center gap-1">
+        
+        {/* Unified 3-Way Style Toggle */}
         <button
           onClick={() => {
-            const newStatus = !isTerrainEnabled;
-            setIsTerrainEnabled(newStatus);
-            if (map.current) {
-              if (newStatus) {
-                map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.0 });
-              } else {
-                (map.current as any).setTerrain(null);
-              }
+            if (!map.current) return;
+            
+            // Define the cycle sequence: map -> satellite -> terrain -> map
+            let nextMode: 'map' | 'satellite' | 'terrain';
+            if (mapStyleMode === 'map') nextMode = 'satellite';
+            else if (mapStyleMode === 'satellite') nextMode = 'terrain';
+            else nextMode = 'map';
+            
+            setMapStyleMode(nextMode);
 
-              if (window.tb) window.tb.repaint();
+            // 1. Handle Satellite Layer
+            if (map.current.getLayer('satellite-basemap')) {
+              map.current.setLayoutProperty(
+                'satellite-basemap',
+                'visibility',
+                nextMode === 'satellite' ? 'visible' : 'none'
+              );
             }
+
+            // 2. Handle Terrain
+            if (nextMode === 'terrain') {
+              map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.0 });
+            } else {
+              (map.current as any).setTerrain(null);
+            }
+
+            if (window.tb) window.tb.repaint();
           }}
-          className={`p-2 h-9 rounded-sm text-xs font-medium transition-colors ${isTerrainEnabled ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
-          title="Toggle 3D Terrain"
+          className={`h-9 min-w-[120px] rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1.5 px-3 ${mapStyleMode !== 'map' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
+          title="Toggle Map Style"
         >
-          {isTerrainEnabled ? '⛰️ Terrain ON' : 'Analytic Flat'}
+          {mapStyleMode === 'map' && <><MapIcon className="w-4 h-4" /> Analytic Flat</>}
+          {mapStyleMode === 'satellite' && <><Globe className="w-4 h-4" /> Satellite</>}
+          {mapStyleMode === 'terrain' && <><ImageIcon className="w-4 h-4" /> Terrain ON</>}
         </button>
 
         <div className="h-6 w-[1px] bg-border mx-1" />

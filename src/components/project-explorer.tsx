@@ -73,7 +73,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                     {info}
                 </button>
                 <div className="flex items-center gap-1">
-                    {type === 'UtilityArea' && obj.level !== undefined && obj.level < 0 && (
+                    {type === 'UtilityArea' && (
                         <Button
                             size="icon"
                             variant="ghost"
@@ -82,7 +82,7 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                 e.stopPropagation();
                                 actions.toggleObjectVisibility(plot.id, obj.id, type);
                             }}
-                            title={obj.visible !== false ? "Hide Basement Utility" : "Show Basement Utility"}
+                            title={obj.visible !== false ? "Hide Utility" : "Show Utility"}
                         >
                             {obj.visible !== false ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-muted-foreground" />}
                         </Button>

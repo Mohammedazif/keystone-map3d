@@ -108,6 +108,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [parkingRatio, setParkingRatio] = useState(0.30);
     const [buildingWidthRange, setBuildingWidthRange] = useState<[number, number]>([20, 25]); // Default: 20-25m
     const [buildingLengthRange, setBuildingLengthRange] = useState<[number, number]>([25, 55]); // Default: 25-55m
+    const [buildingCount, setBuildingCount] = useState(2); // For commercial/industrial: 1-4 large buildings
     const [gridOrientation, setGridOrientation] = useState(0);
     const [avgUnitSize, setAvgUnitSize] = useState(85);
     const [commercialPercent, setCommercialPercent] = useState(0);
@@ -138,7 +139,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     });
 
     const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('floor'); // New Allocation Mode
-    const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'STP', 'WTP', 'Electrical', 'HVAC', 'Water']);
+    const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'STP', 'WTP', 'Electrical', 'HVAC', 'Water', 'Solar PV']);
 
     // Constraints
     const [regulationMaxFloors, setRegulationMaxFloors] = useState(60);
@@ -382,6 +383,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             maxBuildingLength: buildingLengthRange[1],
             width: buildingWidthRange[1], // Fallback for legacy generators using 'width'
             minLength: buildingLengthRange[0], // Fallback
+            buildingCount, // For large-footprint commercial/industrial generator
             floorHeight,
             landUse,
             programMix, // Single instance
@@ -429,6 +431,9 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
     const Container = embedded ? 'div' : Card;
 
+    const baseLandUse = selectedPlot?.regulation?.type || 'residential';
+    const isLargeFootprint = typeof baseLandUse === 'string' && ['commercial', 'public', 'industrial', 'institutional'].some(t => baseLandUse.toLowerCase().includes(t));
+
     return (
         <TooltipProvider>
             <Container className={cn("flex flex-col font-sans h-full", embedded ? "" : "w-full shadow-xl bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 max-h-[calc(100vh-200px)]")}>
@@ -457,62 +462,76 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             ) : null}
 
                             {/* Building Typologies */}
-                            <div className="space-y-1.5">
-                                <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Typology</Label>
-                                <div className="grid grid-cols-4 gap-2">
-                                    {(['point', 'slab', 'lshaped', 'ushaped', 'tshaped', 'hshaped'] as BuildingTypology[]).map(type => (
-                                        <Tooltip key={type}>
-                                            <TooltipTrigger asChild>
-                                                <button
-                                                    onClick={() => {
-                                                        setSelectedTypologies(prev => {
-                                                            let next = prev;
-                                                            if (prev.includes(type)) {
-                                                                if (prev.length === 1) next = prev;
-                                                                else next = prev.filter(t => t !== type);
-                                                            } else {
-                                                                next = [...prev, type];
-                                                            }
-
-                                                            // Smart Defaults for Dimensions
-                                                            // If switching TO a specific single typology, adjust defaults
-                                                            if (next.length === 1) {
-                                                                const t = next[0];
-                                                                if (t === 'point') {
-                                                                    setBuildingWidthRange([20, 25]); // Range within limits
-                                                                    setBuildingLengthRange([25, 30]); // Squarish, above min length
-                                                                } else if (t === 'slab') {
-                                                                    setBuildingWidthRange([20, 22]); // Narrowest allowed (20m)
-                                                                    setBuildingLengthRange([40, 55]); // Long
-                                                                } else if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(t)) {
-                                                                    setBuildingWidthRange([20, 25]); // Wing depth
-                                                                    setBuildingLengthRange([40, 55]); // Overall extent
+                            {!isLargeFootprint ? (
+                                <div className="space-y-1.5">
+                                    <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Typology</Label>
+                                    <div className="grid grid-cols-4 gap-2">
+                                        {(['point', 'slab', 'lshaped', 'ushaped', 'tshaped', 'hshaped'] as BuildingTypology[]).map(type => (
+                                            <Tooltip key={type}>
+                                                <TooltipTrigger asChild>
+                                                    <button
+                                                        onClick={() => {
+                                                            setSelectedTypologies(prev => {
+                                                                let next = prev;
+                                                                if (prev.includes(type)) {
+                                                                    if (prev.length === 1) next = prev;
+                                                                    else next = prev.filter(t => t !== type);
+                                                                } else {
+                                                                    next = [...prev, type];
                                                                 }
-                                                            } else {
-                                                                // Mixed or multiple? Revert to generic "User Request" defaults
-                                                                // Or just leave as is.
-                                                            }
-                                                            return next;
-                                                        });
-                                                    }}
-                                                    className={cn(
-                                                        'flex-shrink-0 w-14 h-14 rounded-md border p-1 transition-all flex flex-col items-center justify-center gap-0.5',
-                                                        selectedTypologies.includes(type)
-                                                            ? 'border-primary bg-primary text-primary-foreground ring-1 ring-primary/50 shadow-sm'
-                                                            : 'border-border bg-background hover:bg-muted/80 hover:border-primary/50 text-muted-foreground hover:text-foreground'
-                                                    )}
-                                                >
-                                                    <div className="h-5 w-5">{typologyIcons[type]}</div>
-                                                    <span className="text-[9px] font-medium capitalize truncate w-full text-center">{type === 'lshaped' ? 'L-Shape' : type === 'ushaped' ? 'U-Shape' : type === 'oshaped' ? 'O-Shape' : type}</span>
-                                                </button>
-                                            </TooltipTrigger>
-                                            <TooltipContent side="bottom">
-                                                <p>{type === 'lshaped' ? 'L-Shaped Building' : type === 'ushaped' ? 'U-Shaped Building' : type === 'point' ? 'Point Block' : type === 'slab' ? 'Linear Slab' : `${type.charAt(0).toUpperCase() + type.slice(1)} Shape`}</p>
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    ))}
+
+                                                                // Smart Defaults for Dimensions
+                                                                // If switching TO a specific single typology, adjust defaults
+                                                                if (next.length === 1) {
+                                                                    const t = next[0];
+                                                                    if (t === 'point') {
+                                                                        setBuildingWidthRange([20, 25]); // Range within limits
+                                                                        setBuildingLengthRange([25, 30]); // Squarish, above min length
+                                                                    } else if (t === 'slab') {
+                                                                        setBuildingWidthRange([20, 22]); // Narrowest allowed (20m)
+                                                                        setBuildingLengthRange([40, 55]); // Long
+                                                                    } else if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(t)) {
+                                                                        setBuildingWidthRange([20, 25]); // Wing depth
+                                                                        setBuildingLengthRange([40, 55]); // Overall extent
+                                                                    }
+                                                                }
+                                                                return next;
+                                                            });
+                                                        }}
+                                                        className={cn(
+                                                            'flex-shrink-0 w-14 h-14 rounded-md border p-1 transition-all flex flex-col items-center justify-center gap-0.5',
+                                                            selectedTypologies.includes(type)
+                                                                ? 'border-primary bg-primary text-primary-foreground ring-1 ring-primary/50 shadow-sm'
+                                                                : 'border-border bg-background hover:bg-muted/80 hover:border-primary/50 text-muted-foreground hover:text-foreground'
+                                                        )}
+                                                    >
+                                                        <div className="h-5 w-5">{typologyIcons[type]}</div>
+                                                        <span className="text-[9px] font-medium capitalize truncate w-full text-center">{type === 'lshaped' ? 'L-Shape' : type === 'ushaped' ? 'U-Shape' : type === 'oshaped' ? 'O-Shape' : type}</span>
+                                                    </button>
+                                                </TooltipTrigger>
+                                                <TooltipContent side="bottom">
+                                                    <p>{type === 'lshaped' ? 'L-Shaped Building' : type === 'ushaped' ? 'U-Shaped Building' : type === 'point' ? 'Point Block' : type === 'slab' ? 'Linear Slab' : `${type.charAt(0).toUpperCase() + type.slice(1)} Shape`}</p>
+                                                </TooltipContent>
+                                            </Tooltip>
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
+                            ) : (
+                                <div className="space-y-1.5">
+                                    <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Typology</Label>
+                                    <div className="flex bg-muted/30 p-2 rounded-lg border items-center gap-3">
+                                        <div className="flex-shrink-0 w-10 h-10 rounded-md border border-primary bg-primary/20 text-primary flex items-center justify-center p-1.5">
+                                            <svg viewBox="0 0 40 40" className="w-full h-full fill-current">
+                                                <rect x="5" y="5" width="30" height="30" rx="4" className="stroke-current stroke-2 fill-current/30" />
+                                            </svg>
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="text-xs font-semibold text-foreground">Large Footprint</span>
+                                            <span className="text-[10px] text-muted-foreground leading-tight">Optimized block generation for commercial/industrial zones</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Land Use */}
                             {/* <div className="space-y-1.5">
@@ -534,6 +553,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                         </div> */}
 
                             {/* Podium / Stepped Massing Controls (Commercial/Public/Industrial Only) */}
+                            {/*
                             {(landUse === 'commercial' || landUse === 'institutional') && (
                                 <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
                                     <div className="flex items-center justify-between">
@@ -582,6 +602,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     )}
                                 </div>
                             )}
+                            */}
 
                             {/* Unit Mix Allocation (Residential / Mixed Only) */}
                             {(landUse === 'residential' || landUse === 'mixed') && (
@@ -940,16 +961,16 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         size="sm"
                                         className="h-4 p-0 text-[10px] text-primary"
                                         onClick={() => {
-                                            const ALL = ['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin'];
+                                            const ALL = ['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin', 'Solar PV'];
                                             if (selectedUtilities.length === ALL.length) setSelectedUtilities([]);
                                             else setSelectedUtilities(ALL);
                                         }}
                                     >
-                                        {selectedUtilities.length === 12 ? 'Select None' : 'Select All'}
+                                        {selectedUtilities.length === 13 ? 'Select None' : 'Select All'}
                                     </Button>
                                 </div>
                                 <div className="grid grid-cols-3 gap-2">
-                                    {['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin'].map(type => (
+                                    {['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin', 'Solar PV'].map(type => (
                                         <Tooltip key={type}>
                                             <TooltipTrigger asChild>
                                                 <button
@@ -965,7 +986,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                             : 'bg-muted/10 border-border text-muted-foreground hover:bg-muted/30'
                                                     )}
                                                 >
-                                                    {type === 'Rainwater Harvesting' ? 'RWH' : type === 'Solid Waste' ? 'Waste/OWC' : type === 'DG Set' ? 'DG Set' : type}
+                                                    {type === 'Rainwater Harvesting' ? 'RWH' : type === 'Solid Waste' ? 'Waste/OWC' : type === 'DG Set' ? 'DG Set' : type === 'Solar PV' ? 'Solar PV' : type}
                                                 </button>
                                             </TooltipTrigger>
                                             <TooltipContent side="bottom">
@@ -982,48 +1003,71 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                 <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Building Specs</span>
                                 <div className="h-px flex-1 bg-border/50"></div>
                             </div>
-                            {/* Building Dimensions */}
-                            <div className="space-y-3 pt-2">
-                                <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Building Dimensions</Label>
-
-                                {
-                                    /* Warning Removed as per user request */
-                                }
-
-                                {/* Width Range */}
-                                <div className="space-y-1">
-                                    <div className="flex justify-between text-[10px]">
-                                        <span className="text-muted-foreground">Building Width</span>
-                                        <span className={cn(buildingWidthRange[0] < 20 || buildingWidthRange[1] > 25 ? "text-destructive font-bold" : "")}>{buildingWidthRange[0]}m - {buildingWidthRange[1]}m</span>
+                            {/* Building Dimensions / Building Count */}
+                            {(landUse === 'commercial' || landUse === 'institutional') ? (
+                                /* --- BUILDING COUNT for Commercial/Industrial/Public --- */
+                                <div className="space-y-3 pt-2">
+                                    <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Number of Buildings</Label>
+                                    <div className="grid grid-cols-4 gap-2">
+                                        {[1, 2, 3, 4].map(count => (
+                                            <button
+                                                key={count}
+                                                onClick={() => setBuildingCount(count)}
+                                                className={cn(
+                                                    'h-10 rounded-md border text-sm font-medium transition-all',
+                                                    buildingCount === count
+                                                        ? 'border-primary bg-primary text-primary-foreground ring-1 ring-primary/50 shadow-sm'
+                                                        : 'border-border bg-background hover:bg-muted/80 hover:border-primary/50 text-muted-foreground hover:text-foreground'
+                                                )}
+                                            >
+                                                {count}
+                                            </button>
+                                        ))}
                                     </div>
-                                    <Slider
-                                        value={buildingWidthRange}
-                                        min={20}
-                                        max={25}
-                                        step={0.5}
-                                        minStepsBetweenThumbs={1}
-                                        onValueChange={(val) => setBuildingWidthRange(val as [number, number])}
-                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
-                                    />
+                                    <p className="text-[9px] text-muted-foreground italic">
+                                        Large buildings will fill the available area within setbacks.
+                                    </p>
                                 </div>
+                            ) : (
+                                /* --- BUILDING DIMENSIONS for Residential/Mixed --- */
+                                <div className="space-y-3 pt-2">
+                                    <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Building Dimensions</Label>
 
-                                {/* Length Range */}
-                                <div className="space-y-1">
-                                    <div className="flex justify-between text-[10px]">
-                                        <span className="text-muted-foreground">Building Length</span>
-                                        <span className={cn(buildingLengthRange[0] < 25 || buildingLengthRange[1] > 55 ? "text-destructive font-bold" : "")}>{buildingLengthRange[0]}m - {buildingLengthRange[1]}m</span>
+                                    {/* Width Range */}
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px]">
+                                            <span className="text-muted-foreground">Building Width</span>
+                                            <span className={cn(buildingWidthRange[0] < 20 || buildingWidthRange[1] > 25 ? "text-destructive font-bold" : "")}>{buildingWidthRange[0]}m - {buildingWidthRange[1]}m</span>
+                                        </div>
+                                        <Slider
+                                            value={buildingWidthRange}
+                                            min={20}
+                                            max={25}
+                                            step={0.5}
+                                            minStepsBetweenThumbs={1}
+                                            onValueChange={(val) => setBuildingWidthRange(val as [number, number])}
+                                            className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
+                                        />
                                     </div>
-                                    <Slider
-                                        value={buildingLengthRange}
-                                        min={25}
-                                        max={55}
-                                        step={1}
-                                        minStepsBetweenThumbs={5}
-                                        onValueChange={(val) => setBuildingLengthRange(val as [number, number])}
-                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
-                                    />
+
+                                    {/* Length Range */}
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px]">
+                                            <span className="text-muted-foreground">Building Length</span>
+                                            <span className={cn(buildingLengthRange[0] < 25 || buildingLengthRange[1] > 55 ? "text-destructive font-bold" : "")}>{buildingLengthRange[0]}m - {buildingLengthRange[1]}m</span>
+                                        </div>
+                                        <Slider
+                                            value={buildingLengthRange}
+                                            min={25}
+                                            max={55}
+                                            step={1}
+                                            minStepsBetweenThumbs={5}
+                                            onValueChange={(val) => setBuildingLengthRange(val as [number, number])}
+                                            className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
+                                        />
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                                 {/* Constraints */}
                                 <div className="space-y-3 pt-1">

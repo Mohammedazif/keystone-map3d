@@ -85,7 +85,7 @@ function createRotatedRect(center: Feature<Point>, width: number, height: number
  * Helper: Determine the dominant orientation (bearing) of a plot.
  * Usually based on the longest edge.
  */
-function getPlotOrientation(plotPoly: Feature<Polygon>): number {
+export function getPlotOrientation(plotPoly: Feature<Polygon>): number {
     try {
         const coords = plotPoly.geometry.coordinates[0];
         let maxLen = -1;
@@ -140,13 +140,12 @@ export function generateBuildingLayout(
     const targetUnitSize = params.avgUnitSize || 120;
     const intendedUse = params.intendedUse || 'Residential';
 
-    // --- NEW CORE CALCULATION LOGIC ---
-    // 1. Determine Floor Area (A) and Floors (F)
+    // ---CORE CALCULATION LOGIC ---
     const floorArea = turf.area(workingPoly); // Area per floor (BUA)
-    const floors = params.numFloors || 5; // Default if not passed
+    const floors = params.numFloors || 5; 
     const height = floors * (params.floorHeight || 3.1);
 
-    // 2. Determine Population (POP) per floor
+    // Determine Population (POP) per floor
     let popPerFloor = 0;
     let assumedUnitsPerFloor = 0;
     
@@ -223,8 +222,15 @@ export function generateBuildingLayout(
 
     // 6. SHAFT CALCULATIONS
     let shaftArea = 0;
-    // Plumbing (Res: 1 per 4 units, Comm: 1 per 750sqm)
-    let plumbingShafts = (intendedUse === 'Residential') ? Math.ceil(assumedUnitsPerFloor / 4) : Math.ceil(floorArea / 750);
+    // Plumbing (Res: 1 per 4 units, Comm: 1 per 750sqm, Inst: 1 per 500sqm)
+    let plumbingShafts = 1;
+    if (intendedUse === 'Residential') {
+        plumbingShafts = Math.ceil(assumedUnitsPerFloor / 4);
+    } else if (intendedUse === 'Institutional' || intendedUse === 'Public') {
+        plumbingShafts = Math.ceil(floorArea / 500);
+    } else {
+        plumbingShafts = Math.ceil(floorArea / 750);
+    }
     shaftArea += plumbingShafts * 0.8;
     
     // Elec/Fire (1 per core roughly)
@@ -248,42 +254,87 @@ export function generateBuildingLayout(
     const calculatedCoreAreaPerFloor = liftArea + stairArea + lobbyArea + corridorArea + shaftArea + fireLobbyArea;
     const coreAreaPerNode = calculatedCoreAreaPerFloor / numPhysicalCores;
     
+    // 8. CORE EFFICIENCY TARGETS (OUTPUT BENCHMARK)
+    const coreRatio = calculatedCoreAreaPerFloor / floorArea;
+    
+    let healthyMin = 0.10, healthyMax = 0.30;
+    if (intendedUse === 'Residential') { healthyMin = 0.10; healthyMax = 0.14; }
+    else if (intendedUse === 'Commercial') { healthyMin = 0.16; healthyMax = 0.22; }
+    else if (intendedUse === 'Institutional') { healthyMin = 0.20; healthyMax = 0.30; }
+    else if (params.subtype === 'mixed') { healthyMin = 0.18; healthyMax = 0.24; }
+    
+    if (coreRatio < healthyMin || coreRatio > healthyMax) {
+        console.warn(`[Audit] Core ratio ${(coreRatio*100).toFixed(1)}% is outside healthy range (${healthyMin*100}-${healthyMax*100}%) for ${intendedUse}!`);
+    } else {
+        console.log(`[Audit] Core ratio ${(coreRatio*100).toFixed(1)}% is within healthy bounds (${healthyMin*100}-${healthyMax*100}%) for ${intendedUse}.`);
+    }
+    
     // Fallbacks just in case calculations result in extremely small or massive areas
-    const finalCoreArea = Math.min(Math.max(coreAreaPerNode, 20), floorArea * 0.35);
+    const minCoreArea = Math.max(20, floorArea * healthyMin / numPhysicalCores);
+    const maxCoreArea = floorArea * (healthyMax + 0.05) / numPhysicalCores;
+    
+    let finalCoreArea = coreAreaPerNode;
+    if (coreAreaPerNode < minCoreArea) {
+        console.warn(`[Layout Gen] Core calculation (${coreAreaPerNode.toFixed(1)} sqm) is below healthy minimum (${minCoreArea.toFixed(1)} sqm). Enforcing minimum benchmark area.`);
+        finalCoreArea = minCoreArea;
+    } else if (coreAreaPerNode > maxCoreArea) {
+        finalCoreArea = maxCoreArea;
+    }
 
     // 1. Generate Core(s) - Typology-Specific Placement
     const bbox = turf.bbox(workingPoly);
     const width = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
     const depth = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
 
-    // Derive dimensions dynamically from area, trying to create a square-ish rectangle
-    // but capping max dimension to avoid spilling out of wings
-    const coreAspect = 1.2; // W slightly wider than D usually
-    let coreW = Math.sqrt(finalCoreArea * coreAspect);
-    let coreD = finalCoreArea / coreW;
+    // Derive dimensions dynamically from area to act as a central spine/corridor
+    const isHorizontal = width > depth;
+    const longAxis = isHorizontal ? width : depth;
+    const shortAxis = isHorizontal ? depth : width;
+    
+    let coreW = 0;
+    let coreD = 0;
+    
+    // For standard slab/point scenarios, we stretch the core to reach peripheral units 
+    // We leave an ~8m buffer on ends to let units wrap around the ends
+    let spineLength = Math.max(10, longAxis - 16); 
+    let spineThickness = finalCoreArea / spineLength;
 
-    // Prevent core from overflowing narrow wings
-    const minDim = Math.min(width, depth);
-    if (coreW > minDim * 0.8) {
-        coreW = minDim * 0.8;
-        coreD = finalCoreArea / coreW;
+    // Constrain thickness between reasonable limits (min 2.5m corridor, max 50% of short axis)
+    if (spineThickness < 2.5) {
+        spineThickness = 2.5;
+        spineLength = finalCoreArea / spineThickness;
+    } else if (spineThickness > shortAxis * 0.5) {
+        spineThickness = shortAxis * 0.5;
+        spineLength = finalCoreArea / spineThickness;
     }
-    if (coreD > minDim * 0.8) {
-        coreD = minDim * 0.8;
-        coreW = finalCoreArea / coreD;
+    
+    if (isHorizontal) {
+        coreW = spineLength;
+        coreD = spineThickness;
+    } else {
+        coreW = spineThickness;
+        coreD = spineLength;
     }
+
+    // Prevent core from entirely overflowing narrow wings
+    coreW = Math.min(coreW, width * 0.95);
+    coreD = Math.min(coreD, depth * 0.95);
 
     console.log(`[Layout Gen] Computed Core -> Pop: ${popPerFloor.toFixed(0)}, Lifts: ${numLifts}, Stairs: ${numStairs}, Area: ${finalCoreArea.toFixed(1)} sqm, Dims: ${coreW.toFixed(1)}x${coreD.toFixed(1)}`);
 
     // Helper: Create a core at a specific point
     const createCoreAtPoint = (point: Feature<any>, id: string): Feature<Polygon> | null => {
         const coords = point.geometry.coordinates;
-        let corePoly = turf.bboxPolygon([
-            coords[0] - (coreW / 2) / 111320,
-            coords[1] - (coreD / 2) / 110540,
-            coords[0] + (coreW / 2) / 111320,
-            coords[1] + (coreD / 2) / 110540
-        ]);
+        // turf.destination calculates true meter distances on the globe avoiding latitude squishing
+        const pt = turf.point(coords);
+        
+        // Bounding box using proper distance offsets
+        const n = turf.destination(pt, coreD / 2 / 1000, 0).geometry.coordinates[1];
+        const s = turf.destination(pt, coreD / 2 / 1000, 180).geometry.coordinates[1];
+        const e = turf.destination(pt, coreW / 2 / 1000, 90).geometry.coordinates[0];
+        const w = turf.destination(pt, coreW / 2 / 1000, -90).geometry.coordinates[0];
+        
+        let corePoly = turf.bboxPolygon([w, s, e, n]);
 
         // Clip to building footprint
         // @ts-ignore
@@ -465,159 +516,80 @@ export function generateBuildingLayout(
     // 1.1 Generate Electrical Shaft (Vertical Utility)
     // Place it adjacent to the core
     try {
-        const coreBbox = turf.bbox(coreGeom);
-        const elecW = 2; // 2 meters
-        const elecD = 2; // 2 meters
-        const wDeg = elecW / 111320;
-        const hDeg = elecD / 110540;
+        const bBox = turf.bbox(workingPoly);
+        const minX = bBox[0];
+        const minY = bBox[1];
+        
+        // Electrical Shaft Area: ~1.0% to 1.5% of the single floor Gross Area
+        // Typical rule of thumb: 1.5% for robust distribution
+        const elecTargetArea = Math.max(2, (width * depth) * 0.015);
+        const elecDim = Math.sqrt(elecTargetArea); // Square shaft
+        
+        // Find a safe spot inside the building, ideally near the core spine
+        const startPoint = coreGeom ? turf.centroid(coreGeom) : turf.pointOnFeature(workingPoly);
+        
+        // Create an exact geometric square of the target area
+        const elecBoxFeature = turf.envelope(turf.buffer(startPoint, elecDim / 2, { units: 'meters' }));
+        
+        // Force Intersection inside the building to prevent overhangs in weird shapes
+        // @ts-ignore
+        const safeElecPoly = turf.intersect(elecBoxFeature, workingPoly) || elecBoxFeature;
 
-        // Candidate positions relative to Core BBox [minX, minY, maxX, maxY]
-        const candidates = [
-            // Right (original)
-            [coreBbox[2], coreBbox[1], coreBbox[2] + wDeg, coreBbox[1] + hDeg],
-            // Left
-            [coreBbox[0] - wDeg, coreBbox[1], coreBbox[0], coreBbox[1] + hDeg],
-            // Top
-            [coreBbox[0], coreBbox[3], coreBbox[0] + wDeg, coreBbox[3] + hDeg],
-            // Bottom
-            [coreBbox[0], coreBbox[1] - hDeg, coreBbox[0] + wDeg, coreBbox[1]]
-        ];
-
-        let placedElec = false;
-
-        // Strategy 1: Try adjacent to core
-        for (const box of candidates) {
-            const elecPoly = turf.bboxPolygon(box as [number, number, number, number]);
-
-            // @ts-ignore
-            if (turf.booleanContains(workingPoly, elecPoly)) {
-                // Perfect fit inside
-                utilities.push({
-                    id: `util-elec-${Math.random().toString(36).substr(2, 5)}`,
-                    name: 'Electrical Shaft',
-                    type: UtilityType.Electrical,
-                    geometry: elecPoly as Feature<Polygon>,
-                    centroid: turf.centroid(elecPoly),
-                    area: turf.area(elecPoly),
-                    visible: true
-                });
-                placedElec = true;
-                console.log('[Layout Generator] Placed Electrical Shaft (Contains)');
-                break;
-            } else {
-                // Try Intersection as fallback
-                // @ts-ignore
-                const clipped = turf.intersect(elecPoly, workingPoly);
-                if (clipped && turf.area(clipped) > 1.5) { // Ensure at least 1.5sqm remains
-                    utilities.push({
-                        id: `util-elec-${Math.random().toString(36).substr(2, 5)}`,
-                        name: 'Electrical Shaft',
-                        type: UtilityType.Electrical,
-                        geometry: clipped as Feature<Polygon>,
-                        centroid: turf.centroid(clipped),
-                        area: turf.area(clipped),
-                        visible: true
-                    });
-                    placedElec = true;
-                    console.log('[Layout Generator] Placed Electrical Shaft (Intersect)');
-                    break;
-                }
-            }
-        }
-
-        // Strategy 2: FORCE Placement inside building if candidates failed
-        if (!placedElec) {
-            console.log('[Layout Generator] Fallback: Forcing Electrical Shaft inside building');
-            // Find a point guaranteed to be inside
-            const innerPoint = turf.pointOnFeature(workingPoly); // Uses pointOnSurface logic
-            const [ix, iy] = innerPoint.geometry.coordinates;
-            // Create a small box around it
-            const forcePoly = turf.bboxPolygon([
-                ix - wDeg / 2, iy - hDeg / 2,
-                ix + wDeg / 2, iy + hDeg / 2
-            ]);
-
-            // Intersect again to be safe
-            // @ts-ignore
-            const safePoly = turf.intersect(forcePoly, workingPoly) || forcePoly;
-
-            utilities.push({
-                id: `util-elec-force-${Math.random().toString(36).substr(2, 5)}`,
-                name: 'Electrical Shaft',
-                type: UtilityType.Electrical,
-                geometry: safePoly as Feature<Polygon>,
-                centroid: turf.centroid(safePoly),
-                area: turf.area(safePoly),
-                visible: true
-            });
-        }
+        utilities.push({
+            id: `util-elec-${Math.random().toString(36).substr(2, 5)}`,
+            name: 'Electrical Shaft',
+            type: UtilityType.Electrical,
+            geometry: safeElecPoly as Feature<Polygon>,
+            centroid: turf.centroid(safeElecPoly as Feature<Polygon>),
+            area: turf.area(safeElecPoly as Feature<Polygon>),
+            visible: true
+        });
+        console.log('[Layout Generator] Placed Parameterized Electrical Shaft');
     } catch (e) {
         console.warn('Failed to place Electrical Shaft', e);
     }
 
     // 1.2 Generate HVAC Zone (Rooftop)
-    // Create a small corner box (4x4m) instead of full footprint
     try {
+        // Rooftop HVAC / Plant Room Area: ~1.5% to 2% of the Total Building GFA (all floors combined)
+        // If building has 5 floors of 1000m2 each (5000 GFA), HVAC is 5000 * 0.015 = 75m2
+        // @ts-ignore - Assuming params has maxFloors based on other context, falling back to 5
+        const floorsCount = params.maxFloors || 5;
+        const totalGFA = (width * depth) * Math.max(1, floorsCount);
+        const hvacTargetArea = Math.max(16, totalGFA * 0.015); // Minimum 16m2 package
+        const hvacSize = Math.sqrt(hvacTargetArea);
+        
+        // Use turf.envelope for general box extent
         const bBox = turf.bbox(workingPoly);
-        const hvacSize = 4; // 4x4 meter HVAC unit
-        const hvacSizeDeg = hvacSize / 111320; // Convert to degrees
-
-        // Try to place in NW corner (Vastu preferred for mechanical equipment)
-        // Position: Top-left corner with small inset
-        const inset = 1 / 111320; // 1m inset from edge
-
-        const hvacBox = turf.bboxPolygon([
-            bBox[0] + inset,
-            bBox[3] - hvacSizeDeg - inset,
-            bBox[0] + hvacSizeDeg + inset,
-            bBox[3] - inset
-        ]);
-
+        const nwPoint = turf.point([bBox[0], bBox[3]]);
+        
+        // Inset 1 meter south and east
+        const startPoint = turf.transformTranslate(nwPoint, 1, 135, { units: 'meters' });
+        
+        // Make the geometric box match the exact calculated mathematical size
+        const hvacBoxFeature = turf.envelope(turf.buffer(startPoint, hvacSize / 2, { units: 'meters' }));
+        
         // Check if the entire box is inside the building to prevent overhangs
         // @ts-ignore
-        const isInside = turf.booleanContains(workingPoly, hvacBox);
+        const isInside = turf.booleanContains(workingPoly, hvacBoxFeature);
 
-        let hvacPoly = hvacBox; // Use the fixed-size box directly
+        let hvacPoly = hvacBoxFeature;
 
-        // If NW corner is not fully inside, try NE corner
+        // If NW corner is not fully inside, evaluate alternatives
         if (!isInside) {
-            console.log('[Layout Generator] NW corner overhangs, trying NE corner');
-            const neBox = turf.bboxPolygon([
-                bBox[2] - hvacSizeDeg - inset,
-                bBox[3] - hvacSizeDeg - inset,
-                bBox[2] - inset,
-                bBox[3] - inset
-            ]);
+            console.log('[Layout Generator] HVAC corner overhangs, forcing intersection inside structure');
+            
+            // To ensure it fits beautifully regardless of irregular shapes, force intersect it.
             // @ts-ignore
-            if (turf.booleanContains(workingPoly, neBox)) {
-                hvacPoly = neBox;
+            const intersectedHvac = turf.intersect(hvacBoxFeature, workingPoly);
+            if (intersectedHvac && turf.area(intersectedHvac) > 4) {
+                 hvacPoly = intersectedHvac as Feature<Polygon>;
             } else {
-                // Try SW corner
-                const swBox = turf.bboxPolygon([
-                    bBox[0] + inset,
-                    bBox[1] + inset,
-                    bBox[0] + hvacSizeDeg + inset,
-                    bBox[1] + hvacSizeDeg + inset
-                ]);
-                // @ts-ignore
-                if (turf.booleanContains(workingPoly, swBox)) {
-                    hvacPoly = swBox;
-                } else {
-                    // Final fallback: Use pointOnFeature which GUARANTEES a point inside the polygon
-                    // reliable for U/L/H shapes where centroid might be outside
-                    console.log('[Layout Generator] Corner placement failed, using pointOnFeature');
-                    const innerPoint = turf.pointOnFeature(workingPoly);
-                    const [ix, iy] = innerPoint.geometry.coordinates;
-                    hvacPoly = turf.bboxPolygon([
-                        ix - hvacSizeDeg / 2,
-                        iy - hvacSizeDeg / 2,
-                        ix + hvacSizeDeg / 2,
-                        iy + hvacSizeDeg / 2
-                    ]);
-                }
+                 // Final Fallback: use the bounding box center to avoid missing it completely
+                 const center = turf.center(workingPoly);
+                 hvacPoly = turf.envelope(turf.buffer(center, hvacSize / 2, { units: 'meters' }));
             }
         }
-
 
         utilities.push({
             id: `util-hvac-${Math.random().toString(36).substr(2, 5)}`,
@@ -628,7 +600,7 @@ export function generateBuildingLayout(
             area: turf.area(hvacPoly),
             visible: true
         });
-        console.log('[Layout Generator] Placed Rooftop HVAC Unit (4x4m box)');
+        console.log('[Layout Generator] Placed Rooftop HVAC Unit (parameterized box)');
     } catch (e) {
         console.warn('Failed to place HVAC Zone', e);
     }
@@ -655,8 +627,18 @@ export function generateBuildingLayout(
     // Use the obstacles to cut the hole on the ALIGNED workingPoly
     let leasablePoly = workingPoly; 
     if (obstacles) {
-        // @ts-ignore
-        leasablePoly = turf.difference(workingPoly, obstacles);
+        try {
+            // @ts-ignore
+            leasablePoly = turf.difference(workingPoly, obstacles);
+        } catch (err) {
+            console.warn('turf.difference failed, trying small buffer fallback', err);
+            try {
+                // @ts-ignore
+                leasablePoly = turf.difference(workingPoly, turf.buffer(obstacles, 0.001, { units: 'kilometers' }));
+            } catch (err2) {
+                console.warn('Buffer fallback also failed for difference. Using original polygon.', err2);
+            }
+        }
         if (!leasablePoly) {
             // Fallback if difference fails -> Difference with just core
             if (coreGeom) {
@@ -689,118 +671,236 @@ export function generateBuildingLayout(
 
     // Now we ALWAYS have a useUnitMix array.
     const weightedAvgSize = useUnitMix.reduce((acc, unit) => acc + (unit.area * unit.mixRatio), 0);
+    // Determine the base module size to use for the underlying grid calculation
+    // Renamed local variable to avoid conflict with params.minUnitSize
+    const baseGridUnitSize = Math.max(10, Math.min(...useUnitMix.map(u => u.area)));
     
-    // 1. Create ONE unified grid based on weighted average size to prevent overlapping
+    // 1. Create ONE unified grid based on the MINIMUM unit size to allow cell grouping
     // Auto-adjust grid size to pack neatly into an integer number of divisions across BOTH dimensions
-    const nominalGridSizeM = Math.sqrt(weightedAvgSize);
+    const nominalGridSizeM = Math.sqrt(baseGridUnitSize);
 
     // Calculate discrete number of cells across width and depth
     const cellsX = Math.max(1, Math.round(width / nominalGridSizeM));
     const cellsY = Math.max(1, Math.round(depth / nominalGridSizeM));
     
-    // Derive exact cell dimensions DIRECTLY from bbox degree extent (avoids latitude-dependent
-    // meter→degree conversion which causes a systematic ~6% gap at India's ~20°N latitude).
+    // Derive exact cell dimensions DIRECTLY from bbox degree extent
     const bboxWidthDeg = bbox[2] - bbox[0]; // total longitude span of building
     const bboxHeightDeg = bbox[3] - bbox[1]; // total latitude span of building
-    const wDeg = bboxWidthDeg / cellsX;     // exact cell width in degrees
-    const hDeg = bboxHeightDeg / cellsY;    // exact cell height in degrees
+    const wDegGrid = bboxWidthDeg / cellsX;     // exact cell width in degrees
+    const hDegGrid = bboxHeightDeg / cellsY;    // exact cell height in degrees
 
     // Actual cell area in m² (still needed for threshold check)
     const gridW = width / cellsX;
     const gridH = depth / cellsY;
 
-    // Generate custom rectangular grid — cells perfectly tile the entire building bbox
-    let gridFeatures: Feature<Polygon>[] = [];
-    const minX = bbox[0], minY = bbox[1];
+    // 2. We now have 1x1 base modules covering the entire bbox cleanly without gaps.
+    // Each base module is EXACTLY wDeg x hDeg.
+    
+    // Create an exact mathematical grid of rectangular polygons
+    let gridFeatures: { poly: Feature<Polygon>, i: number, j: number }[] = [];
+    const minXGrid = bbox[0], minYGrid = bbox[1];
     
     for (let i = 0; i < cellsX; i++) {
         for (let j = 0; j < cellsY; j++) {
-            const cellMinX = minX + (i * wDeg);
-            const cellMinY = minY + (j * hDeg);
-            const cellMaxX = cellMinX + wDeg;
-            const cellMaxY = cellMinY + hDeg;
+            const cellMinX = minXGrid + (i * wDegGrid);
+            const cellMinY = minYGrid + (j * hDegGrid);
+            const cellMaxX = cellMinX + wDegGrid;
+            const cellMaxY = cellMinY + hDegGrid;
             
-            gridFeatures.push(turf.bboxPolygon([cellMinX, cellMinY, cellMaxX, cellMaxY]));
+            gridFeatures.push({
+                poly: turf.bboxPolygon([cellMinX, cellMinY, cellMaxX, cellMaxY]),
+                i, j
+            });
         }
     }
 
-    // 2. Find all valid leasable cells
-    let validCells: Feature<Polygon>[] = [];
+    // 3. Keep only modules that fall inside the leasable area
+    let validModules: { poly: Feature<Polygon>, validPoly: Feature<Polygon>, i: number, j: number }[] = [];
     gridFeatures.forEach((cell) => {
         try {
             // @ts-ignore
-            const intersection = turf.intersect(cell, leasablePoly);
-            // Use a very low threshold (5%) so edge cells that partially overlap the
-            // building boundary are included. The intersection clips them to the
-            // building shape, so they never overflow outside — they just look thin.
-            if (intersection && turf.area(intersection) > (gridW * gridH) * 0.05) {
-                validCells.push(intersection as Feature<Polygon>);
+            const intersection = turf.intersect(cell.poly, leasablePoly);
+            // We use a small threshold to avoid tiny slivers. Let's say 2% of the module's area.
+            if (intersection && turf.area(intersection) > (gridW * gridH) * 0.02) {
+                validModules.push({ ...cell, validPoly: intersection as Feature<Polygon> });
             }
         } catch (e) { }
     });
 
-    const totalValidCells = validCells.length;
-    console.log(`[Layout Generator] Unified Grid: ${totalValidCells} cells found (avg size: ${weightedAvgSize.toFixed(1)}m²)`);
+    const totalValidCells = validModules.length;
+    console.log(`[Layout Generator] Tiled Grid: ${totalValidCells} exact modules found (module size: ${baseGridUnitSize.toFixed(1)}m²)`);
 
-    // 3. Calculate exact unit counts using Largest Remainder Method
+    // 4. Determine how many modules each unit gets
+    const totalAreaM2 = totalValidCells * baseGridUnitSize;
     let exactCounts = useUnitMix.map(u => ({
         type: u.name,
         color: getColorForUnitType(u.name),
-        exactCount: totalValidCells * u.mixRatio,
-        target: 0
+        area: u.area,
+        modulesNeeded: Math.max(1, Math.round(u.area / baseGridUnitSize)), 
+        exactArea: totalAreaM2 * u.mixRatio,
+        targetUnits: 0,
+        assignedModules: 0
     }));
 
-    let totalAllocated = 0;
+    // Calculate how many UNITS of each type we can fit based on their mix ratio
+    let totalTargetUnits = 0;
     exactCounts.forEach(u => {
-        u.target = Math.floor(u.exactCount);
-        totalAllocated += u.target;
+        u.targetUnits = Math.floor(u.exactArea / u.area);
+        totalTargetUnits += u.targetUnits;
+        u.assignedModules = u.targetUnits * u.modulesNeeded;
     });
 
-    let remainder = totalValidCells - totalAllocated;
-    exactCounts.sort((a, b) => (b.exactCount - b.target) - (a.exactCount - a.target));
-
-    for (let i = 0; i < remainder; i++) {
-        exactCounts[i % exactCounts.length].target += 1;
+    // Assign any remaining unallocated modules to the unit type with highest shortage
+    let allocatedModules = exactCounts.reduce((acc, u) => acc + u.assignedModules, 0);
+    let remainingModules = totalValidCells - allocatedModules;
+    
+    // Sort so the one that needs it most gets extra units
+    exactCounts.sort((a, b) => (b.exactArea - (b.targetUnits * b.area)) - (a.exactArea - (a.targetUnits * a.area)));
+    
+    let loopCounter = 0;
+    while (remainingModules > 0 && loopCounter < 100) {
+        for (let u of exactCounts) {
+            if (remainingModules >= u.modulesNeeded) {
+                u.targetUnits += 1;
+                u.assignedModules += u.modulesNeeded;
+                remainingModules -= u.modulesNeeded;
+            } else if (remainingModules > 0 && u === exactCounts[exactCounts.length - 1]) {
+                // Not enough space for even the smallest unit. Force allocate it to not waste space.
+                u.targetUnits += 1;
+                u.assignedModules += remainingModules; 
+                remainingModules = 0;
+            }
+        }
+        loopCounter++;
     }
 
-    // Create proportional "deck" of unit types
-    let unitDeck: { type: string, color: string }[] = [];
+    // 5. Create the deck of individual units
+    let unitDeck: { type: string, color: string, modules: number, area: number }[] = [];
     exactCounts.forEach(u => {
-        for (let i = 0; i < u.target; i++) {
-            const color = i % 2 === 0 ? u.color : darkenColor(u.color);
-            unitDeck.push({ type: u.type, color });
+        for (let k = 0; k < u.targetUnits; k++) {
+            const color = k % 2 === 0 ? u.color : darkenColor(u.color);
+            unitDeck.push({ type: u.type, color, modules: u.modulesNeeded, area: u.area });
         }
     });
 
-    // Deterministic shuffle to prevent clumping of unit types
+    // Shuffle the unit deck deterministically so big and small units mix
     let seed = Math.floor(turf.area(workingPoly) || 12345);
-    const random = () => {
-        seed = (seed * 9301 + 49297) % 233280;
-        return seed / 233280;
-    };
+    const random = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
     for (let i = unitDeck.length - 1; i > 0; i--) {
         const j = Math.floor(random() * (i + 1));
         [unitDeck[i], unitDeck[j]] = [unitDeck[j], unitDeck[i]];
     }
 
-    // We can sort the valid cells to group units nicely (e.g. by Y coordinate then X)
-    validCells.sort((a, b) => {
-        const cA = turf.centroid(a).geometry.coordinates;
-        const cB = turf.centroid(b).geometry.coordinates;
-        if (Math.abs(cA[1] - cB[1]) < 0.0001) return cA[0] - cB[0];
-        return cA[1] - cB[1];
+    // Sort valid modules to cluster them logically (e.g. sweep left-to-right, top-to-bottom)
+    validModules.sort((a, b) => {
+        if (a.j !== b.j) return a.j - b.j;
+        return a.i - b.i;
     });
 
-    // 4. Assign units
-    validCells.forEach((cell, idx) => {
-        const assignment = unitDeck[idx];
-        units.push({
-            id: `unit-${idx}`,
-            type: assignment.type,
-            geometry: cell,
-            color: assignment.color
+    // 6. Assign adjacent modules to units
+    let usedModules = new Array(validModules.length).fill(false);
+    
+    let unitIdx = 0;
+    while (usedModules.includes(false) && unitIdx < validModules.length * 2) {
+        let assignment = unitDeck[unitIdx % unitDeck.length];
+        if (!assignment) {
+            assignment = exactCounts[0] ? { type: exactCounts[0].type, color: exactCounts[0].color, modules: exactCounts[0].modulesNeeded, area: exactCounts[0].area } : { type: 'Unit', color: '#777', modules: 1, area: 100 };
+        }
+        
+        let cellGroup: Feature<Polygon>[] = [];
+        let accumulatedArea = 0;
+        let startIndex = usedModules.findIndex(used => !used);
+        
+        if (startIndex === -1) break; // Full floor
+        
+        // Take the first available module
+        const firstCell = validModules[startIndex].validPoly;
+        cellGroup.push(firstCell);
+        usedModules[startIndex] = true;
+        accumulatedArea += turf.area(firstCell);
+        
+        // Find adjacent available cells until we hit the target area for this unit type
+        // We use an index-based search rather than pure distance for cleaner orthogonal merges
+        while (accumulatedArea < assignment.area) {
+            let bestIdx = -1;
+            let bestDist = Infinity;
+            
+            // Simplified nearest-neighbor search based on centroid distance
+            const currentCentroid = turf.centroid(cellGroup[cellGroup.length-1]);
+            
+            for (let j = 0; j < validModules.length; j++) {
+                if (!usedModules[j]) {
+                    const candidateCentroid = turf.centroid(validModules[j].validPoly);
+                    const dist = turf.distance(currentCentroid, candidateCentroid);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestIdx = j;
+                    }
+                }
+            }
+            
+            if (bestIdx !== -1) {
+                const nextCell = validModules[bestIdx].validPoly;
+                cellGroup.push(nextCell);
+                usedModules[bestIdx] = true;
+                accumulatedArea += turf.area(nextCell);
+            } else {
+                break; // No more adjacent cells
+            }
+        }
+        
+        // Convert to a FeatureCollection to dissolve
+        // turf.intersect can sometimes return MultiPolygons, which turf.dissolve does not accept.
+        // We flatten everything first.
+        let flattenedPolys: Feature<Polygon>[] = [];
+        cellGroup.forEach(cell => {
+             if (cell.geometry.type === 'Polygon') {
+                 flattenedPolys.push(cell as Feature<Polygon>);
+             } else if (cell.geometry.type === 'MultiPolygon') {
+                 // @ts-ignore
+                 const flattened = turf.flatten(cell);
+                 flattened.features.forEach((f: any) => flattenedPolys.push(f as Feature<Polygon>));
+             }
         });
-    });
+
+        const fc = turf.featureCollection(flattenedPolys);
+        
+        let dissolvedFeatures: Feature<Polygon>[] = [];
+        try {
+            // Dissolve merges adjacent/overlapping polygons cleanly into one solid shape
+            // @ts-ignore
+            const dissolved = turf.dissolve(fc);
+            
+            if (dissolved && dissolved.features && dissolved.features.length > 0) {
+                // Dissolve may return multiple features if they are disjoint!
+                dissolved.features.forEach((f: any) => {
+                    if (f.geometry.type === 'Polygon') {
+                         dissolvedFeatures.push(f as Feature<Polygon>);
+                    } else if (f.geometry.type === 'MultiPolygon') {
+                         const parts = (f.geometry.coordinates as [number, number][][][]).map((coords: any) => turf.polygon(coords));
+                         dissolvedFeatures.push(...parts as Feature<Polygon>[]);
+                    }
+                });
+            } else {
+                dissolvedFeatures = flattenedPolys; // fallback
+            }
+        } catch (err) {
+            console.warn('[Layout Generator] Dissolve failed, falling back to all individual modules', err);
+            dissolvedFeatures = flattenedPolys;
+        }
+        
+        // Ensure ALL parts of the unit are pushed, to avoid missing blocks creating "gaps"
+        dissolvedFeatures.forEach((geom, ptIdx) => {
+            units.push({
+                id: `unit-${unitIdx}-${ptIdx}`,
+                type: assignment.type,
+                geometry: geom,
+                color: assignment.color
+            });
+        });
+        
+        unitIdx++;
+    }
 
     // 3. Generate Entrances (NEW)
     try {
@@ -988,13 +1088,16 @@ export function generateSiteUtilities(
     buildings: any[], // Array of building features containing units
     vastuCompliant: boolean = false,
     obstacles: Feature<Polygon>[] = [], // Roads, Parking, etc.
-    selectedUtilities?: string[]
+    selectedUtilities?: string[],
+    peripheralParkingZone?: Feature<Polygon | MultiPolygon> | null // Container for utilities (5m parking ring)
 ): { utilities: any[], buildings: any[] } {
     const utilities: any[] = [];
-    const minX = turf.bbox(plotPoly)[0];
-    const minY = turf.bbox(plotPoly)[1];
-    const maxX = turf.bbox(plotPoly)[2];
-    const maxY = turf.bbox(plotPoly)[3];
+    // When parking zone is provided, use it as the placement container
+    const containerPoly = (peripheralParkingZone || plotPoly) as Feature<Polygon>;
+    const minX = turf.bbox(containerPoly)[0];
+    const minY = turf.bbox(containerPoly)[1];
+    const maxX = turf.bbox(containerPoly)[2];
+    const maxY = turf.bbox(containerPoly)[3];
 
     // --- 1. CALCULATE DEMAND ---
 
@@ -1037,17 +1140,20 @@ export function generateSiteUtilities(
     // STP (Sewage Treatment Plant)
     // Formula: Capacity = Population * 120 LPCD * 1.2
     const stpCapacityKLD = (population * 120 * 1.2) / 1000;
-    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 1.2)); // 1.2 sqm per KLD approx
+    // Area conversion: Roughly 0.8 to 1.0 sqm per KLD for modern compact plants
+    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 0.9)); 
 
     // UGT (Underground Water Tank)
     // Formula: Capacity = Population * 135 LPCD * 1.0 (Full Day Storage)
     const ugtVolume = (population * 135 * 1.0) / 1000; // m3
-    const ugtArea = Math.max(20, Math.ceil(ugtVolume / 2.5)); // Min 20m2, 2.5m depth
+    // Assume 3.5m effective depth for large underground tanks to save surface footprint
+    const ugtArea = Math.max(20, Math.ceil(ugtVolume / 3.5)); 
 
     // WTP (Water Treatment Plant)
     // Capacity = Pop * 135 * 1.2
     const wtpCapacityKLD = (population * 135 * 1.2) / 1000;
-    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 0.5));
+    // WTPs are generally more compact than STPs, about 0.4 - 0.5 sqm per KLD
+    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 0.45));
 
     // OWC (Organic Waste Converter)
     // Formula: Capacity = Total Units * 0.5 kg/day
@@ -1057,24 +1163,25 @@ export function generateSiteUtilities(
     // DG Set (Diesel Generator)
     // Formula: KVA = (Essential Load * 0.8) / (0.9 * 0.8)
     // Essential Load = 3kW * No of units
-    // Space: 0.8-1.2 sqm per kVA (User Guide) - conservatively using 0.5 for footprint vs room
+    // Space: 0.8-1.2 sqm per kVA (From Methodology)
     const essentialLoad = 3 * totalUnits;
     const dgKVA = (essentialLoad * 0.8) / (0.9 * 0.8);
-    const dgArea = Math.max(15, Math.ceil(dgKVA * 0.2)); // Using 0.2 to avoid massive sizes, assuming stacked/efficient layout
+    // Use 1.0 sqm per kVA as strictly requested by the rule document
+    const dgArea = Math.max(15, Math.min(250, Math.ceil(dgKVA * 1.0)));
 
     // Transformer / HT Yard
-    // 500 kVA -> 25–35 sqm (~0.06 sqm/kVA)
-    const transformerArea = Math.max(25, Math.ceil(dgKVA * 0.07));
+    // Space: 500 kVA -> 25–35 sqm (~0.06 sqm/kVA)
+    const transformerArea = Math.max(25, Math.min(150, Math.ceil(dgKVA * 0.06)));
 
     // Gas Bank (LPG Manifold)
     // Space: 15–40 sqm
     const gasArea = Math.max(15, Math.min(40, Math.ceil(population * 0.02)));
 
     // Fire Pump Room & Tank
-    // Tank = High rise -> 200KL -> 200/2.5 = 80sqm.
+    // Tank = High rise -> 200KL -> 200/3.5 = 57sqm.
     // Pump Room = Basement/Ground
     const fireTankVolume = 200; // 200KL standard for high rise
-    const fireTankArea = 80; // 2.5m depth
+    const fireTankArea = Math.ceil(fireTankVolume / 3.5); // 3.5m depth
     const firePumpRoomArea = 30;
 
     // Admin / Security Office (SW)
@@ -1084,10 +1191,39 @@ export function generateSiteUtilities(
     const solarCapacityKW = population * 0.8 * 0.7 * 0.25;
     const solarAreaReq = solarCapacityKW * 10; // 10 sqm/kW
 
+    // Rainwater Harvesting (RWH)
+    // Formula: Harvest = Roof Area * Rainfall (e.g., 0.8m) * Runoff(0.85)
+    // Storage = min(Harvest * 0.15, Pop * 30 * 30) (in Liters)
+    let roofAreaSum = 0;
+    buildings.forEach(b => {
+        try {
+            roofAreaSum += b.properties?.area || turf.area(b.geometry || b);
+        } catch (e) {}
+    });
+    const annualHarvestVol = roofAreaSum * 0.8 * 0.85; // m3
+    // Storage needed is 15% of annual harvest or 30 days of 30 LPCD
+    const maxStorageVol = (population * 30 * 30) / 1000; // m3
+    const rwhVolume = Math.min(annualHarvestVol * 0.15, maxStorageVol);
+    // Area mapped to 2.5m depth
+    const rwhArea = Math.max(15, Math.ceil(rwhVolume / 2.5));
+
     // EV Charging
     const evPoints = Math.ceil(totalUnits * 0.1); // 10%
 
-    console.log(`[Utility Generator] Pop: ${population}. Sizing: STP=${stpArea}, UGT=${ugtArea}, DG=${dgArea}, Trans=${transformerArea}`);
+    // console.groupCollapsed(`[Utility Math] Calculation Audit for Pop: ${population}`);
+    // console.log(`Units: ${totalUnits}, Pop: ${population}`);
+    // console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@0.9 sqm/KLD)`);
+    // console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@0.45 sqm/KLD)`);
+    // console.log(`UGT (Water) -> Vol: ${ugtVolume.toFixed(1)} m3 | Area: ${ugtArea} sqm (3.5m depth)`);
+    // console.log(`RWH -> Roof Area: ${roofAreaSum.toFixed(1)} sqm | Annual Harvest: ${annualHarvestVol.toFixed(1)} m3 | Storage Vol: ${rwhVolume.toFixed(1)} m3 | Area: ${rwhArea} sqm (2.5m depth)`);
+    // console.log(`Electrical -> Essential Load: ${essentialLoad} kW | DG kVA: ${dgKVA.toFixed(1)}`);
+    // console.log(`DG Set Area -> ${dgArea} sqm (@1.0 sqm/kVA, max 250)`);
+    // console.log(`Transformer Area -> ${transformerArea} sqm (@0.06 sqm/kVA, max 150)`);
+    // console.log(`Fire Tank -> Vol: ${fireTankVolume} m3 | Area: ${fireTankArea} sqm (3.5m depth)`);
+    // console.log(`Gas Area -> ${gasArea} sqm | Admin Area -> ${adminBlockArea} sqm | OWC Area -> ${owcArea} sqm`);
+    // console.log(`Solar PV -> ${solarCapacityKW.toFixed(1)} kW req = ${solarAreaReq.toFixed(1)} sqm`);
+    // console.log(`EV Points -> ${evPoints} points`);
+    // console.groupEnd();
 
     // --- 3. GROUPING & PLACEMENT ZONES ---
 
@@ -1103,7 +1239,7 @@ export function generateSiteUtilities(
     // NE: Water Zone (Vastu: Water/Eshanya)
     if (shouldInclude(UtilityType.Water)) groupNE.push({ type: UtilityType.Water, name: 'UGT (Domestic)', area: ugtArea, color: '#4FC3F7', height: 2.5, level: -1 });
     // RWH often near Water
-    if (shouldInclude(UtilityType.RainwaterHarvesting)) groupNE.push({ type: UtilityType.RainwaterHarvesting, name: 'RWH Tank', area: Math.ceil(ugtArea * 0.3), color: '#81D4FA', height: 2.5, level: -1 });
+    if (shouldInclude(UtilityType.RainwaterHarvesting)) groupNE.push({ type: UtilityType.RainwaterHarvesting, name: 'RWH Tank', area: rwhArea, color: '#81D4FA', height: 2.5, level: -1 });
 
     // SE: Fire / Electrical (Vastu: Agni)
     if (shouldInclude(UtilityType.Electrical)) groupSE.push({ type: UtilityType.Electrical, name: 'Transformer Yard', area: transformerArea, color: '#FF9800', height: 2.5, level: 0 });
@@ -1130,7 +1266,8 @@ export function generateSiteUtilities(
 
         // Constants for placement
         const margin = 1.5; // Reduced from 3m for compact layout
-        const gap = 1.0; // Reduced from 2m for compact layout
+        // Use a smaller gap in the parking ring to pack them tighter
+        const gap = peripheralParkingZone ? 0.1 : 1.0;
         const wPerDeg = 111320;
         const hPerDeg = 110540;
 
@@ -1146,19 +1283,20 @@ export function generateSiteUtilities(
         console.log(`[Utility Debug] Placing in ${corner}: bbox=[${minX}, ${minY}, ${maxX}, ${maxY}], corner=[${cornerX}, ${cornerY}]`);
 
         // Find Valid Start Point (March inward from corner towards centroid)
-        const plotCentroid = turf.centroid(plotPoly);
-        const centerCoords = plotCentroid.geometry.coordinates;
+        // Use containerPoly for the march — when placing in a ring, we must find
+        // a point inside the ring, NOT inside the interior hole.
+        const marchTarget = turf.centroid(containerPoly);
         let currentPoint = turf.point([cornerX, cornerY]);
 
         // Safety Break
         let steps = 0;
         const maxSteps = 1000; // 1000 meters max search inward (Increased for large plots)
 
-        // March Inward Loop
+        // March Inward Loop — check against containerPoly (ring when parking zone)
         // @ts-ignore
-        while (!turf.booleanPointInPolygon(currentPoint, plotPoly) && steps < maxSteps) {
+        while (!turf.booleanPointInPolygon(currentPoint, containerPoly) && steps < maxSteps) {
             // Move 1 meter towards centroid
-            const bearing = turf.bearing(currentPoint, plotCentroid);
+            const bearing = turf.bearing(currentPoint, marchTarget);
             currentPoint = turf.destination(currentPoint, 1, bearing, { units: 'meters' });
             steps++;
         }
@@ -1168,9 +1306,10 @@ export function generateSiteUtilities(
             return group; // Skip this group if no valid point found
         }
 
-        // Apply Margin inward
-        const bearing = turf.bearing(currentPoint, plotCentroid);
-        currentPoint = turf.destination(currentPoint, margin, bearing, { units: 'meters' });
+        // Apply Margin inward (smaller for ring since it's only 5m wide)
+        const effectiveMargin = peripheralParkingZone ? 0.5 : margin;
+        const bearing = turf.bearing(currentPoint, marchTarget);
+        currentPoint = turf.destination(currentPoint, effectiveMargin, bearing, { units: 'meters' });
 
         let [cursorX, cursorY] = currentPoint.geometry.coordinates;
 
@@ -1186,27 +1325,46 @@ export function generateSiteUtilities(
             let bestDist = Infinity;
             let bestPoly: Feature<Polygon> | null = null;
 
-            const side = Math.sqrt(util.area);
+            // Cap utility side at 3.5m when placing inside the 5m peripheral parking strip
+            // (gives 1.5m clearance to prevent intersecting with adjacent road buffers)
+            const maxSide = peripheralParkingZone ? 3.5 : Infinity;
+            const side = Math.min(Math.sqrt(util.area), maxSide);
             const uW = side;
             const uH = side;
             const uWDeg = uW / wPerDeg;
             const uHDeg = uH / hPerDeg;
 
-            // Search range: 0 to 40 (steps) roughly covering 0-120m
-            // Step size approx 3m
-            const maxSteps = 40;
-            const stepM = 3;
+            // For the narrow parking ring, use smaller steps and more iterations
+            const searchSteps = peripheralParkingZone ? 120 : 40;
+            const stepM = peripheralParkingZone ? 0.5 : 3;
 
-            for (let i = 0; i < maxSteps; i++) {
-                for (let j = 0; j < maxSteps; j++) {
-                    if (placed) break; // Optimization if we decided to break early (not used for best-fit logic but valid here)
+            // Precalculate and sort grid steps by distance from origin to spiral outward
+            const gridPoints: {i: number, j: number, localX: number, localY: number, dist: number}[] = [];
+            for (let i = 0; i < searchSteps; i++) {
+                for (let j = 0; j < searchSteps; j++) {
+                    const localX = (i - (searchSteps / 2)) * stepM;
+                    const localY = (j - (searchSteps / 2)) * stepM;
+                    gridPoints.push({
+                        i, j, localX, localY, dist: Math.sqrt(localX * localX + localY * localY)
+                    });
+                }
+            }
+            gridPoints.sort((a,b) => a.dist - b.dist);
 
-                    // Calculate offsets based on Grow direction
-                    // growX=1 means we want to interact with higher X (move Right)
-                    // We start at corner and move INWARD.
+            for (const pt of gridPoints) {
+                if (placed) break;
 
-                    const offsetX = i * stepM / wPerDeg * growX;
-                    const offsetY = j * stepM / hPerDeg * growY;
+                const localX = pt.localX;
+                const localY = pt.localY;
+                    
+                    // Rotate the local offsets by plotOrientation so the grid search 
+                    // stays parallel to the plot edges (fixes narrow ring bounds)
+                    const rad = -plotOrientation * Math.PI / 180;
+                    const rotX = localX * Math.cos(rad) - localY * Math.sin(rad);
+                    const rotY = localX * Math.sin(rad) + localY * Math.cos(rad);
+
+                    const offsetX = rotX / wPerDeg;
+                    const offsetY = rotY / hPerDeg;
 
                     // Define Candidate Poly (Top-Left anchor relative to scan)
                     // Original logic: x1 is Start, x2 is Start + Width
@@ -1215,17 +1373,38 @@ export function generateSiteUtilities(
                     const originX = cursorX + offsetX;
                     const originY = cursorY + offsetY;
 
-                    // Use rotated rectangle helper!
-                    const poly = createRotatedRect(turf.point([originX, originY]), uW, uH, plotOrientation);
+                    // Generate dynamic shapes based on utility type or random seed
+                    // Use a seeded random based on utility name and type to keep it deterministic per layout
+                    const uSeedStr = util.name + util.type + pt.i + pt.j;
+                    let uSeed = 0;
+                    for (let c = 0; c < uSeedStr.length; c++) uSeed += uSeedStr.charCodeAt(c);
+                    
+                    const shapeTypeInt = uSeed % 4; // 0=Rect, 1=Circle, 2=Hexagon, 3=Octagon
+                    let poly: Feature<Polygon>;
+                    
+                    if (shapeTypeInt === 0) {
+                        poly = createRotatedRect(turf.point([originX, originY]), uW, uH, plotOrientation);
+                    } else {
+                        // For circles, hexagons, octagons, we use turf.circle with different step counts
+                        // uW is the max bounding box side, so radius is uW/2
+                        const radius = uW / 2;
+                        const steps = shapeTypeInt === 1 ? 32 : (shapeTypeInt === 2 ? 6 : 8);
+                        poly = turf.circle(turf.point([originX, originY]), radius, { units: 'meters', steps: steps });
+                    }
 
-                    // 1. BOUNDARY CHECK
+                    // 1. BOUNDARY CHECK — use containerPoly (=parking zone when available)
                     let inside = false;
                     try {
-                        // Use a strictly buffered safe zone (-1.0m) to enforce the requested setback
-                        // @ts-ignore
-                        const safeContainer = turf.buffer(plotPoly, -1.0, { units: 'meters' }) || plotPoly;
-                        // @ts-ignore
-                        inside = turf.booleanContains(safeContainer, poly);
+                        // For the narrow parking ring, skip buffer entirely to maximize placement chances
+                        if (peripheralParkingZone) {
+                            // @ts-ignore
+                            inside = turf.booleanContains(containerPoly, poly);
+                        } else {
+                            // @ts-ignore
+                            const safeContainer = turf.buffer(containerPoly, -1.0, { units: 'meters' }) || containerPoly;
+                            // @ts-ignore
+                            inside = turf.booleanContains(safeContainer, poly);
+                        }
                     } catch (e) { }
 
                     if (!inside) continue;
@@ -1233,9 +1412,10 @@ export function generateSiteUtilities(
                     // 2. PRE-CALCULATE BUFFERED POLY (Ensure Gap)
                     let bufferedPoly;
                     try {
-                        // Use consistent gap of 1.0m for all checks
+                        // Use smaller gap (0.2m) when in parking ring to avoid hitting the adjacent road
+                        const gapDistance = peripheralParkingZone ? 0.2 : 1.0;
                         // @ts-ignore
-                        bufferedPoly = turf.buffer(poly, 1.0, { units: 'meters' });
+                        bufferedPoly = turf.buffer(poly, gapDistance, { units: 'meters' });
                     } catch (e) { bufferedPoly = poly; }
                     const checkPoly = bufferedPoly || poly;
 
@@ -1266,73 +1446,71 @@ export function generateSiteUtilities(
                     }
 
                     // FORCE RESOLVE: If overlapping building at PRIORITY CORNER spot
+                    // Removed the artificial `isHighPriority` (i<=10 && j<=10) cap. The grid search iterates from (0,0) outwards,
+                    // so the first time `inside === true` and `buildingOverlap === true` happens, it is mathematically the closest
+                    // valid spot to the corner that fits inside the plot bounding geometry. We should always attempt resolution here.
                     if (buildingOverlap) {
-                        // Priority range increased to 10 steps to ensure Vastu spot
-                        const isHighPriority = (i <= 10 && j <= 10);
+                        // Identify colliders
+                        const colliding = buildings.filter(b => b.visible !== false && turf.booleanIntersects(checkPoly, b.geometry));
 
-                        if (isHighPriority) {
-                            // Identify colliders
-                            const colliding = buildings.filter(b => b.visible !== false && turf.booleanIntersects(checkPoly, b.geometry));
+                        for (const b of colliding) {
+                            if (!b.geometry) continue;
 
-                            for (const b of colliding) {
-                                if (!b.geometry) continue;
-
-                                // Helper: Validate if a geometry works (Fits in plot, clears utility, no building clashes)
-                                const isValidCandidate = (geo: any) => {
-                                    try {
-                                        // 1. Must be inside Plot - REMOVED: Since we rely on Resize (Scale) in place, 
-                                        // we assume original building was valid. strict check against 'plotPoly' (which might be innerSetback) 
-                                        // would incorrectly flag buildings in the setback as invalid.
-                                        // if (!turf.booleanContains(plotPoly, geo)) return false;
-
-                                        // 2. Must NOT overlap the Utility (+Gap) we are trying to place
-                                        // @ts-ignore
-                                        if (turf.booleanIntersects(geo, checkPoly)) return false;
-
-                                        // 3. Must NOT overlap OTHER buildings
-                                        for (const other of buildings) {
-                                            if (other.id === b.id || other.visible === false) continue;
-                                            // @ts-ignore
-                                            if (turf.booleanIntersects(geo, other.geometry)) return false;
-                                        }
-                                        return true;
-                                    } catch (e) { return false; }
-                                };
-
-                                let resolved = false;
-
-                                // STRATEGY 1: RESIZE (Shrink)
+                            // Helper: Validate if a geometry works (Fits in plot, clears utility, no building clashes)
+                            const isValidCandidate = (geo: any) => {
                                 try {
-                                    const bbox = turf.bbox(b);
-                                    // @ts-ignore
-                                    const w = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[1]]), { units: 'meters' });
-                                    // @ts-ignore
-                                    const h = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[0], bbox[3]]), { units: 'meters' });
+                                    // 1. Must be inside Plot - REMOVED: Since we rely on Resize (Scale) in place, 
+                                    // we assume original building was valid. strict check against 'plotPoly' (which might be innerSetback) 
+                                    // would incorrectly flag buildings in the setback as invalid.
+                                    // if (!turf.booleanContains(plotPoly, geo)) return false;
 
-                                    if (w > 20 && h > 20) { // Only shrink if reasonable size
-                                        const scales = [0.9, 0.8, 0.7, 0.65, 0.6]; // Try more aggressive reduction (down to 60%)
-                                        for (const s of scales) {
-                                            // @ts-ignore
-                                            const scaled = turf.transformScale(b, s);
-                                            if (isValidCandidate(scaled.geometry)) {
-                                                b.geometry = scaled.geometry;
-                                                console.log(`[Utility Force] Shrunk building ${b.id} by factor ${s} to fit`);
-                                                resolved = true;
-                                                break;
-                                            }
+                                    // 2. Must NOT overlap the Utility (+Gap) we are trying to place
+                                    // @ts-ignore
+                                    if (turf.booleanIntersects(geo, checkPoly)) return false;
+
+                                    // 3. Must NOT overlap OTHER buildings
+                                    for (const other of buildings) {
+                                        if (other.id === b.id || other.visible === false) continue;
+                                        // @ts-ignore
+                                        if (turf.booleanIntersects(geo, other.geometry)) return false;
+                                    }
+                                    return true;
+                                } catch (e) { return false; }
+                            };
+
+                            let resolved = false;
+
+                            // STRATEGY 1: RESIZE (Shrink)
+                            try {
+                                const bbox = turf.bbox(b);
+                                // @ts-ignore
+                                const w = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[1]]), { units: 'meters' });
+                                // @ts-ignore
+                                const h = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[0], bbox[3]]), { units: 'meters' });
+
+                                if (w > 20 && h > 20) { // Only shrink if reasonable size
+                                    const scales = [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]; // More granular steps
+                                    for (const s of scales) {
+                                        // @ts-ignore
+                                        const scaled = turf.transformScale(b, s);
+                                        if (isValidCandidate(scaled.geometry)) {
+                                            b.geometry = scaled.geometry;
+                                            console.log(`[Utility Force] Shrunk building ${b.id} by factor ${s} to fit`);
+                                            resolved = true;
+                                            break;
                                         }
                                     }
-                                } catch (e) { console.warn('Resize failed', e); }
+                                }
+                            } catch (e) { console.warn('Resize failed', e); }
 
-                                if (resolved) continue;
+                            if (resolved) continue;
 
-                                // STRATEGY 2: REMOVE (Last Resort - Move Removed to prevent overlaps)
-                                b.visible = false;
-                                console.log(`[Utility Force] Removing building ${b.id} (Resize failed)`);
-                            }
-                            // Assume resolved
-                            buildingOverlap = false;
+                            // STRATEGY 2: REMOVE (Last Resort - Move Removed to prevent overlaps)
+                            b.visible = false;
+                            console.log(`[Utility Force] Removing building ${b.id} (Resize failed)`);
                         }
+                        // Assume resolved
+                        buildingOverlap = false;
                     }
 
                     if (buildingOverlap) continue;
@@ -1379,7 +1557,7 @@ export function generateSiteUtilities(
                         height: util.height
                     });
 
-                    console.log(`[Utility Debug] ✓ Placed ${util.name} in ${corner} (Grid ${i},${j})`);
+                    console.log(`[Utility Debug] ✓ Placed ${util.name} in ${corner} (Grid ${pt.i},${pt.j})`);
                     placed = true;
 
                     // Update cursor for next utility in group? 
@@ -1387,8 +1565,6 @@ export function generateSiteUtilities(
                     // But we don't want to stack them exactly on top of the search path.
                     // The 'utilityOverlap' check handles this. We just continue loop.
                     break;
-                }
-                if (placed) break;
             }
 
             if (!placed) {
@@ -1399,27 +1575,41 @@ export function generateSiteUtilities(
         return failedItems;
     };
 
-    // Execute Placement (Primary Vastu Directions)
-    // We capture failures to attempt secondary (acceptable) directions
-    const failedNE = placeGroupInCorner(groupNE, 'NE');
-    const failedSE = placeGroupInCorner(groupSE, 'SE');
-    const failedNW = placeGroupInCorner(groupNW, 'NW'); // STP/OWC/WTP might fail here
-    const failedSW = placeGroupInCorner(groupSW, 'SW');
+    // Execute Placement
+    if (vastuCompliant) {
+        // VASTU MODE: Place groups in their designated corners
+        const failedNE = placeGroupInCorner(groupNE, 'NE');
+        const failedSE = placeGroupInCorner(groupSE, 'SE');
+        const failedNW = placeGroupInCorner(groupNW, 'NW');
+        const failedSW = placeGroupInCorner(groupSW, 'SW');
 
-    // --- FAILOVER LOGIC (Strict Vastu Compliance) ---
-
-    // 1. STP / WTP / OWC: Best = NW, Good = SE. Avoid = NE.
-    // If NW failed, try SE.
-    const retrySE: UtilityDef[] = [];
-    failedNW.forEach(u => {
-        if (['STP', 'WTP', 'OWC'].some(t => u.type.includes(t) || u.name.includes(t))) {
-            console.log(`[Utility Failover] Moving ${u.name} from NW to SE (Acceptable Direction)`);
-            retrySE.push(u);
+        // --- FAILOVER LOGIC (Strict Vastu Compliance) ---
+        // STP / WTP / OWC: Best = NW, Good = SE. Avoid = NE.
+        const retrySE: UtilityDef[] = [];
+        failedNW.forEach(u => {
+            if (['STP', 'WTP', 'OWC'].some(t => u.type.includes(t) || u.name.includes(t))) {
+                console.log(`[Utility Failover] Moving ${u.name} from NW to SE (Acceptable Direction)`);
+                retrySE.push(u);
+            }
+        });
+        if (retrySE.length > 0) {
+            placeGroupInCorner(retrySE, 'SE');
         }
-    });
+    } else {
+        // NON-VASTU MODE: Pool all utilities and place them sequentially
+        // Try each corner in order; any utility can go in any corner
+        const allUtils = [...groupNE, ...groupSE, ...groupNW, ...groupSW];
+        const corners: ('NE' | 'SE' | 'SW' | 'NW')[] = ['NE', 'SE', 'SW', 'NW'];
+        let remaining = allUtils;
 
-    if (retrySE.length > 0) {
-        placeGroupInCorner(retrySE, 'SE');
+        for (const corner of corners) {
+            if (remaining.length === 0) break;
+            remaining = placeGroupInCorner(remaining, corner);
+        }
+
+        if (remaining.length > 0) {
+            console.warn(`[Utility] ${remaining.length} utilities could not be placed in any corner:`, remaining.map(u => u.name).join(', '));
+        }
     }
 
     return { utilities, buildings };

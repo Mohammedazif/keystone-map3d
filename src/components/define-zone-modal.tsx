@@ -21,7 +21,6 @@ export function DefineZoneModal() {
 
     useEffect(() => {
         if (zoneDefinition.isDefining) {
-            // Reset state when modal opens
             setZoneName('');
             setZoneType('BuildableArea');
             setIntendedUse(BuildingIntendedUse.Residential);
@@ -105,7 +104,7 @@ export function DefineZoneModal() {
                                     <SelectValue placeholder="Select intended use..." />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    {buildingUses.map(use => (
+                                    {buildingUses.filter(use => use !== BuildingIntendedUse.Utility).map(use => (
                                         <SelectItem key={use} value={use}>
                                             {use.replace(/([A-Z])/g, ' $1').trim()}
                                         </SelectItem>

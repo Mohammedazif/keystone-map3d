@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { useBuildingStore, type DrawingObjectType } from '@/hooks/use-building-store';
 import { useToast } from '@/hooks/use-toast';
-import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route, Move } from 'lucide-react';
+import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route, Move, MousePointerClick } from 'lucide-react';
 import { Slider } from './ui/slider';
 import { Label } from './ui/label';
 import React from 'react';
@@ -11,6 +11,8 @@ import { AiGeneratorModal } from './ai-generator-modal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { AiMassingModal } from './ai-massing-modal';
 import { produce } from 'immer';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { BuildingIntendedUse } from '@/lib/types';
 
 export function DrawingToolbar() {
     const { actions, drawingState, plots, selectedObjectId, drawingPoints } = useBuildingStore(s => ({
@@ -28,8 +30,14 @@ export function DrawingToolbar() {
         }));
     };
 
+    const setBuildingIntendedUse = (use: BuildingIntendedUse) => {
+        useBuildingStore.setState(produce(draft => {
+            draft.drawingState.buildingIntendedUse = use;
+        }));
+    };
+
     const handleToolClick = (tool: DrawingObjectType) => {
-        if (tool !== 'Plot' && plots.length === 0) {
+        if (tool !== 'Plot' && tool !== 'Select' && plots.length === 0) {
             toast({
                 variant: 'destructive',
                 title: 'No Plot Available',
@@ -53,11 +61,12 @@ export function DrawingToolbar() {
     }
 
     const tools: { name: DrawingObjectType, icon: React.ElementType, tooltip: string }[] = [
+        { name: 'Select', icon: MousePointerClick, tooltip: 'Select Objects' },
         { name: 'Plot', icon: Map, tooltip: 'Draw Plot Boundary' },
         { name: 'Zone', icon: LandPlot, tooltip: 'Draw Custom Zone' },
         { name: 'Building', icon: Building2, tooltip: 'Draw Building' },
         { name: 'Road', icon: Route, tooltip: 'Draw Road (Polygon)' },
-        // { name: 'Move', icon: Move, tooltip: 'Move Objects' },
+        { name: 'Move', icon: Move, tooltip: 'Move Objects' },
     ];
 
     const isPlotSelected = selectedObjectId?.type === 'Plot';
@@ -88,6 +97,35 @@ export function DrawingToolbar() {
                             onClick={() => window.dispatchEvent(new CustomEvent('finishRoad'))}
                         >
                             Done
+                        </Button>
+                    )}
+                </div>
+            )}
+            {drawingState.objectType === 'Building' && drawingState.isDrawing && (
+                <div className="bg-background/90 backdrop-blur-sm p-4 rounded-lg border border-border shadow-lg w-64 animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3">
+                    <Label className="text-sm font-medium">Building Type</Label>
+                    <Select
+                        value={drawingState.buildingIntendedUse}
+                        onValueChange={(val) => setBuildingIntendedUse(val as BuildingIntendedUse)}
+                    >
+                        <SelectTrigger>
+                            <SelectValue placeholder="Select type..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {Object.values(BuildingIntendedUse).filter(use => use !== BuildingIntendedUse.Utility).map(use => (
+                                <SelectItem key={use} value={use}>
+                                    {use.replace(/([A-Z])/g, ' $1').trim()}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                    {drawingPoints.length >= 2 && (
+                        <Button
+                            className="w-full mt-1"
+                            size="sm"
+                            onClick={() => window.dispatchEvent(new CustomEvent('closePolygon'))}
+                        >
+                            Finish Building
                         </Button>
                     )}
                 </div>

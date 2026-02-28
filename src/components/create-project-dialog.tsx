@@ -281,7 +281,6 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                                                             isSelected ? "border-primary bg-primary/5" : "border-border"
                                                         )}
                                                         onClick={() => {
-                                                            // Single Selection across types
                                                             if (isSelected) {
                                                                 setGreenCertification([]);
                                                             } else if (bestId) {

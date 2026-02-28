@@ -179,7 +179,20 @@ function BuildingProperties() {
 
                 // Count units only on regular (non-parking) floors
                 const totalOccupiableUnits = regularFloors.reduce((sum, f) => sum + (unitsByFloor[f.id]?.length || 0), 0);
-                const uniqueUnitTypes = [...new Set((selectedBuilding.units || []).map(u => u.type))];
+                
+                // Calculate average area for each unit type to display
+                const unitTypeAreas: Record<string, number[]> = {};
+                (selectedBuilding.units || []).forEach(u => {
+                    if (!unitTypeAreas[u.type]) unitTypeAreas[u.type] = [];
+                    unitTypeAreas[u.type].push(turf.area(u.geometry));
+                });
+                
+                const uniqueUnitTypes = Object.keys(unitTypeAreas);
+                const unitTypeStrings = uniqueUnitTypes.map(type => {
+                    const areas = unitTypeAreas[type];
+                    const avgArea = areas.reduce((a, b) => a + b, 0) / areas.length;
+                    return `${type} (~${Math.round(avgArea)}m²)`;
+                });
 
                 return (
                     <div className="border rounded-md overflow-hidden">
@@ -259,7 +272,7 @@ function BuildingProperties() {
                                     {/* Regular floors with units */}
                                     {regularFloors.map((floor, i) => {
                                         const floorUnits = unitsByFloor[floor.id] || [];
-                                        const unitTypes = [...new Set(floorUnits.map(u => u.type))];
+                                        const floorUnitTypes = [...new Set(floorUnits.map(u => u.type))];
                                         const floorLabel = floor.level !== undefined ? `Floor ${floor.level + 1}` : `Floor ${i + 1}`;
                                         return (
                                             <div key={floor.id} className="flex items-center gap-1.5 pl-5 py-0.5 text-muted-foreground">
@@ -268,7 +281,7 @@ function BuildingProperties() {
                                                 {floorUnits.length > 0 && (
                                                     <>
                                                         <span>— {floorUnits.length} unit{floorUnits.length !== 1 ? 's' : ''}</span>
-                                                        <span className="text-muted-foreground/60 text-[10px]">({unitTypes.join(', ')})</span>
+                                                        <span className="text-muted-foreground/60 text-[10px]">({floorUnitTypes.join(', ')})</span>
                                                     </>
                                                 )}
                                                 {floor.intendedUse && floor.intendedUse !== selectedBuilding.intendedUse && (
@@ -283,8 +296,18 @@ function BuildingProperties() {
                                         <div className="flex items-center gap-2 px-1 pt-1 border-t">
                                             <Grid2x2 className="h-3 w-3 text-blue-400 shrink-0" />
                                             <span className="font-medium text-foreground">
-                                                Total Units: {totalOccupiableUnits} · {uniqueUnitTypes.join(', ')}
+                                                Total Units: {totalOccupiableUnits}
                                             </span>
+                                        </div>
+                                    )}
+                                    {totalOccupiableUnits > 0 && (
+                                        <div className="pl-5 text-muted-foreground/80 text-[10px] space-y-0.5">
+                                            {unitTypeStrings.map((str, idx) => (
+                                                <div key={idx} className="flex items-center gap-1.5">
+                                                   <div className="w-1.5 h-1.5 rounded-full bg-blue-400/50" />
+                                                   {str}
+                                                </div>
+                                            ))}
                                         </div>
                                     )}
                                 </div>

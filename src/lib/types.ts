@@ -112,6 +112,7 @@ export interface ParkingArea {
   spaceSize?: number;                                    // Area per space (m²)
   efficiency?: number;                                   // Usable area ratio (0-1)
   level?: number;                                        // For basement: -1 = B1, -2 = B2, etc.
+  originalGeometry?: Feature<Polygon>;                   // Pristine ring geometry (before utility subtraction)
 }
 
 export enum ParkingType {
