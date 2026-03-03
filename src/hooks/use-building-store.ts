@@ -55,7 +55,7 @@ interface BuildingState {
     selectedObjectId: { type: SelectableObjectType; id: string } | null;
     hoveredObjectId: { type: SelectableObjectType; id: string } | null;
     uiState: { showVastuCompass: boolean; isFeasibilityPanelOpen: boolean; ghostMode: boolean }; // New UI State
-    componentVisibility: { electrical: boolean; hvac: boolean; basements: boolean; cores: boolean; units: boolean };
+    componentVisibility: { electrical: boolean; hvac: boolean; basements: boolean; cores: boolean; units: boolean; solar: boolean; ev: boolean };
     aiScenarios: (AiScenario | AiMassingScenario)[] | null;
     activeBhuvanLayer: string | null;
     activeBhuvanOpacity: number;
@@ -126,7 +126,7 @@ interface BuildingState {
         toggleVastuCompass: (show: boolean) => void;
         toggleFeasibilityPanel: () => void;
         toggleGhostMode: () => void;
-        toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units') => void;
+        toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units' | 'solar' | 'ev') => void;
         setFeasibilityPanelOpen: (isOpen: boolean) => void;
 
         setLocationData: (data: any) => void;
@@ -204,7 +204,6 @@ const getOpacityForBuildingType = (buildingType: BuildingIntendedUse): number =>
     }
 };
 
-// Helper to convert geometry for Firestore
 // Helper to convert geometry for Firestore
 
 /**
@@ -461,6 +460,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     activeProjectId: null,
     plots: [],
     drawingPoints: [],
+    mapCommand: null,
     drawingState: {
         isDrawing: false,
         objectType: null,
@@ -477,7 +477,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     selectedObjectId: null,
     hoveredObjectId: null,
     uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false, ghostMode: false },
-    componentVisibility: { electrical: false, hvac: false, basements: false, cores: false, units: false },
+    componentVisibility: { electrical: false, hvac: false, basements: false, cores: false, units: false, solar: false, ev: false },
     aiScenarios: null,
     activeBhuvanLayer: null,
     activeBhuvanOpacity: 0.6,
@@ -495,6 +495,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         spacing: 15,
         orientation: 0,
         setback: 4,
+        selectedUtilities: ['Roads', 'Water', 'Electrical', 'HVAC', 'STP', 'WTP', 'Solar PV', 'EV Charging'],
     },
 
     designOptions: [],
@@ -877,11 +878,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
             // SITE UTILIZATION (Percentage 0-100)
             const userMaxCoverage = params.siteCoverage !== undefined ? params.siteCoverage * 100 : (plotStub.regulation?.geometry?.max_ground_coverage?.value || 50);
+            console.log(`[SiteUtil DEBUG] params.siteCoverage=${params.siteCoverage}, computed userMaxCoverage=${userMaxCoverage}%, regulation=${plotStub.regulation?.geometry?.max_ground_coverage?.value}%`);
 
             set({ isGeneratingScenarios: true });
 
             // Helper to generate buildings for a scenario
-            const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number; overrideTypologies?: string[]; seed?: number }) => {
+            const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number; overrideTypologies?: string[]; seed?: number }): { plots: Plot[] } => {
+                const plotClone = JSON.parse(JSON.stringify(plotStub));
                 let geomFeatures: Feature<Polygon>[] = [];
 
                 // Adjust defaults based on Land Use
@@ -991,7 +994,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 if (!peripheralResult.buildableArea) {
                     console.error('[generateScenarios] Plot too small for peripheral zones');
-                    return;
+                    return { plots: [plotClone] };
                 }
 
                 const peripheralParkingZone = peripheralResult.parkingZone;
@@ -1248,15 +1251,18 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 } = complianceOutput;
 
                 // Use user overrides if provided, otherwise use site utilization (userMaxCoverage)
-                const effectiveMaxFootprint = params.maxFootprint ?? (plotArea * userMaxCoverage / 100);
+                // Coverage is relative to BUILDABLE area (validAreaPoly, after roads/parking/green subtracted)
+                // so that 40% visually means 40% of the visible buildable area, not 40% of the total plot
+                const buildableArea = turf.area(validAreaPoly);
+                const effectiveMaxFootprint = params.maxFootprint ?? (buildableArea * userMaxCoverage / 100);
                 const effectiveMinFootprint = params.minFootprint ?? 100;
                 const effectiveMaxFloors = params.maxFloors ?? regulationMaxFloors;
                 const effectiveMaxFAR = params.maxAllowedFAR ?? (currentRegulation.geometry.floor_area_ratio?.value || 2.0);
                 const effectiveMaxGFA = params.targetGFA ?? (plotArea * effectiveMaxFAR);
 
-                console.log(`[Compliance] Plot Area: ${plotArea.toFixed(0)}m²`);
+                console.log(`[Compliance] Plot Area: ${plotArea.toFixed(0)}m², Buildable Area: ${buildableArea.toFixed(0)}m² (${(buildableArea/plotArea*100).toFixed(0)}% of plot)`);
                 console.log(`[Compliance] Regulation Defaults: MaxFootprint=${regulationMaxFootprint.toFixed(0)}m², MaxFloors=${regulationMaxFloors}, MaxGFA=${maxGFA.toFixed(0)}m²`);
-                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m², MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}, MaxGFA=${effectiveMaxGFA.toFixed(0)}m²`);
+                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m² (buildable=${buildableArea.toFixed(0)} × coverage=${userMaxCoverage}%), MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}, MaxGFA=${effectiveMaxGFA.toFixed(0)}m²`);
 
                 if (params.maxFootprint) {
                     console.warn(`[Override] User set maxFootprint to ${params.maxFootprint}m² (regulation: ${regulationMaxFootprint.toFixed(0)}m²)`);
@@ -1534,6 +1540,372 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     }
                 });
 
+                // ============================================================
+                // GFA MAXIMIZATION: INFILL LOOP
+                // When autoMaxGFA is enabled, attempt to fill remaining open area
+                // with additional buildings using the selected typologies until
+                // GFA target is reached or site utilization limit is hit.
+                // ============================================================
+                if (params.autoMaxGFA) {
+                    const totalFootprintSoFar = geomFeatures.reduce((sum, f) => sum + turf.area(f), 0);
+                    const userMaxFloors = effectiveMaxFloors; // Use SAME value as floor assignment
+                    const maxPrimaryGFA = totalFootprintSoFar * userMaxFloors;
+                    const gfaTarget = effectiveMaxGFA;
+                    const coverageLimitArea = effectiveMaxFootprint; // from Site Utilization slider
+
+                    console.log(`[GFA Infill] ========= INFILL DEBUG START =========`);
+                    console.log(`[GFA Infill] Primary pass: ${geomFeatures.length} buildings, footprint=${totalFootprintSoFar.toFixed(0)}m²`);
+                    console.log(`[GFA Infill] userMaxFloors=${userMaxFloors}, maxPossibleGFA=${maxPrimaryGFA.toFixed(0)}m², target=${gfaTarget.toFixed(0)}m²`);
+                    console.log(`[GFA Infill] coverageLimitArea=${coverageLimitArea.toFixed(0)}m² (site utilization=${userMaxCoverage}%)`);
+                    console.log(`[GFA Infill] GFA deficit: ${(gfaTarget - maxPrimaryGFA).toFixed(0)}m², need ${((gfaTarget - maxPrimaryGFA) / userMaxFloors).toFixed(0)}m² more footprint`);
+
+                    // Unified stop check: stop when GFA target met OR coverage limit reached
+                    const shouldStopInfill = () => {
+                        const fp = geomFeatures.reduce((sum, f) => sum + turf.area(f), 0);
+                        const gfaMet = fp * userMaxFloors >= gfaTarget;
+                        const coverageMet = fp >= coverageLimitArea;
+                        return { stop: gfaMet || coverageMet, fp, reason: gfaMet ? 'GFA' : coverageMet ? 'coverage' : 'none' };
+                    };
+
+                    if (maxPrimaryGFA >= gfaTarget) {
+                        console.log(`[GFA Infill] Primary buildings (max ${userMaxFloors} floors) can reach target GFA. Skipping infill.`);
+                    } else {
+                        const selectedInfillMode = params.infillMode || 'hybrid';
+                        console.log(`[GFA Infill] Primary buildings short of target. Starting ${selectedInfillMode.toUpperCase()} infill...`);
+
+                    // For ALL infill modes, only check collision against ACTUAL BUILDINGS
+                    // (not green areas, road buffers, parking zones, etc. which are in builtObstacles)
+                    const infillObstacles: Feature<Polygon>[] = [...geomFeatures]; // buildings only
+                    console.log(`[GFA Infill] builtObstacles=${builtObstacles.length} (includes green/road/parking), infillObstacles=${infillObstacles.length} (buildings only)`);
+
+                    // ============ HELPER: RING INFILL PASS ============
+                    const runRingInfill = () => {
+                        const buildingWidth = p.maxBuildingWidth ?? 25;
+                        const frontSB = p.frontSetback ?? 6;
+                        const rearSB = p.rearSetback ?? 4;
+                        const ringGap = frontSB + rearSB;
+                        const baseInward = buildingWidth + ringGap;
+                        console.log(`[GFA Ring] Regulation setbacks: front=${frontSB}, rear=${rearSB}, ringGap=${ringGap}, baseInward=${baseInward}m`);
+
+                        for (let ringIdx = 0; ringIdx < 25; ringIdx++) {
+                            const preCheck = shouldStopInfill();
+                            if (preCheck.stop) {
+                                console.log(`[GFA Ring] ${preCheck.reason} limit met before ring ${ringIdx + 1} (fp=${preCheck.fp.toFixed(0)}m²)`);
+                                break;
+                            }
+
+                            const totalInward = baseInward + (ringIdx * (buildingWidth + ringGap));
+                            const nextInward = totalInward + buildingWidth;
+                            console.log(`[GFA Ring] Ring ${ringIdx + 1}: outer=${totalInward.toFixed(1)}m, inner=${nextInward.toFixed(1)}m`);
+
+                            // Create outer buffer (simple polygon for generator) and inner buffer (for filtering)
+                            let outerPoly: Feature<Polygon> | null = null;
+                            let innerPoly: Feature<Polygon> | null = null;
+                            try {
+                                // @ts-ignore
+                                const outerBuf = turf.buffer(validAreaPoly, -totalInward / 1000, { units: 'kilometers' });
+                                if (outerBuf) {
+                                    if (outerBuf.geometry?.type === 'MultiPolygon') {
+                                        // @ts-ignore
+                                        const flat = turf.flatten(outerBuf);
+                                        let largest: Feature<Polygon> | null = null;
+                                        let la = 0;
+                                        flat.features.forEach((f: any) => { const a = turf.area(f); if (a > la) { la = a; largest = f; } });
+                                        outerPoly = largest;
+                                    } else {
+                                        outerPoly = ensurePolygon(outerBuf);
+                                    }
+                                }
+
+                                // @ts-ignore
+                                const innerBuf = turf.buffer(validAreaPoly, -nextInward / 1000, { units: 'kilometers' });
+                                if (innerBuf && turf.area(innerBuf) > 50) {
+                                    if (innerBuf.geometry?.type === 'MultiPolygon') {
+                                        // @ts-ignore
+                                        const flat = turf.flatten(innerBuf);
+                                        let largest: Feature<Polygon> | null = null;
+                                        let la = 0;
+                                        flat.features.forEach((f: any) => { const a = turf.area(f); if (a > la) { la = a; largest = f; } });
+                                        innerPoly = largest;
+                                    } else {
+                                        innerPoly = ensurePolygon(innerBuf);
+                                    }
+                                }
+                                // If innerPoly is null, inner buffer collapsed → this is the last ring (center fill)
+                            } catch (e) {
+                                console.warn(`[GFA Ring] Ring ${ringIdx + 1}: buffer failed:`, e);
+                                break;
+                            }
+
+                            if (!outerPoly || turf.area(outerPoly) < 150) {
+                                console.log(`[GFA Ring] Ring ${ringIdx + 1}: outer polygon too small. Stopping rings.`);
+                                break;
+                            }
+
+                            const isLastRing = !innerPoly; // Inner collapsed → center patch
+                            const outerArea = turf.area(outerPoly);
+                            console.log(`[GFA Ring] Ring ${ringIdx + 1}: outerArea=${outerArea.toFixed(0)}m², lastRing=${isLastRing}`);
+
+                            let ringCandidates: Feature<Polygon>[] = [];
+                            for (const typology of sortedTypologies) {
+                                const project = get().projects.find(prj => prj.id === get().activeProjectId);
+                                const projectUnitMix = project?.feasibilityParams?.unitMix || DEFAULT_FEASIBILITY_PARAMS.unitMix;
+
+                                const infillParams: AlgoParams = {
+                                    ...p,
+                                    typology: typology as any,
+                                    width: p.width || 20,
+                                    obstacles: [],
+                                    vastuCompliant: false,
+                                    unitMix: projectUnitMix,
+                                    maxFootprint: effectiveMaxFootprint,
+                                    minFootprint: effectiveMinFootprint,
+                                    maxFloors: effectiveMaxFloors,
+                                    minBuildingWidth: p.minBuildingWidth ?? 20,
+                                    maxBuildingWidth: p.maxBuildingWidth ?? 25,
+                                    minBuildingLength: p.minBuildingLength ?? 25,
+                                    maxBuildingLength: p.maxBuildingLength ?? 55,
+                                    setback: 0,
+                                    frontSetback: 0,
+                                    rearSetback: 0,
+                                    sideSetback: p.sideSetback ?? 3,
+                                    roadAccessSides: p.roadAccessSides ?? [],
+                                    seed: (p.seed ?? 0) + ringIdx + 1
+                                };
+
+                                let generated: Feature<Polygon>[] = [];
+                                try {
+                                    switch (typology) {
+                                        case 'point':
+                                            generated = generatePointShapes(outerPoly, infillParams);
+                                            break;
+                                        case 'slab':
+                                        case 'plot':
+                                            generated = generateSlabShapes(outerPoly, infillParams);
+                                            if (generated.length === 0) generated = generatePointShapes(outerPoly, infillParams);
+                                            break;
+                                        case 'lshaped':
+                                            generated = generateLShapes(outerPoly, infillParams);
+                                            if (generated.length === 0) generated = generateSlabShapes(outerPoly, infillParams);
+                                            break;
+                                        case 'ushaped':
+                                            generated = generateUShapes(outerPoly, infillParams);
+                                            if (generated.length === 0) generated = generateSlabShapes(outerPoly, infillParams);
+                                            break;
+                                        case 'tshaped':
+                                            generated = generateTShapes(outerPoly, infillParams);
+                                            if (generated.length === 0) generated = generateSlabShapes(outerPoly, infillParams);
+                                            break;
+                                        case 'hshaped':
+                                            generated = generateHShapes(outerPoly, infillParams);
+                                            if (generated.length === 0) generated = generateSlabShapes(outerPoly, infillParams);
+                                            break;
+                                        case 'oshaped':
+                                            generated = generatePerimeter(outerPoly, infillParams);
+                                            if (generated.length === 0) generated = generateSlabShapes(outerPoly, infillParams);
+                                            break;
+                                        default:
+                                            generated = generatePointShapes(outerPoly, infillParams);
+                                    }
+                                } catch (genErr) {
+                                    console.warn(`[GFA Ring] ${typology} error:`, genErr);
+                                }
+
+                                // FILTER: Only keep candidates whose centroid is in the BAND
+                                // (in outer polygon but NOT in inner polygon)
+                                // This ensures outside-in placement — center stays empty at low coverage
+                                if (!isLastRing && innerPoly && generated.length > 0) {
+                                    const beforeFilter = generated.length;
+                                    generated = generated.filter(g => {
+                                        try {
+                                            const c = turf.centroid(g);
+                                            // Accept if centroid is NOT inside the inner buffer (i.e., it's in the band)
+                                            return !turf.booleanPointInPolygon(c, innerPoly!);
+                                        } catch { return true; }
+                                    });
+                                    console.log(`[GFA Ring] Ring ${ringIdx + 1}, ${typology}: ${beforeFilter} generated, ${generated.length} in band`);
+                                } else {
+                                    console.log(`[GFA Ring] Ring ${ringIdx + 1}, ${typology}: ${generated.length} candidates (last ring, no filter)`);
+                                }
+                                ringCandidates.push(...generated);
+                            }
+
+                            if (ringCandidates.length === 0) {
+                                console.log(`[GFA Ring] Ring ${ringIdx + 1}: no candidates in band. Trying next ring.`);
+                                continue;
+                            }
+
+                            let addedFromRing = 0;
+                            let rejectedFromRing = 0;
+                            let ringGFAMet = false;
+                            for (const candidate of ringCandidates) {
+                                const ringCheck = shouldStopInfill();
+                                if (ringCheck.stop) {
+                                    console.log(`[GFA Ring] ✅ ${ringCheck.reason} limit met (fp=${ringCheck.fp.toFixed(0)}m²)`);
+                                    ringGFAMet = true;
+                                    break;
+                                }
+                                // Check collision ONLY against buildings
+                                if (!checkCollision(candidate, infillObstacles)) {
+                                    infillObstacles.push(candidate);
+                                    builtObstacles.push(candidate);
+                                    geomFeatures.push(candidate);
+                                    addedFromRing++;
+                                } else {
+                                    rejectedFromRing++;
+                                }
+                            }
+
+                            const postRingFP = geomFeatures.reduce((s, f) => s + turf.area(f), 0);
+                            console.log(`[GFA Ring] Ring ${ringIdx + 1}: added=${addedFromRing}, rejected=${rejectedFromRing}, total=${geomFeatures.length}`);
+                            console.log(`[GFA Ring] After ring ${ringIdx + 1}: footprint=${postRingFP.toFixed(0)}m², projGFA=${(postRingFP * userMaxFloors).toFixed(0)} / target=${gfaTarget.toFixed(0)}`);
+
+                            if (ringGFAMet || shouldStopInfill().stop) {
+                                console.log(`[GFA Ring] ✅ GFA target met.`);
+                                break;
+                            }
+                        }
+                    };
+
+                    // ============ HELPER: GRID INFILL PASS ============
+                    const runGridInfill = () => {
+                        const gridWidthM = p.minBuildingWidth ?? 20;
+                        const gridLengthM = p.minBuildingLength ?? 25;
+                        const gridSideGapM = Math.max(p.sideSetback ?? 3, 2);
+                        const gridStepXM = gridWidthM + gridSideGapM;
+                        const gridStepYM = gridLengthM + gridSideGapM;
+                        const gridBbox = turf.bbox(validAreaPoly);
+
+                        const centerLat = (gridBbox[1] + gridBbox[3]) / 2;
+                        const metersPerDegreeLat = 111320;
+                        const metersPerDegreeLng = 111320 * Math.cos(centerLat * Math.PI / 180);
+                        const gridStepXDeg = gridStepXM / metersPerDegreeLng;
+                        const gridStepYDeg = gridStepYM / metersPerDegreeLat;
+                        const halfWidthDeg = gridWidthM / 2 / metersPerDegreeLng;
+                        const halfLengthDeg = gridLengthM / 2 / metersPerDegreeLat;
+
+                        console.log(`[GFA Grid] Grid cell: ${gridWidthM}×${gridLengthM}m, gap=${gridSideGapM}m, step=${gridStepXM}×${gridStepYM}m`);
+                        console.log(`[GFA Grid] Degree step: ${gridStepXDeg.toFixed(6)}° × ${gridStepYDeg.toFixed(6)}°`);
+
+                        let gridAdded = 0;
+                        let gridRejected = 0;
+                        let gridOutside = 0;
+
+                        for (let x = gridBbox[0] + halfWidthDeg; x < gridBbox[2]; x += gridStepXDeg) {
+                            for (let y = gridBbox[1] + halfLengthDeg; y < gridBbox[3]; y += gridStepYDeg) {
+                                if (shouldStopInfill().stop) break;
+
+                                const pt = turf.point([x, y]);
+                                if (!turf.booleanPointInPolygon(pt, validAreaPoly)) {
+                                    gridOutside++;
+                                    continue;
+                                }
+
+                                const poly = turf.polygon([[
+                                    [x - halfWidthDeg, y - halfLengthDeg],
+                                    [x + halfWidthDeg, y - halfLengthDeg],
+                                    [x + halfWidthDeg, y + halfLengthDeg],
+                                    [x - halfWidthDeg, y + halfLengthDeg],
+                                    [x - halfWidthDeg, y - halfLengthDeg]
+                                ]]);
+
+                                // @ts-ignore
+                                const clipped = turf.intersect(poly, validAreaPoly);
+                                const fullArea = gridWidthM * gridLengthM;
+                                if (!clipped || turf.area(clipped) < fullArea * 0.60) {
+                                    gridOutside++;
+                                    continue;
+                                }
+
+                                const useClipped = turf.area(clipped) < fullArea * 0.95;
+                                const candidate = (useClipped ? clipped : poly) as Feature<Polygon>;
+                                candidate.properties = { typology: 'slab', isGridInfill: true };
+
+                                if (!checkCollision(candidate, infillObstacles)) {
+                                    infillObstacles.push(candidate);
+                                    builtObstacles.push(candidate);
+                                    geomFeatures.push(candidate);
+                                    gridAdded++;
+                                } else {
+                                    gridRejected++;
+                                }
+                            }
+                            if (shouldStopInfill().stop) break;
+                        }
+
+                        console.log(`[GFA Grid] Grid pass: added=${gridAdded}, rejected=${gridRejected}, outside=${gridOutside}`);
+
+                        // Offset grid pass for remaining gaps
+                        if (!shouldStopInfill().stop) {
+                            console.log(`[GFA Grid] Still short. Trying offset grid...`);
+                            let rotAdded = 0;
+                            for (let x = gridBbox[0] + halfWidthDeg + gridStepXDeg / 2; x < gridBbox[2]; x += gridStepXDeg) {
+                                for (let y = gridBbox[1] + halfLengthDeg + gridStepYDeg / 2; y < gridBbox[3]; y += gridStepYDeg) {
+                                    if (shouldStopInfill().stop) break;
+
+                                    const pt2 = turf.point([x, y]);
+                                    if (!turf.booleanPointInPolygon(pt2, validAreaPoly)) continue;
+
+                                    const poly2 = turf.polygon([[
+                                        [x - halfWidthDeg, y - halfLengthDeg],
+                                        [x + halfWidthDeg, y - halfLengthDeg],
+                                        [x + halfWidthDeg, y + halfLengthDeg],
+                                        [x - halfWidthDeg, y + halfLengthDeg],
+                                        [x - halfWidthDeg, y - halfLengthDeg]
+                                    ]]);
+
+                                    // @ts-ignore
+                                    const clipped2 = turf.intersect(poly2, validAreaPoly);
+                                    const fullArea2 = gridWidthM * gridLengthM;
+                                    if (!clipped2 || turf.area(clipped2) < fullArea2 * 0.50) continue;
+
+                                    const useClip2 = turf.area(clipped2) < fullArea2 * 0.95;
+                                    const cand2 = (useClip2 ? clipped2 : poly2) as Feature<Polygon>;
+                                    cand2.properties = { typology: 'slab', isGridInfill: true };
+
+                                    if (!checkCollision(cand2, infillObstacles)) {
+                                        infillObstacles.push(cand2);
+                                        builtObstacles.push(cand2);
+                                        geomFeatures.push(cand2);
+                                        rotAdded++;
+                                    }
+                                }
+                                if (shouldStopInfill().stop) break;
+                            }
+                            console.log(`[GFA Grid] Offset grid added ${rotAdded}.`);
+                        }
+                    };
+
+                    // ============ EXECUTE SELECTED INFILL MODE ============
+                    if (selectedInfillMode === 'ring') {
+                        runRingInfill();
+                    } else if (selectedInfillMode === 'grid') {
+                        runGridInfill();
+                    } else {
+                        // HYBRID: Ring first, then grid for center/gaps ONLY at high utilization (>75%)
+                        runRingInfill();
+                        const hybridCheck = shouldStopInfill();
+                        if (!hybridCheck.stop && userMaxCoverage > 75) {
+                            console.log(`[GFA Hybrid] Rings done. footprint=${hybridCheck.fp.toFixed(0)}m², coverage=${userMaxCoverage}%>75%. Running grid center-fill...`);
+                            runGridInfill();
+                        } else if (!hybridCheck.stop) {
+                            console.log(`[GFA Hybrid] Rings done. footprint=${hybridCheck.fp.toFixed(0)}m², coverage=${userMaxCoverage}%≤75%. Skipping grid (increase utilization or floors).`);
+                        }
+                    }
+
+                    const finalFootprint = geomFeatures.reduce((s, f) => s + turf.area(f), 0);
+                    const finalProjGFA = finalFootprint * userMaxFloors;
+                    console.log(`[GFA Infill] ========= INFILL END =========`);
+                    console.log(`[GFA Infill] Final: ${geomFeatures.length} buildings, footprint=${finalFootprint.toFixed(0)}m²`);
+                    console.log(`[GFA Infill] Projected max GFA: ${finalProjGFA.toFixed(0)}m² (target=${gfaTarget.toFixed(0)}m²)`);
+                    if (finalProjGFA >= gfaTarget) {
+                        console.log(`[GFA Infill] ✅ GFA target met!`);
+                    } else {
+                        console.warn(`[GFA Infill] ⚠️ Still short by ${(gfaTarget - finalProjGFA).toFixed(0)}m² — plot shape may not allow full coverage.`);
+                    }
+                    } // close else block (primary GFA short)
+                }
+
                 // SPLIT LOGIC: Explode MultiPolygons into distinct Building parts
                 const explodedFeatures: Feature<Polygon>[] = [];
                 geomFeatures.forEach((f, idx) => {
@@ -1559,23 +1931,70 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 });
 
                 // Convert to Buildings
+                // Variables for sequential floor assignment in autoMaxGFA mode
+                let remainingGFAForAuto = effectiveMaxGFA;
+                const userMaxFloorsForAuto = effectiveMaxFloors; // Must match infill GFA check
+
                 let newBuildings: Building[] = explodedFeatures.flatMap((f, i) => {
                     // Calculate height based on floor count range AND regulation limits
                     const floorHeight = params.floorHeight || 3.5;
 
                     // User-specified constraints (defaults)
-                    const minF = params.minFloors ?? 5;
+                    let minF = params.minFloors ?? 5;
                     let maxF = params.maxFloors ?? 12;
+
+                    // AUTO-MAX GFA: Calculate floors sequentially to hit target GFA
+                    if (params.autoMaxGFA) {
+                        const area = turf.area(f);
+                        
+                        // Calculate total footprint of ALL remaining buildings from index i onwards
+                        let remainingFootprint = 0;
+                        for (let j = i; j < explodedFeatures.length; j++) {
+                            remainingFootprint += turf.area(explodedFeatures[j]);
+                        }
+
+                        if (remainingGFAForAuto <= 0 || remainingFootprint <= 0) {
+                            // Target reached, don't build useless tall floors on remaining buildings
+                            minF = 1;
+                            maxF = 1;
+                        } else {
+                            // Desired average floors for the REST of the buildings to hit the exact target
+                            const averageNeededFloors = remainingGFAForAuto / remainingFootprint;
+                            
+                            // Target for THIS building (with ±15% variation for skyline)
+                            const variation = 0.85 + (Math.random() * 0.30); // 0.85 to 1.15
+                            let targetFloors = Math.round(averageNeededFloors * variation);
+                            
+                            // Cap at user's max floors limitation
+                            targetFloors = Math.min(targetFloors, userMaxFloorsForAuto);
+                            
+                            // Ensure at least 1 floor
+                            targetFloors = Math.max(1, targetFloors);
+
+                            minF = targetFloors;
+                            maxF = targetFloors;
+                            
+                            // Deduct from remaining GFA
+                            remainingGFAForAuto -= (targetFloors * area);
+                            console.log(`[AutoMaxGFA] Building ${i}: area=${area.toFixed(0)}, avgNeeded=${averageNeededFloors.toFixed(1)}, assigned=${targetFloors}, remainingGFA=${remainingGFAForAuto.toFixed(0)}`);
+                        }
+                    }
 
                     // Use constraints passed in 'p' if available (from specific regulation), otherwise fallback to plotStub
                     const constraintHeight = p.maxBuildingHeight !== undefined ? p.maxBuildingHeight : plotStub.maxBuildingHeight;
 
-                    // Apply regulation height limit IF user didn't explicitly override it with a higher value
+                    // Apply regulation height limit — always cap by max_height regardless of mode
                     if (constraintHeight) {
                         const regulationMaxFloorsVal = Math.floor(constraintHeight / floorHeight);
-                        // If user set maxF higher than regulation, we keep user value but log it
                         if (maxF > regulationMaxFloorsVal) {
-                            console.log(`[Override] Using user maxFloors ${maxF} instead of regulation limit ${regulationMaxFloorsVal}`);
+                            if (!params.autoMaxGFA) {
+                                console.log(`[Override] Using user maxFloors ${maxF} instead of regulation limit ${regulationMaxFloorsVal}`);
+                            } else {
+                                // In autoMaxGFA mode, check if we should override regulation to hit target GFA
+                                // The user explicitly asked to auto-fill to hit GFA. Capping it below what's needed fails that goal.
+                                console.log(`[AutoMaxGFA] Target GFA requires ${maxF} floors, but regulation is ${regulationMaxFloorsVal}. Ignoring regulation to hit target.`);
+                                // NO-OP: do not cap maxF
+                            }
                         } else {
                             maxF = Math.min(maxF, regulationMaxFloorsVal);
                         }
@@ -1587,34 +2006,32 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         maxF = Math.max(minF, maxF); // Allow at least minF
                     }
 
-                    // Vastu-aware height assignment
+                    // Vastu-aware height assignment (skip in autoMaxGFA mode to preserve target floors)
                     let vastuHeightMultiplier = 1.0;
-                    const projectData = get().projects.find(proj => proj.id === get().activeProjectId);
-                    const isVastuEnabled = projectData?.vastuCompliant === true;
+                    if (!params.autoMaxGFA) {
+                        const projectData = get().projects.find(proj => proj.id === get().activeProjectId);
+                        const isVastuEnabled = projectData?.vastuCompliant === true;
 
-                    if (isVastuEnabled) {
-                        // Calculate building position relative to plot center
-                        const plotCentroid = turf.centroid(plotStub.geometry);
-                        const buildingCentroid = turf.centroid(f);
-                        const plotCenter = plotCentroid.geometry.coordinates;
-                        const buildingCenter = buildingCentroid.geometry.coordinates;
+                        if (isVastuEnabled) {
+                            // Calculate building position relative to plot center
+                            const plotCentroid = turf.centroid(plotStub.geometry);
+                            const buildingCentroid = turf.centroid(f);
+                            const plotCenter = plotCentroid.geometry.coordinates;
+                            const buildingCenter = buildingCentroid.geometry.coordinates;
 
-                        // Calculate direction from plot center to building
-                        const dx = buildingCenter[0] - plotCenter[0]; // East is positive
-                        const dy = buildingCenter[1] - plotCenter[1]; // North is positive
+                            // Calculate direction from plot center to building
+                            const dx = buildingCenter[0] - plotCenter[0]; // East is positive
+                            const dy = buildingCenter[1] - plotCenter[1]; // North is positive
 
-                        // Vastu rules: SW = tallest (1.0), NE = shortest (0.5)
-                        // SW: dx < 0 && dy < 0 → multiplier 1.0
-                        // NE: dx > 0 && dy > 0 → multiplier 0.5
-                        // Gradient between based on position
-                        const swFactor = Math.max(0, (-dx - dy) / (Math.abs(dx) + Math.abs(dy) + 0.0001));
-                        const neFactor = Math.max(0, (dx + dy) / (Math.abs(dx) + Math.abs(dy) + 0.0001));
+                            // Vastu rules: SW = tallest (1.0), NE = shortest (0.5)
+                            const swFactor = Math.max(0, (-dx - dy) / (Math.abs(dx) + Math.abs(dy) + 0.0001));
+                            const neFactor = Math.max(0, (dx + dy) / (Math.abs(dx) + Math.abs(dy) + 0.0001));
 
-                        // SW gets full height, NE gets 50% height, others are in between
-                        vastuHeightMultiplier = 0.75 + 0.25 * swFactor - 0.25 * neFactor;
-                        vastuHeightMultiplier = Math.max(0.5, Math.min(1.0, vastuHeightMultiplier));
+                            vastuHeightMultiplier = 0.75 + 0.25 * swFactor - 0.25 * neFactor;
+                            vastuHeightMultiplier = Math.max(0.5, Math.min(1.0, vastuHeightMultiplier));
 
-                        console.log(`Vastu height multiplier for building ${i}: ${vastuHeightMultiplier.toFixed(2)} (SW factor: ${swFactor.toFixed(2)}, NE factor: ${neFactor.toFixed(2)})`);
+                            console.log(`Vastu height multiplier for building ${i}: ${vastuHeightMultiplier.toFixed(2)} (SW factor: ${swFactor.toFixed(2)}, NE factor: ${neFactor.toFixed(2)})`);
+                        }
                     }
 
                     const baseFloors = Math.floor(Math.random() * (maxF - minF + 1)) + minF;
@@ -1752,9 +2169,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         subtype: f.properties?.subtype || params.typology,
                         unitMix: projectUnitMix,
                         intendedUse: intendedUse,
+                        numFloors: floors,
                         // Preserve the alignment rotation stored by the geometric generators so units
                         // are generated axis-aligned and then rotated back to match the building
-                        alignmentRotation: alignRot
+                        alignmentRotation: alignRot,
+                        shuffleUnits: params.shuffleUnits,
+                        selectedUtilities: params.selectedUtilities || activeProject?.feasibilityParams?.selectedUtilities
                     });
                     const layout: any = {
                         cores: freshLayout.cores,
@@ -1865,7 +2285,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             subtype: f.properties?.subtype || params.typology,
                             unitMix: towerUnitMix,
                             intendedUse: towerIntendedUse,
-                            alignmentRotation: towerAlignRotForLayout
+                            numFloors: tFloors,
+                            alignmentRotation: towerAlignRotForLayout,
+                            shuffleUnits: params.shuffleUnits,
+                            buildingId: `${id}-tower`
                         });
 
                         // Multiply units across floors — only on Residential floors for floor-wise mixed use
@@ -1885,13 +2308,17 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                         const alignRot = f.properties?.alignmentRotation ?? 0;
 
-                        // Podium: non-residential use (Retail/Public/Hospitality) — no BHK units
                         const podiumIntendedUse = isFloorWiseMixed ? BuildingIntendedUse.MixedUse : intendedUse;
+                        // Filter out rooftop utilities from podium — they belong on the tower
+                        // EV Station stays on podium because it's in the basement parking
+                        const podiumUtilities = (layout.utilities || []).filter((u: UtilityArea) => 
+                            u.type !== UtilityType.HVAC && u.type !== UtilityType.SolarPV
+                        );
                         const podiumBuilding: Building = {
                             ...baseBuildingProps,
                             intendedUse: podiumIntendedUse,
                             cores: layout.cores || [],
-                            internalUtilities: layout.utilities || [],
+                            internalUtilities: podiumUtilities,
                             units: isFloorWiseMixed ? [] : multiplyUnits(podiumFloorsArray, layout),
                             id: `${id}-podium`,
                             name: `Building ${i + 1} (Podium)`,
@@ -2078,6 +2505,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         // Underground Parking (Basements)
                         if (params.parkingTypes?.includes('ug')) {
                             // Add Basements (Levels -1, -2)
+                            // EV Charging: Points = Units × 1.5 × 0.2 (from utility sizing doc)
+                            // Split EV stations across basement levels
+                            const totalUnitsInBuilding = b.units?.length || Math.floor(b.area / 100) * (b.numFloors || 5);
+                            const totalEVPoints = Math.ceil(totalUnitsInBuilding * 1.5 * 0.2);
+                            const evPerFloor = Math.ceil(totalEVPoints / 2); // Split across 2 basements
+
                             b.floors.push({
                                 id: `floor-${b.id}-b1`,
                                 height: 3.5,
@@ -2085,7 +2518,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 type: 'Parking',
                                 parkingType: ParkingType.Basement,
                                 level: -1,
-                                parkingCapacity: capacityPerFloor
+                                parkingCapacity: capacityPerFloor,
+                                evStations: evPerFloor
                             });
                             b.floors.push({
                                 id: `floor-${b.id}-b2`,
@@ -2094,8 +2528,17 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 type: 'Parking',
                                 parkingType: ParkingType.Basement,
                                 level: -2,
-                                parkingCapacity: capacityPerFloor
+                                parkingCapacity: capacityPerFloor,
+                                evStations: totalEVPoints - evPerFloor
                             });
+                            
+                            // Tag building with EV utility for visual indicators
+                            if (!b.utilities) b.utilities = [];
+                            if (!b.utilities.includes(UtilityType.EVStation)) {
+                                b.utilities.push(UtilityType.EVStation);
+                            }
+                            
+                            console.log(`[Parking] EV Charging: ${totalEVPoints} points (${evPerFloor} B1, ${totalEVPoints - evPerFloor} B2) for ${b.name}`);
                         }
 
                         // Podium/Stilt Parking
@@ -2182,7 +2625,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
 
                 // Create a Deep Clone of the plot and replace generated buildings, keeping user-drawn ones
-                const plotClone = JSON.parse(JSON.stringify(plotStub));
+                // plotClone already created at start of createScenario
                 const existingManualBldgs = (plotStub.buildings || []).filter(
                     (b: Building) => b.id.startsWith('bldg-')
                 );
@@ -2248,19 +2691,30 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     // 1. Internal Utilities (Modify Buildings)
                     if (internalUtils.length > 0 && plotClone.buildings.length > 0) {
                         plotClone.buildings.forEach((b: Building) => {
-                            b.utilities = [...internalUtils] as UtilityType[]; // Tag building
+                            b.utilities = [...internalUtils] as UtilityType[];
 
                             // Visual: Add HVAC Plant on Roof
-                            // We add a small "mechanical floor" or block on top
+                            // Vastu: Chiller plant / Cooling towers → West or South-West
+                            // Differentiate by building type:
+                            //   - Tower: Full 2.5m HVAC (handles all tower floors)
+                            //   - Podium: Smaller 1.5m HVAC (common areas only, tower has its own)
+                            //   - Normal: Full 2.5m HVAC
                             if (internalUtils.includes('HVAC')) {
-                                b.floors.push({
-                                    id: `floor-${b.id}-hvac`,
-                                    height: 2.5,
-                                    color: '#EA580C', // Orange-600
-                                    type: 'Utility',
-                                    utilityType: UtilityType.HVAC
-                                });
-                                b.height += 2.5;
+                                const isPodium = b.id.includes('-podium');
+                                const isTower = b.id.includes('-tower');
+                                // Podiums: skip HVAC floor to avoid overlapping with tower
+                                // The HVAC internal utility polygon still renders on the rooftop
+                                if (!isPodium) {
+                                    const hvacHeight = 2.5;
+                                    b.floors.push({
+                                        id: `floor-${b.id}-hvac`,
+                                        height: hvacHeight,
+                                        color: '#EA580C', // Orange-600
+                                        type: 'Utility',
+                                        utilityType: UtilityType.HVAC
+                                    });
+                                    b.height += hvacHeight;
+                                }
                             }
 
                             // Visual: Electrical (Base/Plinth)
@@ -2274,6 +2728,31 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     utilityType: UtilityType.Electrical
                                 });
                                 b.height += 3.0; // Increase total height
+                            }
+                        });
+                    }
+
+                    // 1b. Solar PV on Building Rooftops (above HVAC)
+                    // Vastu: Solar panels → South-facing roof (max efficiency + Vastu compliant)
+                    // Formula: Capacity = Pop × 0.8 × 0.7 × 0.25, Area = (Cap×1000)/(S×η×PR)
+                    if (selected.includes('Solar PV') && plotClone.buildings.length > 0) {
+                        plotClone.buildings.forEach((b: Building) => {
+                            // For podium+tower: Solar PV only on tower (highest point, most sun)
+                            if (b.id.includes('-podium')) return;
+
+                            b.floors.push({
+                                id: `floor-${b.id}-solar`,
+                                height: 0.5, // Thin panel
+                                color: '#1A237E', // Solar Indigo
+                                type: 'Utility',
+                                utilityType: UtilityType.SolarPV
+                            });
+                            b.height += 0.5;
+
+                            // Tag the building with Solar PV utility
+                            if (!b.utilities) b.utilities = [];
+                            if (!b.utilities.includes(UtilityType.SolarPV)) {
+                                b.utilities.push(UtilityType.SolarPV);
                             }
                         });
                     }
@@ -2581,7 +3060,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             } else if (remainingGeom.geometry.type === 'MultiPolygon') {
                                 // @ts-ignore
                                 const collection = turf.flatten(remainingGeom);
-                                collection.features.forEach(f => {
+                                collection.features.forEach((f: any) => {
                                     if (turf.area(f) > 10) greenPolygons.push(f as Feature<Polygon>);
                                 });
                             }
@@ -2626,7 +3105,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 // Base topology param mapping — must match the switch cases in createScenario:
                 // 'point', 'slab', 'plot', 'lshaped', 'ushaped', 'tshaped', 'hshaped', 'oshaped'
                 const baseTypo = (params.typology === 'lshaped') ? 'lshaped' :
-                    (params.typology === 'slab' || params.typology === 'plot') ? 'slab' :
+                    (params.typology === 'slab') ? 'slab' :
                         (params.typology === 'ushaped') ? 'ushaped' :
                             (params.typology === 'tshaped') ? 'tshaped' :
                                 (params.typology === 'hshaped') ? 'hshaped' :
@@ -2683,9 +3162,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         baseTypo === 'lshaped' ? 'slab' :
                             baseTypo === 'ushaped' ? 'slab' :
                                 baseTypo === 'hshaped' ? 'lshaped' :
-                                    baseTypo === 'tshaped' ? 'slab' :
-                                        baseTypo === 'oshaped' ? 'slab' :
-                                            'slab');
+                                    baseTypo === 'oshaped' ? 'perimeter' :
+                                        baseTypo === 'tshaped' ? 'slab' :
+                                            baseTypo);
                 generatedScenarios.push(createScenario("Scenario 2: Max Density", {
                     typology: s2Typo as AlgoTypology,
                     spacing: 12,
@@ -2746,7 +3225,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             // Apply to main state
             set(produce(draft => {
                 selectedScenario.plots.forEach((scenPlot: Plot) => {
-                    const plotIndex = draft.plots.findIndex(p => p.id === scenPlot.id);
+                    const plotIndex = draft.plots.findIndex((p: Plot) => p.id === scenPlot.id);
                     if (plotIndex !== -1) {
                         // Deep clone to ensure React detects the change and triggers map cleanup
                         // Merge: keep manually drawn buildings from current plot
@@ -2893,6 +3372,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         basements: false,
                         cores: false,
                         units: false,
+                        solar: false,
+                        ev: false,
                     };
                     // Also clear any per-building internalsVisible overrides
                     for (const plot of draft.plots) {
@@ -2905,7 +3386,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }));
         },
 
-        toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units') => {
+        toggleComponentVisibility: (component: 'electrical' | 'hvac' | 'basements' | 'cores' | 'units' | 'solar' | 'ev') => {
             set(produce((draft: BuildingState) => {
                 // Toggle the specific component
                 draft.componentVisibility[component] = !draft.componentVisibility[component];
@@ -2921,8 +3402,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         }
                     }
                 }
-
-                // Auto-enable ghostMode if any component is now visible
+                   // Auto-enable ghostMode if any component is now visible
                 const anyVisible = Object.values(draft.componentVisibility).some(v => v);
                 if (anyVisible && !draft.uiState.ghostMode) {
                     draft.uiState.ghostMode = true;
@@ -2934,9 +3414,14 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }));
         },
 
-        setMapLocation: (location: { lat: number; lng: number }) => set({ mapLocation: location }),
+        setMapLocation: (location: string | null) => set({ mapLocation: location }),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
+        executeMapCommand: (command) => console.warn('executeMapCommand not implemented', command),
+        setScenario: (scenario) => console.warn('setScenario not implemented', scenario),
+        toggleFeasibilityPanel: () => set(produce((draft: BuildingState) => {
+            draft.uiState.isFeasibilityPanelOpen = !draft.uiState.isFeasibilityPanelOpen;
+        })),
         loadProjects: async () => {
             const userId = useAuthStore.getState().user?.uid;
             if (!userId) {
@@ -3184,6 +3669,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         availableRegulations: [],
                         selectedRegulationType: null,
                         regulation: null,
+                        projectId: get().activeProjectId || '',
                     };
                     set(produce(draft => {
                         draft.plots.push(newPlot);
@@ -3330,7 +3816,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             const { geometry, centroid, activePlotId } = zoneDefinition;
 
             set(produce(draft => {
-                const plot = draft.plots.find(p => p.id === activePlotId);
+                const plot = draft.plots.find((p: Plot) => p.id === activePlotId);
                 if (!plot) return;
 
                 const id = `obj-${Date.now()}`;
@@ -3728,14 +4214,14 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         },
         updatePlot: (plotId: string, props: Partial<Plot>) => {
             set(produce(draft => {
-                const plot = draft.plots.find(p => p.id === plotId);
+                const plot = draft.plots.find((p: Plot) => p.id === plotId);
                 if (plot) {
                     Object.assign(plot, props);
                     if (props.geometry) {
                         plot.area = turf.area(props.geometry);
                     }
                     if (props.selectedRegulationType) {
-                        plot.regulation = plot.availableRegulations?.find(r => r.type === props.selectedRegulationType) || null;
+                        plot.regulation = plot.availableRegulations?.find((r: any) => r.type === props.selectedRegulationType) || null;
                     }
                 }
             }));
@@ -3782,7 +4268,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             const { selectedObjectId } = get();
             const wasSelected = selectedObjectId?.type === 'Plot' && selectedObjectId.id === id;
             set(produce(draft => {
-                draft.plots = draft.plots.filter(p => p.id !== id);
+                draft.plots = draft.plots.filter((p: Plot) => p.id !== id);
                 if (wasSelected) {
                     draft.selectedObjectId = null;
                 }
@@ -3796,27 +4282,27 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             let shouldRegenerateGreenAreas = false;
 
             set(produce(draft => {
-                const plot = draft.plots.find(p => p.id === plotId);
+                const plot = draft.plots.find((p: Plot) => p.id === plotId);
                 if (plot) {
                     if (type === 'Building') {
-                        plot.buildings = plot.buildings.filter(b => b.id !== objectId);
+                        plot.buildings = plot.buildings.filter((b: Building) => b.id !== objectId);
                         shouldRegenerateGreenAreas = true; // Regenerate after building deletion
                     }
-                    if (type === 'GreenArea') plot.greenAreas = plot.greenAreas.filter(g => g.id !== objectId);
+                    if (type === 'GreenArea') plot.greenAreas = plot.greenAreas.filter((g: any) => g.id !== objectId);
                     if (type === 'ParkingArea') {
                         plot.parkingAreas = plot.parkingAreas.filter((p: ParkingArea) => p.id !== objectId);
                         shouldRegenerateGreenAreas = true;
                     }
                     if (type === 'BuildableArea') {
-                        plot.buildableAreas = plot.buildableAreas.filter(b => b.id !== objectId);
+                        plot.buildableAreas = plot.buildableAreas.filter((b: any) => b.id !== objectId);
                         shouldRegenerateGreenAreas = true;
                     }
                     if (type === 'UtilityArea') {
                         plot.utilityAreas = plot.utilityAreas.filter((u: UtilityArea) => u.id !== objectId);
                         shouldRegenerateGreenAreas = true; // Regenerate after utility deletion
                     }
-                    if (type === 'Label' && plot.labels) plot.labels = plot.labels.filter(l => l.id !== objectId);
-                    if (type === 'EntryPoint' && plot.entries) plot.entries = plot.entries.filter(e => e.id !== objectId);
+                    if (type === 'Label' && plot.labels) plot.labels = plot.labels.filter((l: any) => l.id !== objectId);
+                    if (type === 'EntryPoint' && plot.entries) plot.entries = plot.entries.filter((e: any) => e.id !== objectId);
 
                     if (wasSelected) {
                         draft.selectedObjectId = null;
@@ -3978,6 +4464,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                         if (params.parkingType === 'ug') {
                             // Add Basements (Levels -1, -2)
+                            // EV Charging: Points = Units × 1.5 × 0.2 (from utility sizing doc)
+                            const totalUnitsInBuilding = b.units?.length || Math.floor(b.area / 100) * (b.numFloors || 5);
+                            const totalEVPoints = Math.ceil(totalUnitsInBuilding * 1.5 * 0.2);
+                            const evPerFloor = Math.ceil(totalEVPoints / 2);
+
                             b.floors.push({
                                 id: `floor-${b.id}-b1`,
                                 height: 3.5,
@@ -3985,7 +4476,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 type: 'Parking',
                                 parkingType: ParkingType.Basement,
                                 level: -1,
-                                parkingCapacity: capacityPerFloor
+                                parkingCapacity: capacityPerFloor,
+                                evStations: evPerFloor
                             });
                             b.floors.push({
                                 id: `floor-${b.id}-b2`,
@@ -3994,8 +4486,15 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 type: 'Parking',
                                 parkingType: ParkingType.Basement,
                                 level: -2,
-                                parkingCapacity: capacityPerFloor
+                                parkingCapacity: capacityPerFloor,
+                                evStations: totalUnitsInBuilding * 1.5 * 0.2 - Math.ceil(totalUnitsInBuilding * 1.5 * 0.2 / 2)
                             });
+
+                            // Tag building with EV utility for visual indicators
+                            if (!b.utilities) b.utilities = [];
+                            if (!b.utilities.includes(UtilityType.EVStation)) {
+                                b.utilities.push(UtilityType.EVStation);
+                            }
                         } else if (params.parkingType === 'pod') {
                             // Add Stilt (Level 0)
                             b.floors.push({
@@ -4195,17 +4694,15 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             // The 'plot' var from line 1689 is stale inside this timeout callback? 
                             // No, 'plot' is closure, but 'draft' is fresh.
                             // Let's try to get Vastu regulation.
-                            const vastuReg = draft.vastuRegulations?.[0]; // Simplification: Use first available or selected
-
-                            // We need to implement a way to select Vastu reg. For now, grab the first one.
-                            if (activePlot && vastuReg) {
+                            // We need to implement a way to select Vastu reg. For now, pass null.
+                            if (activePlot) {
                                 // We need a helper to run this inside produce, or run it outside.
                                 // It's better to run pure logic outside. But we are inside produce.
                                 // We'll assume the function is pure and imported.
-                                const result = calculateVastuScore(activePlot as any, newBuildings, vastuReg); // Cast to avoid Immer Draft issues
+                                const result = calculateVastuScore(activePlot as any, newBuildings, null); // Cast to avoid Immer Draft issues
 
                                 if (!activePlot.developmentStats) {
-                                    activePlot.developmentStats = calculateDevelopmentStats(activePlot as any, activePlot.buildings, DEFAULT_FEASIBILITY_PARAMS);
+                                    activePlot.developmentStats = calculateDevelopmentStats(activePlot as any, DEFAULT_FEASIBILITY_PARAMS);
                                 }
                                 activePlot.developmentStats.vastuScore = {
                                     overall: result.overallScore,

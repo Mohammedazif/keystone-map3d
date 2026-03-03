@@ -16,6 +16,9 @@ interface LayoutParams {
     intendedUse?: BuildingIntendedUse | string; // Mixed Use Support
     numFloors?: number;
     floorHeight?: number;
+    shuffleUnits?: boolean; // Randomize unit order on each floor
+    buildingId?: string; // Used to detect podium vs tower for utility placement
+    selectedUtilities?: string[]; // List of enabled utilities
 }
 
 // Helper: Get cardinal direction of a bearing (0-360)
@@ -254,14 +257,27 @@ export function generateBuildingLayout(
     const calculatedCoreAreaPerFloor = liftArea + stairArea + lobbyArea + corridorArea + shaftArea + fireLobbyArea;
     const coreAreaPerNode = calculatedCoreAreaPerFloor / numPhysicalCores;
     
-    // 8. CORE EFFICIENCY TARGETS (OUTPUT BENCHMARK)
+    // 8. CORE & CIRCULATION COMBINED EFFICIENCY TARGETS (INDUSTRY STANDARDS)
+    // These are % of GFA for core + circulation combined (lifts, stairs, lobbies, corridors, shafts)
+    // ┌───────────────────────┬───────────────────────────┐
+    // │ Development Type      │ Core & Circulation (% GFA)│
+    // ├───────────────────────┼───────────────────────────┤
+    // │ Residential           │ 15 – 25%                  │
+    // │ Commercial (Office)   │ 25 – 35%                  │
+    // │ Commercial (Retail)   │ 35 – 50%                  │
+    // │ Hospitality (Hotels)  │ 25 – 40%                  │
+    // │ Institutional         │ 30 – 40%                  │
+    // │ Mixed-Use             │ 25 – 35%                  │
+    // └───────────────────────┴───────────────────────────┘
     const coreRatio = calculatedCoreAreaPerFloor / floorArea;
     
-    let healthyMin = 0.10, healthyMax = 0.30;
-    if (intendedUse === 'Residential') { healthyMin = 0.10; healthyMax = 0.14; }
-    else if (intendedUse === 'Commercial') { healthyMin = 0.16; healthyMax = 0.22; }
-    else if (intendedUse === 'Institutional') { healthyMin = 0.20; healthyMax = 0.30; }
-    else if (params.subtype === 'mixed') { healthyMin = 0.18; healthyMax = 0.24; }
+    let healthyMin = 0.25, healthyMax = 0.35; // Default: Mixed-Use
+    if (intendedUse === 'Residential') { healthyMin = 0.15; healthyMax = 0.25; }
+    else if (intendedUse === 'Retail') { healthyMin = 0.35; healthyMax = 0.50; }
+    else if (intendedUse === 'Commercial' || intendedUse === 'Office' || intendedUse === 'Industrial') { healthyMin = 0.25; healthyMax = 0.35; }
+    else if (intendedUse === 'Hospitality') { healthyMin = 0.25; healthyMax = 0.40; }
+    else if (intendedUse === 'Institutional' || intendedUse === 'Public') { healthyMin = 0.30; healthyMax = 0.40; }
+    else if (intendedUse === 'MixedUse' || params.subtype === 'mixed') { healthyMin = 0.25; healthyMax = 0.35; }
     
     if (coreRatio < healthyMin || coreRatio > healthyMax) {
         console.warn(`[Audit] Core ratio ${(coreRatio*100).toFixed(1)}% is outside healthy range (${healthyMin*100}-${healthyMax*100}%) for ${intendedUse}!`);
@@ -513,8 +529,26 @@ export function generateBuildingLayout(
 
     let coreGeom = cores[0].geometry;
 
+    const shouldInclude = (type: string) => {
+        if (!params.selectedUtilities || params.selectedUtilities.length === 0) return true;
+        // Map Utility Infrastructure names to UtilityType if they differ
+        const mapping: Record<string, string> = {
+            'Electrical': UtilityType.Electrical,
+            'HVAC': UtilityType.HVAC,
+            'Solar PV': UtilityType.SolarPV,
+            'Rooftop Solar': UtilityType.SolarPV,
+            'EV Charging': UtilityType.EVStation
+        };
+        const mappedType = mapping[type] || type;
+        return params.selectedUtilities.some(u => {
+            const mU = mapping[u] || u;
+            return u === type || mU === mappedType;
+        });
+    };
+
     // 1.1 Generate Electrical Shaft (Vertical Utility)
     // Place it adjacent to the core
+    if (shouldInclude('Electrical')) {
     try {
         const bBox = turf.bbox(workingPoly);
         const minX = bBox[0];
@@ -548,47 +582,50 @@ export function generateBuildingLayout(
     } catch (e) {
         console.warn('Failed to place Electrical Shaft', e);
     }
+    }
 
-    // 1.2 Generate HVAC Zone (Rooftop)
+    // 1.2 Generate HVAC Zone (Rooftop) - Vastu: W/SW side of building
+    // Per Vastu: Air-conditioning chiller plant / Cooling towers → West or South-West
+    // Skip for podium buildings — the tower handles rooftop utilities
+    const isPodiumBuilding = params.buildingId?.includes('-podium');
+    if (!isPodiumBuilding && shouldInclude('HVAC')) {
     try {
         // Rooftop HVAC / Plant Room Area: ~1.5% to 2% of the Total Building GFA (all floors combined)
-        // If building has 5 floors of 1000m2 each (5000 GFA), HVAC is 5000 * 0.015 = 75m2
         // @ts-ignore - Assuming params has maxFloors based on other context, falling back to 5
-        const floorsCount = params.maxFloors || 5;
+        const floorsCount = params.numFloors || 5;
         const totalGFA = (width * depth) * Math.max(1, floorsCount);
         const hvacTargetArea = Math.max(16, totalGFA * 0.015); // Minimum 16m2 package
-        const hvacSize = Math.sqrt(hvacTargetArea);
         
-        // Use turf.envelope for general box extent
         const bBox = turf.bbox(workingPoly);
-        const nwPoint = turf.point([bBox[0], bBox[3]]);
+        // HVAC occupies the western half of the rooftop (Vastu: West/SW)
+        const hvacW = width * 0.45; // ~45% of building width
+        const hvacD = Math.min(depth * 0.45, hvacTargetArea / (width * 0.45)); // Fit area
+        const hvacActualD = Math.max(3, hvacD); // Minimum 3m depth
         
-        // Inset 1 meter south and east
-        const startPoint = turf.transformTranslate(nwPoint, 1, 135, { units: 'meters' });
+        // SW corner point, inset 1m from edges
+        const swPoint = turf.point([bBox[0], bBox[1]]);
+        const startPoint = turf.transformTranslate(swPoint, 1, 45, { units: 'meters' });
+        const startCoords = startPoint.geometry.coordinates;
         
-        // Make the geometric box match the exact calculated mathematical size
-        const hvacBoxFeature = turf.envelope(turf.buffer(startPoint, hvacSize / 2, { units: 'meters' }));
+        // Build HVAC box from SW corner inward (west side)
+        const hvacWDeg = hvacW / 111320;
+        const hvacDDeg = hvacActualD / 110540;
+        const hvacBoxFeature = turf.bboxPolygon([
+            startCoords[0], startCoords[1],
+            startCoords[0] + hvacWDeg, startCoords[1] + hvacDDeg
+        ]);
         
-        // Check if the entire box is inside the building to prevent overhangs
+        // Force intersection inside the building footprint
         // @ts-ignore
-        const isInside = turf.booleanContains(workingPoly, hvacBoxFeature);
-
-        let hvacPoly = hvacBoxFeature;
-
-        // If NW corner is not fully inside, evaluate alternatives
-        if (!isInside) {
-            console.log('[Layout Generator] HVAC corner overhangs, forcing intersection inside structure');
-            
-            // To ensure it fits beautifully regardless of irregular shapes, force intersect it.
+        let hvacPoly = turf.intersect(hvacBoxFeature, workingPoly);
+        if (!hvacPoly || turf.area(hvacPoly) < 4) {
+            // Fallback: use building center west half
+            const center = turf.center(workingPoly);
+            const hvacSize = Math.sqrt(hvacTargetArea);
+            const fallbackCenter = turf.transformTranslate(center, width * 0.15, -90, { units: 'meters' }); // Shift west
+            hvacPoly = turf.envelope(turf.buffer(fallbackCenter, hvacSize / 2, { units: 'meters' }));
             // @ts-ignore
-            const intersectedHvac = turf.intersect(hvacBoxFeature, workingPoly);
-            if (intersectedHvac && turf.area(intersectedHvac) > 4) {
-                 hvacPoly = intersectedHvac as Feature<Polygon>;
-            } else {
-                 // Final Fallback: use the bounding box center to avoid missing it completely
-                 const center = turf.center(workingPoly);
-                 hvacPoly = turf.envelope(turf.buffer(center, hvacSize / 2, { units: 'meters' }));
-            }
+            hvacPoly = turf.intersect(hvacPoly, workingPoly) || hvacPoly;
         }
 
         utilities.push({
@@ -600,10 +637,104 @@ export function generateBuildingLayout(
             area: turf.area(hvacPoly),
             visible: true
         });
-        console.log('[Layout Generator] Placed Rooftop HVAC Unit (parameterized box)');
+        console.log('[Layout Generator] Placed Rooftop HVAC Unit (W/SW - Vastu compliant)');
     } catch (e) {
         console.warn('Failed to place HVAC Zone', e);
     }
+    } // end isPodiumBuilding check for HVAC
+
+    // 1.3 Generate Rooftop Solar PV - Vastu: South-facing roof for max efficiency
+    // Skip for podium buildings — Solar PV goes on tower rooftop only
+    if (!isPodiumBuilding && (shouldInclude('Solar PV') || shouldInclude('Rooftop Solar'))) {
+    try {
+        const bBox = turf.bbox(workingPoly);
+        const footprintArea = turf.area(workingPoly);
+        // Use SE half of rooftop (opposite of HVAC which is W/SW)
+        // Solar PV covers ~40% of rooftop on the eastern/SE side
+        const solarW = width * 0.45;
+        const solarD = depth * 0.45;
+        
+        // SE corner point, inset 1m from edges
+        const sePoint = turf.point([bBox[2], bBox[1]]);
+        const solarStart = turf.transformTranslate(sePoint, 1, -135, { units: 'meters' }); // inset NW
+        const solarCoords = solarStart.geometry.coordinates;
+        
+        const solarWDeg = solarW / 111320;
+        const solarDDeg = solarD / 110540;
+        const solarBoxFeature = turf.bboxPolygon([
+            solarCoords[0] - solarWDeg, solarCoords[1],
+            solarCoords[0], solarCoords[1] + solarDDeg
+        ]);
+        
+        // @ts-ignore
+        let solarPoly = turf.intersect(solarBoxFeature, workingPoly);
+        if (!solarPoly || turf.area(solarPoly) < 4) {
+            // Fallback: use building center east half
+            const center = turf.center(workingPoly);
+            const fallbackCenter = turf.transformTranslate(center, width * 0.15, 90, { units: 'meters' }); // Shift east
+            const solarSize = Math.sqrt(solarW * solarD);
+            solarPoly = turf.envelope(turf.buffer(fallbackCenter, solarSize / 2, { units: 'meters' }));
+            // @ts-ignore
+            solarPoly = turf.intersect(solarPoly, workingPoly) || solarPoly;
+        }
+
+        const solarArea = turf.area(solarPoly);
+        utilities.push({
+            id: `util-solar-roof-${Math.random().toString(36).substr(2, 5)}`,
+            name: 'Rooftop Solar PV',
+            type: UtilityType.SolarPV,
+            geometry: solarPoly as Feature<Polygon>,
+            centroid: turf.centroid(solarPoly),
+            area: solarArea,
+            visible: true
+        });
+        console.log(`[Layout Generator] Placed Rooftop Solar PV (S/SE - ${solarArea.toFixed(1)}m²)`);
+    } catch (e) {
+        console.warn('Failed to place Rooftop Solar PV', e);
+    }
+    } // end isPodiumBuilding check for Solar PV
+
+    // 1.4 Generate EV Station Zone (Basement context)
+    // EV charging is in basement parking — belongs to podiums and normal buildings.
+    // Skip for towers as they sit on top of the podium/parking shared zone.
+    const isTowerBuilding = params.buildingId?.includes('-tower');
+    if (!isTowerBuilding && shouldInclude('EV Charging')) {
+    try {
+        const bBox = turf.bbox(workingPoly);
+        // Place EV stations along the North edge (2m deep zone)
+        const evW = width * 0.8; // Cover most of the width
+        const evD = 2.0; // 2m deep charging zone
+        
+        // NW corner point, inset 0.5m
+        const nwPoint = turf.point([bBox[0], bBox[3]]);
+        const evStart = turf.transformTranslate(nwPoint, 0.5, 135, { units: 'meters' });
+        const evCoords = evStart.geometry.coordinates;
+        
+        const evWDeg = evW / 111320;
+        const evDDeg = evD / 110540;
+        const evBoxFeature = turf.bboxPolygon([
+            evCoords[0], evCoords[1] - evDDeg,
+            evCoords[0] + evWDeg, evCoords[1]
+        ]);
+        
+        // @ts-ignore
+        let evPoly = turf.intersect(evBoxFeature, workingPoly);
+        if (evPoly && turf.area(evPoly) > 2) {
+            utilities.push({
+                id: `util-ev-${Math.random().toString(36).substr(2, 5)}`,
+                name: 'EV Charging Station',
+                type: UtilityType.EVStation,
+                geometry: evPoly as Feature<Polygon>,
+                centroid: turf.centroid(evPoly),
+                area: turf.area(evPoly),
+                visible: true
+            });
+            console.log('[Layout Generator] Placed EV Charging Zone sub-polygon');
+        }
+    } catch (e) {
+        console.warn('Failed to place EV Station polygon', e);
+    }
+    } // end isTowerBuilding check for EV
 
     // 2. Generate Units based on Unit Mix Configuration
     let obstacles: any = undefined;
@@ -662,21 +793,22 @@ export function generateBuildingLayout(
     } else if (!useUnitMix || useUnitMix.length === 0) {
         // Default residential mix if none provided
         useUnitMix = [
-            { name: '1BHK', mixRatio: 0.15, area: 60 },
-            { name: '2BHK', mixRatio: 0.40, area: 120 },
-            { name: '3BHK', mixRatio: 0.35, area: 180 },
-            { name: '4BHK', mixRatio: 0.10, area: 250 }
+            { name: '2BHK', mixRatio: 0.30, area: 140 },
+            { name: '3BHK', mixRatio: 0.35, area: 185 },
+            { name: '4BHK', mixRatio: 0.35, area: 245 }
         ];
     }
 
     // Now we ALWAYS have a useUnitMix array.
     const weightedAvgSize = useUnitMix.reduce((acc, unit) => acc + (unit.area * unit.mixRatio), 0);
-    // Determine the base module size to use for the underlying grid calculation
-    // Renamed local variable to avoid conflict with params.minUnitSize
-    const baseGridUnitSize = Math.max(10, Math.min(...useUnitMix.map(u => u.area)));
     
-    // 1. Create ONE unified grid based on the MINIMUM unit size to allow cell grouping
-    // Auto-adjust grid size to pack neatly into an integer number of divisions across BOTH dimensions
+    // Use a FINE grid for accurate area representation.
+    // Divide the smallest unit area by 5 to get ~28sqm cells (~5.3m per side)
+    // This allows 2BHK(140)=5cells, 3BHK(185)=7cells, 4BHK(245)=9cells — much more precise.
+    const smallestUnitArea = Math.min(...useUnitMix.map(u => u.area));
+    const baseGridUnitSize = Math.max(10, Math.round(smallestUnitArea / 5));
+    
+    // 1. Create a fine-grained grid for precise unit area representation
     const nominalGridSizeM = Math.sqrt(baseGridUnitSize);
 
     // Calculate discrete number of cells across width and depth
@@ -684,19 +816,17 @@ export function generateBuildingLayout(
     const cellsY = Math.max(1, Math.round(depth / nominalGridSizeM));
     
     // Derive exact cell dimensions DIRECTLY from bbox degree extent
-    const bboxWidthDeg = bbox[2] - bbox[0]; // total longitude span of building
-    const bboxHeightDeg = bbox[3] - bbox[1]; // total latitude span of building
-    const wDegGrid = bboxWidthDeg / cellsX;     // exact cell width in degrees
-    const hDegGrid = bboxHeightDeg / cellsY;    // exact cell height in degrees
+    const bboxWidthDeg = bbox[2] - bbox[0];
+    const bboxHeightDeg = bbox[3] - bbox[1];
+    const wDegGrid = bboxWidthDeg / cellsX;
+    const hDegGrid = bboxHeightDeg / cellsY;
 
-    // Actual cell area in m² (still needed for threshold check)
+    // Actual cell area in m² (needed for threshold check)
     const gridW = width / cellsX;
     const gridH = depth / cellsY;
+    const actualCellAreaM2 = gridW * gridH;
 
-    // 2. We now have 1x1 base modules covering the entire bbox cleanly without gaps.
-    // Each base module is EXACTLY wDeg x hDeg.
-    
-    // Create an exact mathematical grid of rectangular polygons
+    // 2. Create an exact mathematical grid of rectangular polygons
     let gridFeatures: { poly: Feature<Polygon>, i: number, j: number }[] = [];
     const minXGrid = bbox[0], minYGrid = bbox[1];
     
@@ -720,187 +850,240 @@ export function generateBuildingLayout(
         try {
             // @ts-ignore
             const intersection = turf.intersect(cell.poly, leasablePoly);
-            // We use a small threshold to avoid tiny slivers. Let's say 2% of the module's area.
-            if (intersection && turf.area(intersection) > (gridW * gridH) * 0.02) {
+            if (intersection && turf.area(intersection) > actualCellAreaM2 * 0.02) {
                 validModules.push({ ...cell, validPoly: intersection as Feature<Polygon> });
             }
         } catch (e) { }
     });
 
     const totalValidCells = validModules.length;
-    console.log(`[Layout Generator] Tiled Grid: ${totalValidCells} exact modules found (module size: ${baseGridUnitSize.toFixed(1)}m²)`);
+    const leasableAreaM2 = validModules.reduce((sum, m) => sum + turf.area(m.validPoly), 0);
+    console.log(`[Layout Generator] Tiled Grid: ${totalValidCells} modules, cell≈${actualCellAreaM2.toFixed(1)}m², leasable≈${leasableAreaM2.toFixed(0)}m²`);
 
-    // 4. Determine how many modules each unit gets
-    const totalAreaM2 = totalValidCells * baseGridUnitSize;
-    let exactCounts = useUnitMix.map(u => ({
-        type: u.name,
-        color: getColorForUnitType(u.name),
-        area: u.area,
-        modulesNeeded: Math.max(1, Math.round(u.area / baseGridUnitSize)), 
-        exactArea: totalAreaM2 * u.mixRatio,
-        targetUnits: 0,
-        assignedModules: 0
+    // 4. GEOMETRIC UNIT SUBDIVISION
+    // Instead of grid-based placement (which causes gaps, irregular shapes, and sizing issues),
+    // we directly subdivide the leasable area into clean rectangular units.
+    // 
+    // Algorithm:
+    //   1. Split leasable bbox into two strips at core centerline
+    //   2. Compute unit widths from: unitWidth = targetArea / stripDepth
+    //   3. Build a floor-wide unit deck
+    //   4. Assign units to each strip by creating rectangles at calculated positions
+    //   5. Intersect with leasable poly for clean edges
+    
+    const lBbox = turf.bbox(leasablePoly!);
+    const [lMinX, lMinY, lMaxX, lMaxY] = lBbox;
+    
+    // Core center divides building into two strips   
+    const coreCentroidPt = cores.length > 0 
+        ? turf.centroid(cores[0].geometry) 
+        : turf.centroid(workingPoly);
+    const coreCenter = coreCentroidPt.geometry.coordinates;
+    
+    const isHorizontalBuilding = width > depth;
+    
+    // Degree-to-meter scale factors at this location
+    const degPerMeterX = (lMaxX - lMinX) / width;
+    const degPerMeterY = (lMaxY - lMinY) / depth;
+    
+    // Compute two strips
+    let stripA: { minX: number, maxX: number, minY: number, maxY: number, depth: number, length: number };
+    let stripB: { minX: number, maxX: number, minY: number, maxY: number, depth: number, length: number };
+    
+    if (isHorizontalBuilding) {
+        // Horizontal building: core runs E-W, strips are N and S
+        // Strip A = above core (north), Strip B = below core (south)
+        const coreY = coreCenter[1];
+        stripA = {
+            minX: lMinX, maxX: lMaxX,
+            minY: coreY, maxY: lMaxY,
+            depth: (lMaxY - coreY) / degPerMeterY,
+            length: width
+        };
+        stripB = {
+            minX: lMinX, maxX: lMaxX,
+            minY: lMinY, maxY: coreY,
+            depth: (coreY - lMinY) / degPerMeterY,
+            length: width
+        };
+    } else {
+        // Vertical building: core runs N-S, strips are E and W
+        const coreX = coreCenter[0];
+        stripA = {
+            minX: coreX, maxX: lMaxX,
+            minY: lMinY, maxY: lMaxY,
+            depth: (lMaxX - coreX) / degPerMeterX,
+            length: depth
+        };
+        stripB = {
+            minX: lMinX, maxX: coreX,
+            minY: lMinY, maxY: lMaxY,
+            depth: (coreX - lMinX) / degPerMeterX,
+            length: depth
+        };
+    }
+    
+    console.log(`[Layout Generator] Strips: A depth=${stripA.depth.toFixed(1)}m len=${stripA.length.toFixed(1)}m, B depth=${stripB.depth.toFixed(1)}m len=${stripB.length.toFixed(1)}m`);
+    
+    // Calculate unit widths for each strip
+    const computeUnitWidths = (stripDepth: number) => {
+        if (stripDepth < 1) return useUnitMix.map(u => ({ ...u, unitWidth: u.area })); // degenerate
+        return useUnitMix.map(u => ({
+            ...u,
+            unitWidth: u.area / stripDepth // meters wide along the building length
+        }));
+    };
+    
+    // Build ONE deck for the whole floor
+    // Use the average strip depth for unit width calculation
+    const avgStripDepth = (stripA.depth + stripB.depth) / 2;
+    const unitWidths = computeUnitWidths(avgStripDepth);
+    const avgUnitWidth = unitWidths.reduce((s, u) => s + u.unitWidth * u.mixRatio, 0);
+    const totalLength = stripA.length; // both strips have same length
+    
+    // Total units that fit across both strips combined
+    const totalUnitSlots = Math.max(1, Math.floor((totalLength * 2) / avgUnitWidth)); // ×2 for both strips
+    
+    // Distribute by mix ratio
+    const unitCounts = unitWidths.map(u => ({
+        ...u,
+        count: Math.max(0, Math.round(totalUnitSlots * u.mixRatio))
     }));
-
-    // Calculate how many UNITS of each type we can fit based on their mix ratio
-    let totalTargetUnits = 0;
-    exactCounts.forEach(u => {
-        u.targetUnits = Math.floor(u.exactArea / u.area);
-        totalTargetUnits += u.targetUnits;
-        u.assignedModules = u.targetUnits * u.modulesNeeded;
+    
+    // Ensure at least 1 of each type
+    unitCounts.forEach(u => {
+        if (u.count === 0 && u.mixRatio > 0) u.count = 1;
     });
-
-    // Assign any remaining unallocated modules to the unit type with highest shortage
-    let allocatedModules = exactCounts.reduce((acc, u) => acc + u.assignedModules, 0);
-    let remainingModules = totalValidCells - allocatedModules;
     
-    // Sort so the one that needs it most gets extra units
-    exactCounts.sort((a, b) => (b.exactArea - (b.targetUnits * b.area)) - (a.exactArea - (a.targetUnits * a.area)));
+    // Trim if total width exceeds available (both strips combined)
+    let totalWidthUsed = unitCounts.reduce((s, u) => s + u.count * u.unitWidth, 0);
+    unitCounts.sort((a, b) => b.count - a.count);
+    while (totalWidthUsed > totalLength * 2 && unitCounts[0].count > 1) {
+        unitCounts[0].count--;
+        totalWidthUsed -= unitCounts[0].unitWidth;
+    }
     
-    let loopCounter = 0;
-    while (remainingModules > 0 && loopCounter < 100) {
-        for (let u of exactCounts) {
-            if (remainingModules >= u.modulesNeeded) {
-                u.targetUnits += 1;
-                u.assignedModules += u.modulesNeeded;
-                remainingModules -= u.modulesNeeded;
-            } else if (remainingModules > 0 && u === exactCounts[exactCounts.length - 1]) {
-                // Not enough space for even the smallest unit. Force allocate it to not waste space.
-                u.targetUnits += 1;
-                u.assignedModules += remainingModules; 
-                remainingModules = 0;
+    console.log(`[Layout Generator] Floor plan:`, 
+        unitCounts.map(u => `${u.name}=${u.count}×${u.unitWidth.toFixed(1)}m`).join(', '),
+        `total=${totalWidthUsed.toFixed(0)}m / ${(totalLength*2).toFixed(0)}m`);
+    
+    // Build interleaved deck
+    let unitDeck: { type: string, color: string, targetArea: number, unitWidth: number }[] = [];
+    const remaining = unitCounts.map(u => ({ ...u, left: u.count, colorIdx: 0 }));
+    let left = remaining.reduce((s, u) => s + u.left, 0);
+    while (left > 0) {
+        for (const u of remaining) {
+            if (u.left > 0) {
+                const color = u.colorIdx % 2 === 0 
+                    ? getColorForUnitType(u.name) 
+                    : darkenColor(getColorForUnitType(u.name));
+                unitDeck.push({ type: u.name, color, targetArea: u.area, unitWidth: u.unitWidth });
+                u.left--;
+                u.colorIdx++;
+                left--;
             }
         }
-        loopCounter++;
     }
-
-    // 5. Create the deck of individual units
-    let unitDeck: { type: string, color: string, modules: number, area: number }[] = [];
-    exactCounts.forEach(u => {
-        for (let k = 0; k < u.targetUnits; k++) {
-            const color = k % 2 === 0 ? u.color : darkenColor(u.color);
-            unitDeck.push({ type: u.type, color, modules: u.modulesNeeded, area: u.area });
-        }
-    });
-
-    // Shuffle the unit deck deterministically so big and small units mix
-    let seed = Math.floor(turf.area(workingPoly) || 12345);
-    const random = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
-    for (let i = unitDeck.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        [unitDeck[i], unitDeck[j]] = [unitDeck[j], unitDeck[i]];
-    }
-
-    // Sort valid modules to cluster them logically (e.g. sweep left-to-right, top-to-bottom)
-    validModules.sort((a, b) => {
-        if (a.j !== b.j) return a.j - b.j;
-        return a.i - b.i;
-    });
-
-    // 6. Assign adjacent modules to units
-    let usedModules = new Array(validModules.length).fill(false);
     
-    let unitIdx = 0;
-    while (usedModules.includes(false) && unitIdx < validModules.length * 2) {
-        let assignment = unitDeck[unitIdx % unitDeck.length];
-        if (!assignment) {
-            assignment = exactCounts[0] ? { type: exactCounts[0].type, color: exactCounts[0].color, modules: exactCounts[0].modulesNeeded, area: exactCounts[0].area } : { type: 'Unit', color: '#777', modules: 1, area: 100 };
+    // Shuffle the deck if user requested randomized order
+    if (params.shuffleUnits) {
+        // Create a basic seeded random function based on the building coordinates
+        // This ensures each building gets a unique shuffle, but stable across re-renders
+        const buildingSeed = Math.floor(coreCenter[0] * 100000 + coreCenter[1] * 100000);
+        const seededRandom = (seed: number) => {
+            const x = Math.sin(seed++) * 10000;
+            return x - Math.floor(x);
+        };
+        
+        // Fisher-Yates shuffle with seeded random
+        let currentSeed = buildingSeed;
+        for (let i = unitDeck.length - 1; i > 0; i--) {
+            const j = Math.floor(seededRandom(currentSeed++) * (i + 1));
+            [unitDeck[i], unitDeck[j]] = [unitDeck[j], unitDeck[i]];
         }
+        console.log(`[Layout Generator] Deck shuffled randomly.`);
+    }
+    
+    // Split deck between strips proportionally to their available length
+    const aSlots = Math.round(unitDeck.length * 0.5); // Even split since both strips have same length
+    const deckA = unitDeck.slice(0, aSlots);
+    const deckB = unitDeck.slice(aSlots);
+    
+    // Create rectangular unit geometries by slicing the strip
+    const createStripUnits = (
+        strip: typeof stripA,
+        deck: typeof unitDeck,
+        unitStartIdx: number
+    ): number => {
+        if (deck.length === 0 || strip.depth < 1 || strip.length < 1) return unitStartIdx;
         
-        let cellGroup: Feature<Polygon>[] = [];
-        let accumulatedArea = 0;
-        let startIndex = usedModules.findIndex(used => !used);
+        // Compute total width needed by this deck
+        const totalDeckWidth = deck.reduce((s, u) => s + u.unitWidth, 0);
+        // Scale factor: stretch/compress to fill the strip exactly
+        const scaleFactor = strip.length / totalDeckWidth;
         
-        if (startIndex === -1) break; // Full floor
+        let currentPos = 0; // meters from start of strip
         
-        // Take the first available module
-        const firstCell = validModules[startIndex].validPoly;
-        cellGroup.push(firstCell);
-        usedModules[startIndex] = true;
-        accumulatedArea += turf.area(firstCell);
-        
-        // Find adjacent available cells until we hit the target area for this unit type
-        // We use an index-based search rather than pure distance for cleaner orthogonal merges
-        while (accumulatedArea < assignment.area) {
-            let bestIdx = -1;
-            let bestDist = Infinity;
+        for (let d = 0; d < deck.length; d++) {
+            const assignment = deck[d];
+            const scaledWidth = assignment.unitWidth * scaleFactor; // adjusted to fill strip perfectly
+            const nextPos = (d === deck.length - 1) 
+                ? strip.length  // Last unit takes all remaining space (avoids rounding gaps)
+                : currentPos + scaledWidth;
             
-            // Simplified nearest-neighbor search based on centroid distance
-            const currentCentroid = turf.centroid(cellGroup[cellGroup.length-1]);
+            // Create rectangle in geographic coordinates
+            let unitRect: Feature<Polygon>;
+            if (isHorizontalBuilding) {
+                const x1 = strip.minX + currentPos * degPerMeterX;
+                const x2 = strip.minX + nextPos * degPerMeterX;
+                unitRect = turf.bboxPolygon([x1, strip.minY, x2, strip.maxY]);
+            } else {
+                const y1 = strip.minY + currentPos * degPerMeterY;
+                const y2 = strip.minY + nextPos * degPerMeterY;
+                unitRect = turf.bboxPolygon([strip.minX, y1, strip.maxX, y2]);
+            }
             
-            for (let j = 0; j < validModules.length; j++) {
-                if (!usedModules[j]) {
-                    const candidateCentroid = turf.centroid(validModules[j].validPoly);
-                    const dist = turf.distance(currentCentroid, candidateCentroid);
-                    if (dist < bestDist) {
-                        bestDist = dist;
-                        bestIdx = j;
+            // Intersect with leasable poly for clean edges
+            let finalGeom: Feature<Polygon> | null = null;
+            try {
+                // @ts-ignore
+                const clipped = turf.intersect(unitRect, leasablePoly);
+                if (clipped) {
+                    if (clipped.geometry.type === 'Polygon') {
+                        finalGeom = clipped as Feature<Polygon>;
+                    } else if (clipped.geometry.type === 'MultiPolygon') {
+                        // Take the largest part
+                        const parts = (clipped.geometry.coordinates as any[]).map((c: any) => turf.polygon(c));
+                        parts.sort((a: any, b: any) => turf.area(b) - turf.area(a));
+                        finalGeom = parts[0] as Feature<Polygon>;
                     }
                 }
+            } catch (e) {
+                // If intersection fails, use the raw rectangle
+                finalGeom = unitRect;
             }
             
-            if (bestIdx !== -1) {
-                const nextCell = validModules[bestIdx].validPoly;
-                cellGroup.push(nextCell);
-                usedModules[bestIdx] = true;
-                accumulatedArea += turf.area(nextCell);
-            } else {
-                break; // No more adjacent cells
-            }
-        }
-        
-        // Convert to a FeatureCollection to dissolve
-        // turf.intersect can sometimes return MultiPolygons, which turf.dissolve does not accept.
-        // We flatten everything first.
-        let flattenedPolys: Feature<Polygon>[] = [];
-        cellGroup.forEach(cell => {
-             if (cell.geometry.type === 'Polygon') {
-                 flattenedPolys.push(cell as Feature<Polygon>);
-             } else if (cell.geometry.type === 'MultiPolygon') {
-                 // @ts-ignore
-                 const flattened = turf.flatten(cell);
-                 flattened.features.forEach((f: any) => flattenedPolys.push(f as Feature<Polygon>));
-             }
-        });
-
-        const fc = turf.featureCollection(flattenedPolys);
-        
-        let dissolvedFeatures: Feature<Polygon>[] = [];
-        try {
-            // Dissolve merges adjacent/overlapping polygons cleanly into one solid shape
-            // @ts-ignore
-            const dissolved = turf.dissolve(fc);
-            
-            if (dissolved && dissolved.features && dissolved.features.length > 0) {
-                // Dissolve may return multiple features if they are disjoint!
-                dissolved.features.forEach((f: any) => {
-                    if (f.geometry.type === 'Polygon') {
-                         dissolvedFeatures.push(f as Feature<Polygon>);
-                    } else if (f.geometry.type === 'MultiPolygon') {
-                         const parts = (f.geometry.coordinates as [number, number][][][]).map((coords: any) => turf.polygon(coords));
-                         dissolvedFeatures.push(...parts as Feature<Polygon>[]);
-                    }
+            if (finalGeom && turf.area(finalGeom) > 5) {
+                units.push({
+                    id: `unit-${unitStartIdx + d}`,
+                    type: assignment.type,
+                    geometry: finalGeom,
+                    color: assignment.color,
+                    targetArea: assignment.targetArea
                 });
-            } else {
-                dissolvedFeatures = flattenedPolys; // fallback
             }
-        } catch (err) {
-            console.warn('[Layout Generator] Dissolve failed, falling back to all individual modules', err);
-            dissolvedFeatures = flattenedPolys;
+            
+            currentPos = nextPos;
         }
         
-        // Ensure ALL parts of the unit are pushed, to avoid missing blocks creating "gaps"
-        dissolvedFeatures.forEach((geom, ptIdx) => {
-            units.push({
-                id: `unit-${unitIdx}-${ptIdx}`,
-                type: assignment.type,
-                geometry: geom,
-                color: assignment.color
-            });
-        });
-        
-        unitIdx++;
-    }
+        return unitStartIdx + deck.length;
+    };
+    
+    const nextIdx = createStripUnits(stripA, deckA, 0);
+    createStripUnits(stripB, deckB, nextIdx);
+    
+    console.log(`[Layout Generator] Final: ${units.length} units placed.`, 
+        units.map(u => `${u.type}(${u.targetArea}sqm)`).join(', '));
 
     // 3. Generate Entrances (NEW)
     try {
@@ -1104,10 +1287,14 @@ export function generateSiteUtilities(
     // Estimate population
     let totalUnits = 0;
     buildings.forEach(b => {
+        // Case 1: GeoJSON Feature with units in properties (old algo path)
         if (b.properties && b.properties.units && Array.isArray(b.properties.units)) {
             totalUnits += b.properties.units.length;
+        // Case 2: Plain Building object with units directly on it (store path)
+        } else if (b.units && Array.isArray(b.units)) {
+            totalUnits += b.units.length;
         } else {
-            // Estimate based on area if units not populated yet
+            // Fallback: Estimate based on area if units not populated yet
             try {
                 // Handle various input shapes (Feature or Geometry)
                 let area = 0;
@@ -1115,10 +1302,13 @@ export function generateSiteUtilities(
                     area = turf.area(b);
                 } else if (b.geometry) {
                     area = turf.area(b.geometry);
+                } else if (b.area) {
+                    // Plain Building object area field
+                    area = b.area;
                 }
 
                 if (area > 0) {
-                    const floors = (b.properties && b.properties.floors) ? b.properties.floors : 5;
+                    const floors = b.numFloors || (b.properties && b.properties.floors) || 5;
                     totalUnits += Math.floor(area / 80) * floors;
                 }
             } catch (e) {
@@ -1197,7 +1387,16 @@ export function generateSiteUtilities(
     let roofAreaSum = 0;
     buildings.forEach(b => {
         try {
-            roofAreaSum += b.properties?.area || turf.area(b.geometry || b);
+            if (b.area && b.area > 0) {
+                // Plain Building object from store — use the actual computed area
+                roofAreaSum += b.area;
+            } else if (b.properties?.area && b.properties.area > 0) {
+                // GeoJSON Feature with area in properties
+                roofAreaSum += b.properties.area;
+            } else {
+                // Last resort: compute from geometry
+                roofAreaSum += turf.area(b.geometry || b);
+            }
         } catch (e) {}
     });
     const annualHarvestVol = roofAreaSum * 0.8 * 0.85; // m3
@@ -1211,19 +1410,19 @@ export function generateSiteUtilities(
     const evPoints = Math.ceil(totalUnits * 0.1); // 10%
 
     // console.groupCollapsed(`[Utility Math] Calculation Audit for Pop: ${population}`);
-    // console.log(`Units: ${totalUnits}, Pop: ${population}`);
-    // console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@0.9 sqm/KLD)`);
-    // console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@0.45 sqm/KLD)`);
-    // console.log(`UGT (Water) -> Vol: ${ugtVolume.toFixed(1)} m3 | Area: ${ugtArea} sqm (3.5m depth)`);
-    // console.log(`RWH -> Roof Area: ${roofAreaSum.toFixed(1)} sqm | Annual Harvest: ${annualHarvestVol.toFixed(1)} m3 | Storage Vol: ${rwhVolume.toFixed(1)} m3 | Area: ${rwhArea} sqm (2.5m depth)`);
-    // console.log(`Electrical -> Essential Load: ${essentialLoad} kW | DG kVA: ${dgKVA.toFixed(1)}`);
-    // console.log(`DG Set Area -> ${dgArea} sqm (@1.0 sqm/kVA, max 250)`);
-    // console.log(`Transformer Area -> ${transformerArea} sqm (@0.06 sqm/kVA, max 150)`);
-    // console.log(`Fire Tank -> Vol: ${fireTankVolume} m3 | Area: ${fireTankArea} sqm (3.5m depth)`);
-    // console.log(`Gas Area -> ${gasArea} sqm | Admin Area -> ${adminBlockArea} sqm | OWC Area -> ${owcArea} sqm`);
-    // console.log(`Solar PV -> ${solarCapacityKW.toFixed(1)} kW req = ${solarAreaReq.toFixed(1)} sqm`);
-    // console.log(`EV Points -> ${evPoints} points`);
-    // console.groupEnd();
+    console.log(`Units: ${totalUnits}, Pop: ${population}`);
+    console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@0.9 sqm/KLD)`);
+    console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@0.45 sqm/KLD)`);
+    console.log(`UGT (Water) -> Vol: ${ugtVolume.toFixed(1)} m3 | Area: ${ugtArea} sqm (3.5m depth)`);
+    console.log(`RWH -> Roof Area: ${roofAreaSum.toFixed(1)} sqm | Annual Harvest: ${annualHarvestVol.toFixed(1)} m3 | Storage Vol: ${rwhVolume.toFixed(1)} m3 | Area: ${rwhArea} sqm (2.5m depth)`);
+    console.log(`Electrical -> Essential Load: ${essentialLoad} kW | DG kVA: ${dgKVA.toFixed(1)}`);
+    console.log(`DG Set Area -> ${dgArea} sqm (@1.0 sqm/kVA, max 250)`);
+    console.log(`Transformer Area -> ${transformerArea} sqm (@0.06 sqm/kVA, max 150)`);
+    console.log(`Fire Tank -> Vol: ${fireTankVolume} m3 | Area: ${fireTankArea} sqm (3.5m depth)`);
+    console.log(`Gas Area -> ${gasArea} sqm | Admin Area -> ${adminBlockArea} sqm | OWC Area -> ${owcArea} sqm`);
+    console.log(`Solar PV -> ${solarCapacityKW.toFixed(1)} kW req = ${solarAreaReq.toFixed(1)} sqm`);
+    console.log(`EV Points -> ${evPoints} points`);
+    console.groupEnd();
 
     // --- 3. GROUPING & PLACEMENT ZONES ---
 

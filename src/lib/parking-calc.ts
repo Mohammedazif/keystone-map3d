@@ -23,7 +23,7 @@ export function calculateParkingCapacity(
  */
 export function getParkingSpaceSize(plot?: Plot): number {
     // Check if regulation has parking space size requirement
-    const regulationSize = plot?.regulation?.parking?.spaceSize;
+    const regulationSize = (plot?.regulation as any)?.parking?.spaceSize;
     return regulationSize || 12.5; // Default: 2.5m × 5m = 12.5 m²
 }
 

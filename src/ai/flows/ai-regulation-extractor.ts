@@ -55,7 +55,7 @@ export const extractRegulationData = ai.defineFlow(
 
 Document: ${input.fileName}
 Content:
-${input.documentText.slice(0, 500000)} ...
+${input.documentText.slice(0, 400000)} ...
 
 Task:
 1. **EXTRACT ALL** land use types and subtypes mentioned. Do NOT limit to a few examples.

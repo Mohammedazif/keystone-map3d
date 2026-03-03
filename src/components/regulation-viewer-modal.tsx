@@ -99,7 +99,7 @@ export function RegulationViewerModal({ isOpen, onOpenChange, plot }: Regulation
                     <>
                          <div className='flex items-center gap-4'>
                             <span className="text-sm font-medium">Regulation Type:</span>
-                            <Select value={selectedRegulationType} onValueChange={handleTypeChange}>
+                            <Select value={selectedRegulationType || undefined} onValueChange={handleTypeChange}>
                                 <SelectTrigger className="w-[250px]">
                                     <SelectValue placeholder="Select a type..." />
                                 </SelectTrigger>

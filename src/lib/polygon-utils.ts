@@ -1,6 +1,6 @@
 
 import * as turf from '@turf/turf';
-import type { Feature, Polygon } from '@turf/turf';
+import { Feature, Polygon, BBox } from 'geojson';
 
 /**
  * Splits a polygon into a number of smaller polygons, with gaps between them.
@@ -22,7 +22,7 @@ export function splitPolygon(polygon: Feature<Polygon>, count: number): Feature<
     const gap = 2; // Gap in meters between buildings
 
     for (let i = 0; i < count; i++) {
-        let chunkBbox: turf.BBox;
+        let chunkBbox: BBox;
         if (isHorizontalSplit) {
             chunkBbox = [minX + i * step, minY, minX + (i + 1) * step, maxY];
         } else {
@@ -45,8 +45,8 @@ export function splitPolygon(polygon: Feature<Polygon>, count: number): Feature<
 
             } else if (intersection && intersection.geometry.type === 'MultiPolygon') {
                 const largestPoly = intersection.geometry.coordinates
-                    .map(coords => turf.polygon(coords))
-                    .sort((a,b) => turf.area(b) - turf.area(a))[0];
+                    .map((coords: any) => turf.polygon(coords))
+                    .sort((a: any, b: any) => turf.area(b) - turf.area(a))[0];
                 
                 if (largestPoly) {
                     const buffered = turf.buffer(largestPoly, -gap, { units: 'meters' });

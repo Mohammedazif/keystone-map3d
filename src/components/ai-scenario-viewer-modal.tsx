@@ -39,7 +39,7 @@ export function AiScenarioViewerModal() {
     return null;
   }
 
-  const iconMap = {
+  const iconMap: Record<string, any> = {
     Building: Building2,
     GreenArea: Trees,
     ParkingArea: Car,

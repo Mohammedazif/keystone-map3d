@@ -1,3 +1,5 @@
+import * as turf from '@turf/turf';
+import { Feature, Polygon, MultiPolygon } from 'geojson';
 
 // ============ NEW: Boundary-Hugging Helpers ============
 

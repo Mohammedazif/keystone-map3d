@@ -34,6 +34,7 @@ export interface Unit {
   geometry: Feature<Polygon>;
   color?: string; // e.g. "#ADD8E6"
   floorId?: string;
+  targetArea?: number; // Hardcoded target sqm (e.g. 140 for 2BHK, 185 for 3BHK, 245 for 4BHK)
 }
 
 export interface Floor {
@@ -46,6 +47,8 @@ export interface Floor {
   parkingType?: ParkingType;
   parkingCapacity?: number;
   level?: number;  // For basement: -1 = B1, -2 = B2, etc.
+  evStations?: number; // Number of EV charging points on this floor
+  units?: Unit[]; // Units on this floor (if applicable)
 }
 
 export interface Building {
@@ -168,6 +171,7 @@ export interface EntryPoint {
 
 export interface Plot {
   id: string;
+  projectId: string; // The project this plot belongs to
   name: string;
   geometry: Feature<Polygon>;
   centroid: Feature<Point>;
@@ -237,6 +241,7 @@ export interface FeasibilityParams {
   circulationFactor: number; // 0.10 - 0.15 (10-15%)
   unitMix: UnitTypology[];
   efficiencyTarget: number; // e.g., 0.70
+  selectedUtilities?: string[]; // Optional list of enabled utilities
 }
 
 export interface DevelopmentStats {

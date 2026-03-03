@@ -11,12 +11,29 @@ function metersToLatLng(mx: number, my: number): [number, number] {
   return [lat, lng];
 }
 
+/**
+ * Bhuvan WMS Proxy
+ *
+ * Accepts an optional `_bhuvanUrl` query parameter that specifies the full
+ * Bhuvan WMS endpoint to proxy to. If omitted, defaults to the standard
+ * vec2 endpoint: https://bhuvan-vec2.nrsc.gov.in/bhuvan/wms
+ *
+ * Different Bhuvan thematic layers live on different servers:
+ *   vec1 → NUIS (Urban Land Use 10K)
+ *   vec2 → LULC 50K, SIS-DP Phase 2, Land Degradation, Wasteland, etc.
+ *   vec3 → AMRUT (Urban Land Use 4K)
+ */
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
-  const targetUrl = new URL('https://bhuvan-vec2.nrsc.gov.in/bhuvan/wms');
+
+  // Allow the client to specify a custom Bhuvan WMS endpoint
+  const customUrl = searchParams.get('_bhuvanUrl');
+  const baseUrl = customUrl || 'https://bhuvan-vec2.nrsc.gov.in/bhuvan/wms';
+  const targetUrl = new URL(baseUrl);
   
-  // Copy all params from incoming request to Bhuvan request
+  // Copy all params from incoming request to Bhuvan request (except our internal param)
   searchParams.forEach((value, key) => {
+    if (key === '_bhuvanUrl') return; // Don't forward our internal param
     targetUrl.searchParams.set(key, value);
   });
 
@@ -55,6 +72,32 @@ export async function GET(request: NextRequest) {
     // Return binary response for images (PNG tiles), text for GetFeatureInfo HTML
     if (contentType.includes('image/')) {
       const buffer = await response.arrayBuffer();
+
+      // ── Guard: Bhuvan sometimes returns XML ServiceException with image/png content-type ──
+      // This causes Mapbox "Could not load image because of The source image could not be decoded"
+      // Detect this and return a 1x1 transparent PNG instead.
+      const bytes = new Uint8Array(buffer);
+      if (bytes.length > 0 && bytes.length < 2000) {
+        // Check for XML header in what should be an image
+        const headerStr = new TextDecoder().decode(bytes.slice(0, 100));
+        if (headerStr.includes('<?xml') || headerStr.includes('ServiceException') || headerStr.includes('<ows:')) {
+          console.warn('[Bhuvan Proxy] Got XML error disguised as image:', headerStr.slice(0, 200));
+          // Return a 1x1 transparent PNG
+          const transparentPng = Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+            'base64'
+          );
+          return new NextResponse(transparentPng, {
+            status: 200,
+            headers: {
+              'Content-Type': 'image/png',
+              'Access-Control-Allow-Origin': '*',
+              'Cache-Control': 'public, max-age=60', // Short cache for errors
+            },
+          });
+        }
+      }
+
       return new NextResponse(buffer, {
         status: 200,
         headers: {
@@ -76,6 +119,25 @@ export async function GET(request: NextRequest) {
     }
   } catch (error: any) {
     console.error('Bhuvan Proxy Error:', error);
+
+    // For tile requests, return a transparent PNG instead of JSON error
+    // to prevent Mapbox "Could not decode image" errors
+    const requestType = searchParams.get('request') || '';
+    if (requestType === 'GetMap') {
+      const transparentPng = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64'
+      );
+      return new NextResponse(transparentPng, {
+        status: 200,
+        headers: {
+          'Content-Type': 'image/png',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=60',
+        },
+      });
+    }
+
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 });
   }
 }

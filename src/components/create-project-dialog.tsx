@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
-import { RegulationData } from '@/lib/types';
+import { RegulationData, BuildingIntendedUse } from '@/lib/types';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Label } from './ui/label';
@@ -128,7 +128,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
         const newProject = await actions.createProject(
             newProjectName,
             typeof totalPlotArea === 'number' ? totalPlotArea : undefined,
-            intendedUse,
+            intendedUse as BuildingIntendedUse,
             location,
             (selectedRegulationId && selectedRegulationId !== 'generic') ? selectedRegulationId : undefined, // Check for generic or empty
             greenCertification,

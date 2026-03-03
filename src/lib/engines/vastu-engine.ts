@@ -1,5 +1,6 @@
 import { Plot, Building, VastuRegulationData, VastuRecommendation } from '@/lib/types';
 import * as turf from '@turf/turf';
+import { getVastuCenter } from '@/lib/vastu-utils';
 
 interface VastuScore {
     overallScore: number;
@@ -50,7 +51,7 @@ export function calculateVastuScore(
         return 'N';
     };
 
-    const plotCentroid = plot.centroid.geometry.coordinates;
+    const plotCenter = getVastuCenter(plot.geometry).geometry.coordinates;
 
     regulation.recommendations.forEach((rec) => {
         const weight = rec.weight || 5;
@@ -75,7 +76,7 @@ export function calculateVastuScore(
                 const mainBldg = buildings.reduce((prev, current) => (prev.area > current.area) ? prev : current);
                 if (mainBldg) {
                     const bldgCentroid = mainBldg.centroid.geometry.coordinates;
-                    const dir = getDirection(bldgCentroid, plotCentroid);
+                    const dir = getDirection(bldgCentroid, plotCenter);
 
                     if (rec.idealDirections.includes(dir)) {
                         score = 100;
@@ -96,7 +97,7 @@ export function calculateVastuScore(
                 const waterUtil = buildings.find(b => b.name.includes('Water') || b.name.includes('WTP'));
                 if (waterUtil) {
                     const waterCentroid = waterUtil.centroid.geometry.coordinates;
-                    const dir = getDirection(waterCentroid, plotCentroid);
+                    const dir = getDirection(waterCentroid, plotCenter);
 
                     if (rec.idealDirections.includes(dir)) {
                         score = 100;

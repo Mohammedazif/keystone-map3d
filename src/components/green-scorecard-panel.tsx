@@ -2,7 +2,7 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { useBuildingStore, useProjectData } from '@/hooks/use-building-store';
+import { useBuildingStore, useProjectData, useSelectedPlot } from '@/hooks/use-building-store';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { useGreenStandardChecks } from '@/hooks/use-green-standard-checks';
 import { Project } from '@/lib/types';
@@ -11,7 +11,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { CheckCircle2, Circle, XCircle, AlertCircle, Leaf, Wind, Sun, MapPin, Loader2 } from 'lucide-react';
+import { CheckCircle2, Circle, XCircle, AlertCircle, Leaf, Wind, Sun, MapPin, Loader2, MousePointerClick } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Separator } from '@/components/ui/separator';
 
@@ -138,7 +138,33 @@ export function GreenScorecardPanel() {
         return { categories, totalPoints, achievedPoints };
     }, [regulation, creditStatusMap]);
 
+    const plots = useBuildingStore(state => state.plots);
+    const isPlotCreated = plots.length > 0;
+
     if (!activeProject) return <div className="p-4 text-center text-muted-foreground">Select a project to view scorecard</div>;
+
+    if (!isPlotCreated) {
+        return (
+            <div className="flex flex-col h-full">
+                <div className="p-4 border-b shrink-0">
+                    <h2 className="text-lg font-semibold flex items-center gap-2">
+                        <Leaf className="h-5 w-5 text-green-500" />
+                        Green Scorecard
+                    </h2>
+                </div>
+                <div className="flex-1 flex items-center justify-center p-8 text-center bg-muted/5">
+                    <div className="space-y-3 flex flex-col items-center">
+                        <div className="h-12 w-12 rounded-full bg-muted/30 flex items-center justify-center">
+                            <MousePointerClick className="h-6 w-6 text-muted-foreground/50" />
+                        </div>
+                        <p className="text-sm text-muted-foreground max-w-[200px]">
+                            Create a plot on the map to start tracking your green score.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     // If we have no data at all yet, show a minimal loading state
     if (isLoading && !scorecardData) return (

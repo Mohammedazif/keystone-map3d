@@ -1,46 +1,150 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useBuildingStore, useSelectedPlot } from '@/hooks/use-building-store';
-import { Loader2, Globe, Info, MousePointer2 } from 'lucide-react';
+import { Loader2, Globe, Info, MousePointer2, AlertTriangle, MapPin } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { BHUVAN_THEMES, getIndianStateCode } from '@/lib/bhuvan-utils';
+import { BHUVAN_THEMES, getIndianStateCode, findBhuvanLayerByCoord, buildBhuvanLayerName, isLayerAvailableInIndex, BHUVAN_EXTENTS, getBestBhuvanDistrict } from '@/lib/bhuvan-utils';
 
 interface BhuvanPanelProps {
   embedded?: boolean;
 }
 
+/**
+ * Maps theme IDs to the bhuvan-index.json key used by getBestBhuvanDistrict.
+ * Returns undefined if the theme doesn't use bhuvan-index for district lookup.
+ */
+function getIndexType(themeId: string): 'amrut' | 'nuis' | 'sisdp' | undefined {
+  if (themeId === 'ulu_4k_amrut') return 'amrut';
+  if (themeId === 'ulu_10k_nuis') return 'nuis';
+  if (themeId === 'lulc_10k_sisdp') return 'sisdp';
+  return undefined;
+}
+
+// Availability check — returns { status, message }
+function checkAvailability(
+  themeId: string,
+  stateCode: string,
+  lat?: number,
+  lng?: number
+): { status: 'available' | 'unavailable' | 'unknown'; message: string | null } {
+  const theme = BHUVAN_THEMES.find(t => t.id === themeId);
+  if (!theme) return { status: 'unknown', message: 'Theme not found.' };
+
+  if (stateCode === 'IN' || stateCode === '') {
+    return { status: 'unknown', message: 'Set a plot location to check availability.' };
+  }
+
+  // ── District-level themes (AMRUT, NUIS, SIS-DP): check bhuvan-index.json first ──
+  // These may not all be in bhuvan-extents.json (e.g. AMRUT is on vec3 which wasn't scraped).
+  const indexType = getIndexType(themeId);
+  if (indexType) {
+    const district = getBestBhuvanDistrict(indexType, stateCode);
+    if (district) {
+      // State has entries in the district index → available
+      return { status: 'available', message: null };
+    }
+    return {
+      status: 'unavailable',
+      message: `${theme.categoryName || theme.name} is not available for ${stateCode} state.`
+    };
+  }
+
+  // ── Non-district themes: check bhuvan-extents.json ──
+  const suffix = theme.themeCode;
+
+  // 0. Check if ANY layer exists for this state and theme in the extents
+  const hasStateCoverage = Object.keys(BHUVAN_EXTENTS).some(name =>
+    name.includes(`${stateCode}_`) && (name.includes(suffix) || name.includes(theme.id))
+  );
+
+  if (!hasStateCoverage && !theme.fixedLayerName) {
+    return {
+      status: 'unavailable',
+      message: `${theme.categoryName || theme.name} is not available for ${stateCode} state.`
+    };
+  }
+
+  // 1. General availability check using buildBhuvanLayerName
+  const layerName = buildBhuvanLayerName(themeId, stateCode, undefined, lat, lng);
+  if (isLayerAvailableInIndex(layerName)) return { status: 'available', message: null };
+
+  return {
+    status: 'unavailable',
+    message: `${theme.categoryName || theme.name} data not found for this region.`
+  };
+}
+
 export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
-  const { activeBhuvanLayer, activeBhuvanOpacity, bhuvanData, isFetchingBhuvan, actions } = useBuildingStore(s => ({
+  const { activeBhuvanLayer, activeBhuvanOpacity, bhuvanData, isFetchingBhuvan, plots, actions } = useBuildingStore(s => ({
     activeBhuvanLayer: s.activeBhuvanLayer,
     activeBhuvanOpacity: s.activeBhuvanOpacity,
     bhuvanData: s.bhuvanData,
     isFetchingBhuvan: s.isFetchingBhuvan,
+    plots: s.plots,
     actions: s.actions
   }));
 
   const selectedPlot = useSelectedPlot();
+  const activePlot = selectedPlot || (plots.length > 0 ? plots[0] : null);
 
-  const stateCode = useMemo(() => {
-    if (selectedPlot && selectedPlot.geometry) {
+  const { stateCode, plotLat, plotLng } = useMemo(() => {
+    if (activePlot?.geometry?.geometry) {
       try {
-        const coords = selectedPlot.geometry.coordinates[0][0];
-        return getIndianStateCode(coords[1], coords[0]);
-      } catch (e) {
-        return 'IN';
+        const coords = (activePlot.geometry.geometry as any).coordinates[0][0];
+        return {
+          stateCode: getIndianStateCode(coords[1], coords[0]),
+          plotLat: coords[1] as number,
+          plotLng: coords[0] as number,
+        };
+      } catch {
+        return { stateCode: 'IN', plotLat: undefined, plotLng: undefined };
       }
     }
-    return 'IN';
-  }, [selectedPlot]);
+    return { stateCode: 'IN', plotLat: undefined, plotLng: undefined };
+  }, [activePlot]);
 
+  const isPlotCreated = plots.length > 0;
   const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
 
+  // Group themes by categoryId for the grid view
+  const categories = useMemo(() => {
+    const groups: Map<string, typeof BHUVAN_THEMES> = new Map();
+    BHUVAN_THEMES.forEach(t => {
+      const catId = t.categoryId || t.id;
+      if (!groups.has(catId)) groups.set(catId, []);
+      groups.get(catId)!.push(t);
+    });
+    return Array.from(groups.values());
+  }, []);
+
+  if (!isPlotCreated) {
+    return (
+      <div className={cn('flex flex-col h-full', embedded ? '' : 'w-full max-h-[calc(100vh-200px)]')}>
+        <div className="p-4 border-b shrink-0">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Globe className="h-5 w-5 text-blue-500" />
+            Bhuvan Thematic Services
+          </h2>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center gap-3">
+          <div className="rounded-full bg-muted p-3">
+            <MapPin className="h-6 w-6 text-muted-foreground" />
+          </div>
+          <p className="text-sm font-medium text-foreground">No plot created yet</p>
+          <p className="text-xs text-muted-foreground max-w-[200px]">
+            Create a plot on the map first to access thematic layers.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={cn("flex flex-col h-full", embedded ? "" : "w-full max-h-[calc(100vh-200px)]")}>
+    <div className={cn('flex flex-col h-full', embedded ? '' : 'w-full max-h-[calc(100vh-200px)]')}>
       <div className="p-4 border-b shrink-0">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -57,162 +161,186 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
 
       <ScrollArea className="flex-1 min-h-0">
         <div className="p-3 space-y-4">
-          <div className="space-y-4">
-            <Label className="text-xs text-muted-foreground font-medium uppercase tracking-wider">
-              Select Thematic Layer
-            </Label>
+          <Label className="text-xs text-muted-foreground font-medium uppercase tracking-wider px-1">
+            Select Thematic Layer
+          </Label>
 
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => actions.setActiveBhuvanLayer(null)}
-                className={cn(
-                  "text-xs px-3 py-2 rounded-md border transition-all text-left flex flex-col items-start justify-center col-span-2 group relative",
-                  !activeBhuvanLayer
-                    ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                    : "bg-background hover:bg-muted text-muted-foreground border-border hover:border-primary/30"
-                )}
-              >
-                <div className="flex items-center justify-between w-full">
-                  <span className="capitalize font-medium">None (Hide Overlays)</span>
-                  {!activeBhuvanLayer && <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
-                </div>
-              </button>
+          <div className="grid grid-cols-2 gap-2">
+            {/* None button */}
+            <button
+              onClick={() => actions.setActiveBhuvanLayer(null)}
+              className={cn(
+                'text-xs px-3 py-2 rounded-md border transition-all text-left flex items-center justify-between col-span-2 h-10',
+                !activeBhuvanLayer
+                  ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                  : 'bg-background hover:bg-muted text-muted-foreground border-border hover:border-primary/30'
+              )}
+            >
+              <span className="font-medium">None (Hide Overlays)</span>
+              {!activeBhuvanLayer && <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+            </button>
 
-              {/* Group themes by categoryId */}
-              {Array.from(new Set(BHUVAN_THEMES.map(t => t.categoryId || t.id))).map(categoryId => {
-                const categoryThemes = BHUVAN_THEMES.filter(t => (t.categoryId || t.id) === categoryId);
-                const isCategoryActive = categoryThemes.some(t => t.id === activeBhuvanLayer);
-                const primaryTheme = categoryThemes[0];
-                const categoryName = primaryTheme.categoryName || primaryTheme.name;
+            {/* Category Grid */}
+            {categories.map(groupThemes => {
+              const primaryTheme = groupThemes[0];
+              const categoryId = primaryTheme.categoryId || primaryTheme.id;
+              const categoryName = primaryTheme.categoryName || primaryTheme.name;
+              const isCategoryActive = groupThemes.some(t => t.id === activeBhuvanLayer);
+              
+              // Find first available variant if not active
+              const firstAvailable = groupThemes.find(t => checkAvailability(t.id, stateCode, plotLat, plotLng).status === 'available');
+              const displayTheme = groupThemes.find(t => t.id === activeBhuvanLayer) || firstAvailable || primaryTheme;
+              
+              const { status: availStatus, message: error } = checkAvailability(displayTheme.id, stateCode, plotLat, plotLng);
+              const isUnavailable = availStatus === 'unavailable';
 
-                return (
-                  <div key={categoryId} className="flex flex-col gap-2">
-                    <button
-                      title={primaryTheme.description}
-                      onClick={() => !isCategoryActive && actions.setActiveBhuvanLayer(primaryTheme.id)}
-                      className={cn(
-                        "text-xs px-3 py-2 rounded-md border transition-all text-left flex flex-col items-start justify-center group relative h-16",
-                        isCategoryActive
-                          ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                          : "bg-background hover:bg-muted text-muted-foreground border-border hover:border-primary/30"
-                      )}
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className="capitalize font-medium">{categoryName}</span>
-                        {isCategoryActive && (
-                          <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
-                        )}
-                      </div>
-                      <span className={cn(
-                        "text-[9px] mt-0.5 opacity-80 line-clamp-2",
-                        isCategoryActive ? "text-primary-foreground/80" : "text-muted-foreground"
-                      )}>
-                        {primaryTheme.description}
+              return (
+                <div key={categoryId} className={cn("flex flex-col gap-2", isCategoryActive && "col-span-2")}>
+                  <button
+                    onClick={() => {
+                      if (isCategoryActive) {
+                        actions.setActiveBhuvanLayer(null);
+                      } else if (!isUnavailable) {
+                        actions.setActiveBhuvanLayer(displayTheme.id);
+                      }
+                    }}
+                    className={cn(
+                      'text-xs px-3 py-2 rounded-md border transition-all text-left flex flex-col gap-1 h-20 group relative overflow-hidden',
+                      isCategoryActive
+                        ? 'bg-primary text-primary-foreground border-primary shadow-md'
+                        : isUnavailable
+                        ? 'bg-muted/30 border-dashed text-muted-foreground opacity-60 hover:opacity-100 hover:border-amber-500/50 hover:bg-muted/50'
+                        : 'bg-background hover:bg-muted text-muted-foreground border-border hover:border-primary/30'
+                    )}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="font-semibold leading-tight line-clamp-2 uppercase tracking-wide text-[10px]">
+                        {categoryName.split(':')[0].trim()}
                       </span>
-                    </button>
+                      {isCategoryActive && <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse shrink-0 ml-1" />}
+                      {isUnavailable && !isCategoryActive && <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0 ml-1" />}
+                    </div>
+                    <span className={cn(
+                      'text-[9px] opacity-80 line-clamp-2 leading-tight',
+                      isCategoryActive ? 'text-primary-foreground/80' : 'text-muted-foreground'
+                    )}>
+                      {primaryTheme.description}
+                    </span>
+                  </button>
 
-                    {isCategoryActive && categoryThemes.length > 1 && (
-                      <div className="flex flex-col gap-1.5 pl-2 pb-2 border-l-2 border-primary/20 ml-2 animate-in slide-in-from-top-2">
-                        <Label className="text-[9px] text-muted-foreground uppercase tracking-wider ml-1 mt-1">Select Year</Label>
-                        <div className="flex flex-wrap gap-1.5">
-                          {categoryThemes.map(variant => (
-                            <button
-                              key={variant.id}
-                              onClick={() => actions.setActiveBhuvanLayer(variant.id)}
-                              className={cn(
-                                "text-[10px] px-2.5 py-1 rounded-full border transition-colors",
-                                activeBhuvanLayer === variant.id
-                                  ? "bg-primary/20 border-primary text-foreground"
-                                  : "bg-muted/50 border-transparent text-muted-foreground hover:bg-muted"
-                              )}
-                            >
-                              {variant.name.replace(categoryName, '').replace(/[() ]/g, '') || 'Latest'}
-                            </button>
-                          ))}
+                  {/* Expansion: Sub-themes / Variants */}
+                  {isCategoryActive && (
+                    <div className="bg-muted/30 rounded-md border border-border p-3 space-y-3 animate-in fade-in slide-in-from-top-2">
+                      {/* Availability Error Banner if the SELECTED variant is unavailable (e.g. manually picked someone else) */}
+                      {error && (
+                        <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/20">
+                          <AlertTriangle className="h-3 w-3 text-amber-400 shrink-0 mt-0.5" />
+                          <p className="text-[9px] text-amber-400 leading-relaxed font-medium">{error}</p>
+                        </div>
+                      )}
+
+                      {groupThemes.length > 1 && (
+                        <div className="space-y-1.5">
+                          <Label className="text-[9px] text-muted-foreground uppercase tracking-widest font-bold">Select Year / Scale</Label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {groupThemes.map(variant => {
+                              const variantAvail = checkAvailability(variant.id, stateCode, plotLat, plotLng);
+                              const vDisabled = variantAvail.status === 'unavailable';
+                              const vActive = activeBhuvanLayer === variant.id;
+
+                              return (
+                                <button
+                                  key={variant.id}
+                                  onClick={() => !vDisabled && actions.setActiveBhuvanLayer(variant.id)}
+                                  className={cn(
+                                    'text-[10px] px-3 py-1 rounded-full border transition-all flex items-center gap-1',
+                                    vActive
+                                      ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                                      : vDisabled
+                                      ? 'bg-muted/30 text-muted-foreground/50 border-transparent italic hover:border-amber-500/30 hover:bg-muted/50 hover:text-muted-foreground'
+                                      : 'bg-background border-border text-muted-foreground hover:border-primary/50'
+                                  )}
+                                >
+                                  {variant.name.includes(':') ? variant.name.split(':')[1].trim() : variant.name.replace(categoryName, '').trim() || 'Standard'}
+                                  {vDisabled && <AlertTriangle className="h-2 w-2 opacity-50" />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Controls Area (moved inside expanded section for focus) */}
+                      <div className="grid grid-cols-1 gap-3 pt-1">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">
+                              Opacity: {Math.round(activeBhuvanOpacity * 100)}%
+                            </Label>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="1"
+                            step="0.05"
+                            value={activeBhuvanOpacity}
+                            onChange={(e) => actions.setBhuvanOpacity(parseFloat(e.target.value))}
+                            className="w-full accent-primary h-1 bg-secondary/50 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5">
+                            {/* <Info className="h-3 w-3 text-muted-foreground" /> */}
+                            {/* <Label className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">
+                              Legend
+                            </Label> */}
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[9px]">
+                            {activeTheme?.legend.map((item, i) => (
+                              <div key={i} className="flex items-center gap-1.5 py-0.5">
+                                <div
+                                  className="w-2.5 h-2.5 rounded-sm shrink-0 border border-black/10"
+                                  style={{ backgroundColor: item.color }}
+                                />
+                                <span className="truncate text-muted-foreground/90">{item.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Feature Info (if any) */}
+                        <div className="space-y-2 pt-1 border-t border-border/50">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <MousePointer2 className="h-3 w-3 text-primary" />
+                              <Label className="text-[9px] font-bold text-primary uppercase tracking-widest">Info</Label>
+                            </div>
+                            {isFetchingBhuvan && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
+                          </div>
+                          {bhuvanData ? (
+                            <div 
+                              className="text-[10px] leading-tight max-h-32 overflow-auto bhuvan-info-content prose prose-invert prose-xs [&_table]:w-full [&_table]:text-[9px] [&_th]:p-1 [&_td]:p-1"
+                              dangerouslySetInnerHTML={{ __html: bhuvanData }} 
+                            />
+                          ) : (
+                            <p className="text-[9px] text-muted-foreground italic text-center py-1">
+                              {isFetchingBhuvan ? "NRSC lookup..." : "Click plot on map to query"}
+                            </p>
+                          )}
                         </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {activeTheme && (
-            <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-              
-              {/* Opacity Control */}
-              <div className="space-y-3 bg-muted/10 p-3 rounded-md border border-border/50">
-                <div className="flex items-center justify-between mb-1">
-                  <Label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                    Overlay Opacity
-                  </Label>
-                  <span className="text-[10px] text-muted-foreground font-mono">
-                    {Math.round(activeBhuvanOpacity * 100)}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={activeBhuvanOpacity}
-                  onChange={(e) => actions.setBhuvanOpacity(parseFloat(e.target.value))}
-                  className="w-full accent-primary h-1.5 bg-secondary rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              {/* Legend Section */}
-              <div className="space-y-3 bg-muted/10 p-3 rounded-md border border-border/50">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <Info className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                    {activeTheme.name} Legend
-                  </span>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px]">
-                  {activeTheme.legend.map((item, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <div 
-                        className="w-3 h-3 rounded-sm shadow-sm shrink-0 border border-black/10" 
-                        style={{ backgroundColor: item.color }} 
-                      />
-                      <span className="truncate text-muted-foreground">{item.label}</span>
                     </div>
-                  ))}
+                  )}
                 </div>
-              </div>
-
-              {/* Feature Info Section */}
-              <div className="space-y-3 bg-muted/10 p-3 rounded-md border border-border/50">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-1.5">
-                    <MousePointer2 className="h-3 w-3 text-primary" />
-                    <span className="text-[10px] font-semibold text-primary uppercase tracking-wider">
-                      Selected Feature Info
-                    </span>
-                  </div>
-                  {isFetchingBhuvan && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
-                </div>
-
-                {bhuvanData ? (
-                  <div className="text-[11px] leading-relaxed max-h-40 overflow-auto scrollbar-thin overflow-x-hidden w-full">
-                    <div 
-                      className="bhuvan-info-content prose prose-invert prose-xs [&_table]:w-full [&_table]:table-fixed [&_table]:text-[10px] [&_th]:whitespace-nowrap [&_th]:text-left [&_th]:p-1.5 [&_th]:!bg-secondary/50 [&_th]:border-b [&_td]:p-1.5 [&_td]:border-b [&_td]:border-border/30 [&_td]:break-all [&_td]:overflow-hidden [&_td]:max-w-0 [&_table]:!bg-transparent [&_tr]:!bg-transparent [&_td]:!bg-transparent [&_td]:!text-foreground [&_th]:!text-foreground"
-                      dangerouslySetInnerHTML={{ __html: bhuvanData }} 
-                    />
-                  </div>
-                ) : (
-                  <p className="text-[10px] text-muted-foreground italic text-center py-2">
-                    {isFetchingBhuvan ? "Requesting data from NRSC..." : "Click any plot area on the map to query specific classification data."}
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
+              );
+            })}
+          </div>
         </div>
       </ScrollArea>
     </div>
   );
 }
+
+// Internal helper for category check
+const isActiveCategory = false; // Just to satisfy types in the component during first write, actually checked inline

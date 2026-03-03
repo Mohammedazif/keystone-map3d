@@ -636,7 +636,7 @@ function FeasibilityTab() {
 
 
 export function FeasibilityDashboard() {
-    const selectedBuilding = useSelectedBuilding();
+    const plots = useBuildingStore(state => state.plots);
     const activeProject = useBuildingStore(state => state.projects.find(p => p.id === state.activeProjectId));
     const uiState = useBuildingStore(state => state.uiState);
     const setOpen = useBuildingStore(state => state.actions.setFeasibilityPanelOpen);
@@ -648,6 +648,34 @@ export function FeasibilityDashboard() {
     const { estimates: simEstimates, isLoading: simLoading } = useProjectEstimates(activeProjectData, metricsForSim);
 
     if (!activeProject) return null;
+
+    if (plots.length === 0) {
+        return (
+            <div className={cn(
+                "absolute bottom-0 left-0 right-0 z-40 overflow-hidden transition-all duration-300 ease-in-out",
+                isOpen ? "h-[150px]" : "h-[50px] hover:h-[60px]"
+            )}>
+                <Card className="bg-background/95 backdrop-blur-md border border-border shadow-2xl w-full h-full rounded-none border-x-0 border-b-0 flex flex-col">
+                    <CardHeader className="flex flex-row items-center justify-between p-3 pb-2 h-[50px] shrink-0 border-b border-border/10">
+                        <div className="flex items-center gap-2">
+                            <CardTitle className="text-sm font-bold">{activeProject.name} Feasibility</CardTitle>
+                        </div>
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0 hover:bg-muted" onClick={() => setOpen(!isOpen)}>
+                            {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                        </Button>
+                    </CardHeader>
+                    {isOpen && (
+                        <div className="flex-1 flex flex-col items-center justify-center p-4 text-center">
+                            <div className="flex flex-col items-center gap-2">
+                                <MousePointerClick className="h-6 w-6 text-muted-foreground/30" />
+                                <p className="text-xs text-muted-foreground">Create a plot on the map to see feasibility metrics & simulations.</p>
+                            </div>
+                        </div>
+                    )}
+                </Card>
+            </div>
+        );
+    }
 
     const cardClasses = "bg-background/95 backdrop-blur-md border border-border shadow-2xl";
 

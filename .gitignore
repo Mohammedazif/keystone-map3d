@@ -101,3 +101,16 @@ Auditing Calculation Logic.md
 calculation_logic.md
 Refining Setback Logic.md
 Fixing Green Area Overlap.md
+amrut_caps.xml
+bhuvan_available_districts.json
+bhuvan_caps_bhuvan.xml
+bhuvan_districts_raw.json
+bhuvan_extracted_districts.json
+bhuvan_layers.txt
+building-calc.tsx
+out.txt
+sisdp_vec1_layers.txt
+src/hooks/use-building-store.ts.new.ts
+src/hooks/use-building-store.ts.ring.ts
+src/lib/vastu-utils.ts
+wms_bhuvan.xml

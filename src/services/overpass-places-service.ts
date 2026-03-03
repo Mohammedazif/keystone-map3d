@@ -96,7 +96,22 @@ export const OverpassPlacesService = {
                 throw new Error(`Overpass API error: ${response.status}`);
             }
 
-            const data = await response.json();
+            const contentType = response.headers.get("content-type");
+            let data: any;
+            
+            try {
+                if (contentType && !contentType.includes("application/json")) {
+                    const text = await response.text();
+                    console.error(`[OverpassService] Expected JSON but received ${contentType}. Body starts with: ${text.substring(0, 100)}`);
+                    throw new Error(`Overpass API returned non-JSON response (${contentType})`);
+                }
+                data = await response.json();
+            } catch (e) {
+                const text = await response.clone().text().catch(() => "Could not read body");
+                console.error(`[OverpassService] Failed to parse JSON response. Body starts with: ${text.substring(0, 100)}`);
+                throw new Error(`Failed to parse Overpass API response as JSON: ${e instanceof Error ? e.message : String(e)}`);
+            }
+
             const elements = data.elements || [];
             console.log(`[OverpassService] Found ${elements.length} elements total.`);
 
@@ -138,7 +153,7 @@ export const OverpassPlacesService = {
                 let name = tags.name || tags['name:en'] || tags.operator || tags.brand;
                 if (!name) {
                     const subtype = tags.amenity || tags.leisure || tags.shop || tags.railway || tags.aeroway || category;
-                    name = `${subtype.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`;
+                    name = `${subtype.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}`;
                 }
 
                 // Address Construction
@@ -207,9 +222,28 @@ export const OverpassPlacesService = {
                     continue; // Try next server
                 }
 
-                const data = await response.json();
-                const ways = data.elements.filter((el: any) => el.type === 'way' && el.geometry);
+                const contentType = response.headers.get("content-type");
+                let data: any;
 
+                try {
+                    if (contentType && !contentType.includes("application/json")) {
+                        const text = await response.text();
+                        console.error(`[OverpassService] Server ${i + 1} expected JSON but received ${contentType}. Body starts with: ${text.substring(0, 100)}`);
+                        continue; // Try next server
+                    }
+                    data = await response.json();
+                } catch (e) {
+                    const text = await response.clone().text().catch(() => "Could not read body");
+                    console.error(`[OverpassService] Server ${i + 1} failed to parse JSON. Body starts with: ${text.substring(0, 100)}`);
+                    continue; // Try next server
+                }
+
+                if (!data || !data.elements) {
+                    console.warn(`[OverpassService] Server ${i + 1} returned empty or invalid data structure.`);
+                    continue;
+                }
+
+                const ways = data.elements.filter((el: any) => el.type === 'way' && el.geometry);
                 console.log(`[OverpassService] Found ${ways.length} roads.`);
 
                 // Convert to GeoJSON-like LineStrings for Turf

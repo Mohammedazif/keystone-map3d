@@ -3,11 +3,12 @@ import { CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
-import { Sun } from 'lucide-react';
+import { Sun, MousePointerClick } from 'lucide-react';
 import { AnalysisMode } from './solar-controls';
 import { cn } from '@/lib/utils';
 import type { GreenRegulationData } from '@/lib/types';
 import { parseThresholdsFromRegulation } from '@/lib/engines/visual-analysis-engine';
+import { useBuildingStore } from '@/hooks/use-building-store';
 
 interface SimulationTabProps {
     date: Date;
@@ -45,6 +46,8 @@ export function SimulationTab({
     };
 
     const timeVal = date.getHours() + date.getMinutes() / 60;
+    const plots = useBuildingStore(state => state.plots);
+    const isPlotCreated = plots.length > 0;
 
     return (
         <div className="flex flex-col h-full">
@@ -56,15 +59,26 @@ export function SimulationTab({
             </div>
 
             <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-3 space-y-4 scrollbar-thin">
-                {/* Master Toggle */}
-                <div className="flex items-center justify-between bg-muted/20 p-3 rounded-lg border">
-                    <Label className="font-medium text-sm">Enable Simulator</Label>
-                    <Switch checked={enabled} onCheckedChange={setEnabled} />
-                </div>
+                {!isPlotCreated ? (
+                    <div className="flex flex-col items-center justify-center h-48 text-center space-y-3 bg-muted/5 rounded-lg border border-dashed">
+                        <div className="h-12 w-12 rounded-full bg-muted/30 flex items-center justify-center">
+                            <MousePointerClick className="h-6 w-6 text-muted-foreground/50" />
+                        </div>
+                        <p className="text-xs text-muted-foreground max-w-[200px]">
+                            Create a plot on the map to run environmental simulations.
+                        </p>
+                    </div>
+                ) : (
+                    <>
+                        {/* Master Toggle */}
+                        <div className="flex items-center justify-between bg-muted/20 p-3 rounded-lg border">
+                            <Label className="font-medium text-sm">Enable Simulator</Label>
+                            <Switch checked={enabled} onCheckedChange={setEnabled} />
+                        </div>
 
-                {enabled ? (
-                    <div className="space-y-6 animate-in fade-in duration-300">
-                        {analysisMode !== 'none' ? (() => {
+                        {enabled ? (
+                            <div className="space-y-6 animate-in fade-in duration-300">
+                                {analysisMode !== 'none' ? (() => {
                             // Mode → which controls to show
                             // sun-hours: seasonal variation, month matters; time not relevant (integrates all day)
                             // daylight: both month (sun angle) and time (sky condition) matter
@@ -349,7 +363,9 @@ export function SimulationTab({
                         </p>
                     </div>
                 )}
-            </div>
-        </div>
-    );
+            </>
+        )}
+    </div>
+</div>
+);
 }

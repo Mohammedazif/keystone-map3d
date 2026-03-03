@@ -26,6 +26,7 @@ export interface AlgoParams {
     targetFAR?: number;
     minFloors?: number;
     maxFloors?: number;
+    shuffleUnits?: boolean;
     minHeight?: number;
     maxHeight?: number; // Only used for constraints, not direct generation yet?
     minFootprint?: number;
@@ -75,6 +76,11 @@ export interface AlgoParams {
 
     // Unit Mix Configuration
     unitMix?: UnitTypology[];
+
+    // GFA Maximization Mode
+    autoMaxGFA?: boolean;  // When true, auto-calculate floors and infill to hit 95-100% of target GFA
+    infillSetback?: number; // Setback distance (meters) between infill/inline buildings
+    infillMode?: 'ring' | 'grid' | 'hybrid'; // Infill placement strategy: ring (concentric), grid (uniform), hybrid (ring + grid center fill)
 }
 
 export type LamellaParams = AlgoParams;

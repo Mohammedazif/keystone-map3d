@@ -19,7 +19,9 @@ import {
     Eye,
     EyeOff,
     Leaf,
-    DoorOpen
+    DoorOpen,
+    Sun,
+    BatteryCharging
 } from 'lucide-react';
 import { useBuildingStore } from '@/hooks/use-building-store';
 import { Button } from '@/components/ui/button';
@@ -124,29 +126,57 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                             {/* Render Internal Utilities (New System) */}
                             {b.internalUtilities && b.internalUtilities.length > 0 && (
                                 <div className="pl-8 space-y-1 pb-2">
-                                    {b.internalUtilities.map(util => (
-                                        <div
-                                            key={util.id}
-                                            className={cn(
-                                                "flex items-center text-xs cursor-pointer transition-colors group",
-                                                (util.type === 'Electrical' && componentVisibility.electrical) || (util.type === 'HVAC' && componentVisibility.hvac)
-                                                    ? "text-primary font-medium"
-                                                    : "text-muted-foreground hover:text-primary"
-                                            )}
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                if (util.type === 'Electrical') actions.toggleComponentVisibility('electrical');
-                                                else if (util.type === 'HVAC') actions.toggleComponentVisibility('hvac');
-                                            }}
-                                        >
-                                            {util.type === 'Electrical' ? <Zap className="h-3 w-3 mr-2 text-amber-400" /> : <Fan className="h-3 w-3 mr-2 text-blue-400" />}
-                                            <span className="flex-1">{util.name}</span>
-                                            {((util.type === 'Electrical' && componentVisibility.electrical) || (util.type === 'HVAC' && componentVisibility.hvac)) ?
-                                                <Eye className="h-3 w-3 ml-2" /> :
-                                                <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />
-                                            }
-                                        </div>
-                                    ))}
+                                    {b.internalUtilities.map(util => {
+                                        // Determine which toggle this utility maps to
+                                        let toggleKey: 'electrical' | 'hvac' | 'solar' | 'ev' | null = null;
+                                        let IconComp = Zap;
+                                        let iconColor = 'text-amber-400';
+                                        
+                                        if (util.type === 'Electrical') {
+                                            toggleKey = 'electrical';
+                                            IconComp = Zap;
+                                            iconColor = 'text-amber-400';
+                                        } else if (util.type === 'HVAC') {
+                                            toggleKey = 'hvac';
+                                            IconComp = Fan;
+                                            iconColor = 'text-orange-400';
+                                        } else if (util.type === 'Solar PV') {
+                                            toggleKey = 'solar';
+                                            IconComp = Sun;
+                                            iconColor = 'text-indigo-400';
+                                        } else if (util.type === 'EV Station') {
+                                            toggleKey = 'ev';
+                                            IconComp = BatteryCharging;
+                                            iconColor = 'text-green-500';
+                                        }
+
+                                        if (!toggleKey) return null;
+
+                                        const isVisible = componentVisibility[toggleKey];
+
+                                        return (
+                                            <div
+                                                key={util.id}
+                                                className={cn(
+                                                    "flex items-center text-xs cursor-pointer transition-colors group",
+                                                    isVisible
+                                                        ? "text-primary font-medium"
+                                                        : "text-muted-foreground hover:text-primary"
+                                                )}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    actions.toggleComponentVisibility(toggleKey!);
+                                                }}
+                                            >
+                                                <IconComp className={`h-3 w-3 mr-2 ${iconColor}`} />
+                                                <span className="flex-1">{util.name}</span>
+                                                {isVisible ?
+                                                    <Eye className="h-3 w-3 ml-2" /> :
+                                                    <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />
+                                                }
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             )}
 

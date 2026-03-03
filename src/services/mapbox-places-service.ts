@@ -195,6 +195,48 @@ export const MapboxPlacesService = {
             console.error(`[MapboxPlaces] Road fetch failed:`, error);
             return [];
         }
+    },
+
+    /**
+     * Reverse geocode a coordinate to get its state code and district/city name
+     * @param center [lng, lat]
+     * @returns { stateCode?: string, district?: string }
+     */
+    async reverseGeocode(center: [number, number]): Promise<{ stateCode?: string; district?: string }> {
+        if (!MAPBOX_ACCESS_TOKEN) return {};
+
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${center[0]},${center[1]}.json?` +
+            `types=district,place,locality,region&` +
+            `access_token=${MAPBOX_ACCESS_TOKEN}`;
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Mapbox API error: ${response.status}`);
+
+            const data = await response.json();
+            const features = data.features || [];
+            
+            let district = undefined;
+            let stateCode = undefined;
+
+            for (const f of features) {
+                if (f.place_type.includes('district') || f.place_type.includes('place')) {
+                    if (!district) district = f.text;
+                }
+                if (f.place_type.includes('region')) {
+                    if (!stateCode && f.properties?.short_code) {
+                        // Mapbox usually returns 'IN-DL' for Delhi
+                        const code = f.properties.short_code.split('-');
+                        stateCode = code.length > 1 ? code[1] : code[0];
+                    }
+                }
+            }
+            
+            return { stateCode, district };
+        } catch (error) {
+            console.error(`[MapboxPlaces] Reverse geocode failed:`, error);
+            return {};
+        }
     }
 };
 

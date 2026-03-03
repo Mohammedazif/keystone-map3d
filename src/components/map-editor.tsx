@@ -9,6 +9,7 @@ import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import Script from 'next/script';
 import { createShaktiChakraGroup } from '@/lib/shakti-chakra-visualizer';
+import { getVastuCenter } from '@/lib/vastu-utils';
 import { AnalysisMode } from './solar-controls';
 import { runVisualAnalysis, runGroundAnalysis, runWallAnalysis, calculateAggregateStats } from '@/lib/engines/visual-analysis-engine';
 import { fetchWeatherData } from '@/lib/engines/weather-data-service';
@@ -17,7 +18,8 @@ import { generateBuildingTexture } from '@/lib/texture-generator';
 import { WindStreamlineLayer } from '@/lib/wind-streamline-layer';
 import { Amenity } from '@/services/mapbox-places-service';
 import { OverpassPlacesService } from '@/services/overpass-places-service';
-import { buildBhuvanLayerName, getIndianStateCode, BHUVAN_THEMES } from '@/lib/bhuvan-utils';
+import { buildBhuvanLayerName, getIndianStateCode, getBhuvanWmsUrl, BHUVAN_THEMES, isLayerAvailableInIndex, getBestBhuvanDistrict } from '@/lib/bhuvan-utils';
+
 import { Map as MapIcon, Globe, Image as ImageIcon } from 'lucide-react';
 
 declare global {
@@ -356,20 +358,28 @@ export function MapEditor({
           const x = 5;
           const y = 5;
 
-          // Detect state code for the query layer name
+          // Detect state code and coordinates from the plot geometry
           let stateCode = 'IN';
-          if (plots.length > 0 && plots[0].geometry && plots[0].geometry.geometry) {
-             const geom = plots[0].geometry.geometry as Polygon;
-             if (geom.coordinates && geom.coordinates[0] && geom.coordinates[0][0]) {
-               const coords = geom.coordinates[0][0];
-               stateCode = getIndianStateCode(coords[1], coords[0]);
-             }
+          let plotLat: number | undefined;
+          let plotLng: number | undefined;
+          if (plots.length > 0 && plots[0].geometry?.geometry) {
+            const geom = plots[0].geometry.geometry as Polygon;
+            if (geom.coordinates?.[0]?.[0]) {
+              const coord = geom.coordinates[0][0];
+              plotLng = coord[0];
+              plotLat = coord[1];
+              stateCode = getIndianStateCode(plotLat, plotLng);
+            }
           }
 
-          const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode);
+          // Pass coordinates so buildBhuvanLayerName can do precise bbox-based district lookup
+          const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode, undefined, plotLat, plotLng);
+          const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
+          const bhuvanBaseUrl = activeTheme ? getBhuvanWmsUrl(activeTheme) : undefined;
 
           // Use our local API proxy to bypass CORS
           const wmsUrl = new URL(window.location.origin + '/api/bhuvan');
+          if (bhuvanBaseUrl) wmsUrl.searchParams.set('_bhuvanUrl', bhuvanBaseUrl);
           wmsUrl.searchParams.set('service', 'WMS');
           wmsUrl.searchParams.set('version', '1.1.1');
           wmsUrl.searchParams.set('request', 'GetFeatureInfo');
@@ -1010,19 +1020,52 @@ export function MapEditor({
       if (mapInst.getLayer(layerId)) mapInst.removeLayer(layerId);
       if (mapInst.getSource(sourceId)) mapInst.removeSource(sourceId);
 
-      const { plots } = getStoreState();
+      // Detect state code and coordinates from the plot geometry
+      const { plots: storePlots } = getStoreState();
       let stateCode = 'IN';
-      if (plots.length > 0 && plots[0].geometry && plots[0].geometry.geometry) {
-        const geom = plots[0].geometry.geometry as Polygon;
-        if (geom.coordinates && geom.coordinates[0] && geom.coordinates[0][0]) {
-          const coords = geom.coordinates[0][0];
-          stateCode = getIndianStateCode(coords[1], coords[0]);
+      let plotLat: number | undefined;
+      let plotLng: number | undefined;
+      if (storePlots.length > 0 && storePlots[0].geometry?.geometry) {
+        const geom = storePlots[0].geometry.geometry as Polygon;
+        if (geom.coordinates?.[0]?.[0]) {
+          const coord = geom.coordinates[0][0];
+          plotLng = coord[0];
+          plotLat = coord[1];
+          stateCode = getIndianStateCode(plotLat, plotLng);
         }
       }
 
-      const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode);
+      // Pass coordinates so buildBhuvanLayerName can do precise bbox-based district lookup
+      const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode, undefined, plotLat, plotLng);
+      const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
 
-      const tileProxyBase = `/api/bhuvan?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(layerName)}&width=256&height=256&srs=EPSG:3857&format=image%2Fpng&transparent=true`;
+      // ── Availability guard: skip loading if the layer has no coverage ──
+      // This prevents "Could not decode image" errors when WMS returns an error XML/image.
+      const isDistrictTheme = activeTheme?.usesDistrict;
+      let isAvailable = true;
+      if (isDistrictTheme) {
+        // For AMRUT: check bhuvan-index.json (vec3 not in extents)
+        if (activeBhuvanLayer === 'ulu_4k_amrut') {
+          isAvailable = !!getBestBhuvanDistrict('amrut', stateCode);
+        } else if (activeBhuvanLayer === 'ulu_10k_nuis') {
+          isAvailable = !!getBestBhuvanDistrict('nuis', stateCode);
+        } else if (activeBhuvanLayer === 'lulc_10k_sisdp') {
+          isAvailable = isLayerAvailableInIndex(layerName);
+        }
+      } else {
+        // Standard 50K layers: rely on extents
+        isAvailable = isLayerAvailableInIndex(layerName);
+      }
+
+      if (!isAvailable) {
+        // Layer not available for this region — clean up silently and stop
+        return;
+      }
+
+      const bhuvanBaseUrl = activeTheme ? getBhuvanWmsUrl(activeTheme) : undefined;
+      const bhuvanUrlParam = bhuvanBaseUrl ? `&_bhuvanUrl=${encodeURIComponent(bhuvanBaseUrl)}` : '';
+
+      const tileProxyBase = `/api/bhuvan?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(layerName)}&width=256&height=256&srs=EPSG:3857&format=image%2Fpng&transparent=true${bhuvanUrlParam}`;
 
       mapInst.addSource(sourceId, {
         type: 'raster',
@@ -1136,8 +1179,8 @@ export function MapEditor({
       if (!THREE) return;
 
       plots.forEach(plot => {
-        // Use true center of area for accurate Vastu placement on irregular plots
-        const trueCenter = centerOfMass(plot.geometry);
+        // Use centralized Vastu center calculation logic
+        const trueCenter = getVastuCenter(plot.geometry);
         const centerCoords = trueCenter.geometry.coordinates;
         const center: [number, number] = [centerCoords[0], centerCoords[1]];
 
@@ -2285,7 +2328,7 @@ useEffect(() => {
             if (f.type === 'Utility') return false;
 
             const isBasement = (f.level !== undefined && f.level < 0) || f.type === 'Parking';
-            if (uiState.ghostMode) {
+            if (uiState.ghostMode || componentVisibility.basements) {
               if (isBasement) {
                 return componentVisibility.basements;
               }
@@ -2304,10 +2347,23 @@ useEffect(() => {
           const basementFloorsCalc = building.floors.filter(f =>
             (f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking'
           );
-          const totalBasementHeight = basementFloorsCalc.reduce((sum, f) => sum + f.height, 0);
+          let totalBasementHeight = basementFloorsCalc.reduce((sum, f) => sum + f.height, 0);
+
+          // Tower Lift Fix: If this is a tower and has no basements itself, 
+          // look for sibling podium's basement height to know how much to lift.
+          if (totalBasementHeight === 0 && building.id.includes('-tower')) {
+             const baseId = building.id.replace('-tower', '');
+             const siblingPodium = plot.buildings.find(b => b.id === `${baseId}-podium`);
+             if (siblingPodium) {
+                const siblingBasementFloors = siblingPodium.floors.filter(f => 
+                   (f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking'
+                );
+                totalBasementHeight = siblingBasementFloors.reduce((sum, f) => sum + f.height, 0);
+             }
+          }
 
           const heightOffset = 0;
-          const shouldLiftForBasements = uiState.ghostMode && componentVisibility.basements;
+          const shouldLiftForBasements = componentVisibility.basements;
           const superstructureFloorsCalc = building.floors.filter(f =>
             !((f.level !== undefined && f.level < 0) || (f.type || '').toLowerCase() === 'parking')
           );
@@ -2354,9 +2410,45 @@ useEffect(() => {
                 } else {
                   utilOpacity = componentVisibility.hvac ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
                 }
+                // HVAC sits directly on top of building (W/SW half - Vastu compliant)
                 utilBase = buildingTop + heightOffset;
                 utilHeight = buildingTop + 3.0 + heightOffset;
-                utilColor = '#C0C0C0';
+                utilColor = '#FF8C00'; // Dark orange - HVAC unit
+              } else if (util.type === 'Solar PV') {
+                // Solar PV rooftop panels sit on top of HVAC (or directly on roof)
+                // Vastu: South-facing roof for maximum efficiency
+                if (building.internalsVisible === false) {
+                  utilOpacity = 0.0;
+                } else if (building.internalsVisible === true) {
+                  utilOpacity = uiState.ghostMode ? 0.75 : 0.9;
+                } else {
+                  utilOpacity = componentVisibility.solar ? 0.9 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.75 : 0.0));
+                }
+                // Solar panels start at building top (S/SE half - above HVAC level on other side)
+                utilBase = buildingTop + heightOffset;
+                utilHeight = buildingTop + 0.5 + heightOffset; // Thin 0.5m panel
+                utilColor = '#1A237E'; // Solar Indigo
+              } else if (util.type === 'EV Station') {
+                // EV Stations shown in basements as small polygons inside parking
+                if (building.internalsVisible === false) {
+                  utilOpacity = 0.0;
+                } else if (building.internalsVisible === true) {
+                  utilOpacity = uiState.ghostMode ? 0.8 : 1.0;
+                } else {
+                  // Use EV visibility toggle
+                  utilOpacity = componentVisibility.ev ? 1.0 : (anyComponentVisible ? 0.0 : (uiState.ghostMode ? 0.8 : 0.0));
+                }
+                
+                // Render in first basement (B1)
+                const b1 = building.floors.find(f => f.level === -1);
+                if (b1) {
+                   utilBase = (building.baseHeight || 0) + (shouldLiftForBasements ? (totalBasementHeight - b1.height) : -b1.height);
+                   utilHeight = utilBase + 2.5; 
+                } else {
+                   utilBase = (building.baseHeight || 0) - 2.5;
+                   utilHeight = building.baseHeight || 0;
+                }
+                utilColor = '#2E7D32'; // Forest Green
               }
 
               const utilGeo = {
@@ -2392,6 +2484,10 @@ useEffect(() => {
 
           const floorDict: Record<string, { baseHeight: number, height: number }> = {};
           let fdCurrentBase = building.baseHeight || 0;
+          // If lifting for basements and this building doesn't have its own basements to push it up
+          if (shouldLiftForBasements && basementFloorsCalc.length === 0) {
+            fdCurrentBase += totalBasementHeight;
+          }
           floorsToRender.forEach(f => {
             floorDict[f.id] = { baseHeight: fdCurrentBase, height: fdCurrentBase + f.height };
             fdCurrentBase += f.height;
@@ -2428,7 +2524,7 @@ useEffect(() => {
                 properties: {
                   ...core.geometry.properties,
                   height: visualBuildingTop,
-                  base_height: building.id.endsWith('-tower') ? 0 : effectiveBase,
+                  base_height: effectiveBase,
                   coreId: core.id
                 }
               } as Feature);
@@ -2506,7 +2602,9 @@ useEffect(() => {
                   height: unitTop,
                   base_height: fBounds.baseHeight,
                   color: unit.color || '#ADD8E6',
-                  unitId: unit.id
+                  unitId: unit.id,
+                  type: unit.type,
+                  targetArea: unit.targetArea
                 }
               } as Feature);
             });
@@ -2537,6 +2635,10 @@ useEffect(() => {
 
           // --- RENDER FLOORS (SHELL) LAST (BACKGROUND/CONTEXT) ---
           let currentBase = building.baseHeight || 0;
+          // If lifting for basements and this building doesn't have its own basements to push it up
+          if (shouldLiftForBasements && basementFloorsCalc.length === 0) {
+            currentBase += totalBasementHeight;
+          }
           floorsToRender.forEach((floor, fIndex) => {
             const typeLower = (floor.type || '').toLowerCase();
             const isBasementOrParking = (floor.level !== undefined && floor.level < 0) || typeLower === 'parking';
@@ -2624,8 +2726,8 @@ useEffect(() => {
             }
 
             const selectionColor = '#00fbff'; // Bright cyan for selection
-            const finalColor = isBuildingSelected ? selectionColor : (intendedColor || floor.color || '#cccccc');
-
+            let finalColor: any = isBuildingSelected ? selectionColor : (intendedColor || floor.color || '#cccccc');
+ 
             const floorGeo = {
               ...wallGeometry,
               properties: {
@@ -3186,10 +3288,32 @@ useEffect(() => {
           `;
         } else if (f.layer?.id.startsWith('cores-')) {
           const area = turf.area(f as any);
+          let dims = '';
+          try {
+            // @ts-ignore
+            const line = turf.polygonToLine(f.geometry);
+            // @ts-ignore
+            const perimeter = turf.length(line, { units: 'meters' });
+            if (area && perimeter) {
+              const s = perimeter / 2;
+              const disc = (s * s) - (4 * area);
+              let l = 0, w = 0;
+              if (disc >= 0) {
+                l = (s + Math.sqrt(disc)) / 2;
+                w = (s - Math.sqrt(disc)) / 2;
+              } else {
+                l = Math.sqrt(area);
+                w = l;
+              }
+              dims = `${Math.round(Math.max(l, w))}m x ${Math.round(Math.min(l, w))}m`;
+            }
+          } catch (e) { }
+
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">Core</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">Vertical Circulation</div>
             <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Footprint Area: ${area.toFixed(1)} m²</div>
+            ${dims ? `<div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Size: ${dims}</div>` : ''}
           `;
         } else if (f.layer?.id.startsWith('util-')) {
           const typeLabel = props.type || 'Utility Shaft';
@@ -3201,11 +3325,12 @@ useEffect(() => {
           `;
         } else if (f.layer?.id.startsWith('units-')) {
           const typeLabel = props.type || 'Unit';
-          const area = turf.area(f as any);
+          const targetArea = props.targetArea;
+          const displayArea = targetArea ? `${targetArea}` : `${turf.area(f as any).toFixed(1)}`;
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${typeLabel}</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">Internal Unit Layout</div>
-            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${area.toFixed(1)} m²</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${displayArea} m²</div>
           `;
         }
 

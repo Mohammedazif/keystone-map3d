@@ -117,6 +117,9 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [rearSetback, setRearSetback] = useState<number | undefined>(undefined);
     const [sideSetback, setSideSetback] = useState<number | undefined>(undefined);
     const [siteCoverage, setSiteCoverage] = useState(0.6); // 60% default utilization
+    const [useFloorLimit, setUseFloorLimit] = useState(true); // When false, auto-calculate floors to maximize GFA
+    const [infillSetback, setInfillSetback] = useState(6); // Setback for inline/infill buildings in meters
+    const [infillMode, setInfillMode] = useState<'ring' | 'grid' | 'hybrid'>('hybrid'); // Infill strategy
 
     // Generation Mode: Parametric Only
     // const [generationMode, setGenerationMode] = useState<'ai' | 'algo'>('algo');
@@ -132,14 +135,14 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     });
 
     const [unitMixConfig, setUnitMixConfig] = useState({
-        '1BHK': 15,
-        '2BHK': 40,
+        '2BHK': 30,
         '3BHK': 35,
-        '4BHK': 10
+        '4BHK': 35
     });
 
+    const [shuffleUnits, setShuffleUnits] = useState(false);
     const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('floor'); // New Allocation Mode
-    const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'STP', 'WTP', 'Electrical', 'HVAC', 'Water', 'Solar PV']);
+    const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'Water', 'Electrical', 'HVAC', 'STP', 'WTP', 'Solar PV', 'EV Charging']);
 
     // Constraints
     const [regulationMaxFloors, setRegulationMaxFloors] = useState(60);
@@ -312,8 +315,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                     // Convert % to decimal
                     const decimalCoverage = cv / 100;
                     setRegulationMaxCoverage(decimalCoverage);
-                    // Cap siteCoverage if current value exceeds regulation
-                    setSiteCoverage(prev => Math.min(prev, decimalCoverage));
+                    // Use regulation as DEFAULT for new plots
+                    setSiteCoverage(decimalCoverage);
                 }
             }
         }
@@ -362,8 +365,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             typologies: selectedTypologies,
             targetGFA: targetGFA, // Use state value
             targetFAR,
-            minFloors: floorRange[0],
-            maxFloors: floorRange[1], // This will be used as compliance maxFloors
+            minFloors: useFloorLimit ? floorRange[0] : 1, // Start from 1 if auto-maximizing
+            maxFloors: floorRange[1], // Always pass maxFloors as ceiling
+            autoMaxGFA: !useFloorLimit, // Enable GFA maximization mode when floor limit is unchecked
+            infillSetback: !useFloorLimit ? infillSetback : undefined, // Setback for inline buildings
+            infillMode: !useFloorLimit ? infillMode : undefined, // Infill placement strategy
             minHeight: heightRange[0],
             maxHeight: heightRange[1],
             parkingType: selectedParking[0], // Legacy support
@@ -401,11 +407,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             podiumFloors,
             upperFloorReduction,
             unitMix: [
-                { name: '1BHK', mixRatio: unitMixConfig['1BHK'] / 100, area: 60 },
                 { name: '2BHK', mixRatio: unitMixConfig['2BHK'] / 100, area: 140 },
                 { name: '3BHK', mixRatio: unitMixConfig['3BHK'] / 100, area: 185 },
-                { name: '4BHK', mixRatio: unitMixConfig['4BHK'] / 100, area: 250 }
-            ].filter(u => u.mixRatio > 0)
+                { name: '4BHK', mixRatio: unitMixConfig['4BHK'] / 100, area: 245 }
+            ].filter(u => u.mixRatio > 0),
+            shuffleUnits
         };
 
         // Increment seed offset for NEXT generation (Simulation of "Refresh")
@@ -612,12 +618,12 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         <Badge
                                             variant="outline"
                                             className={cn("text-[9px] h-4",
-                                                (unitMixConfig['1BHK'] + unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']) !== 100
+                                                (unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']) !== 100
                                                     ? "text-red-500 border-red-200"
                                                     : "text-green-600 border-green-200"
                                             )}
                                         >
-                                            Total: {unitMixConfig['1BHK'] + unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']}%
+                                            Total: {unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']}%
                                         </Badge>
                                     </div>
 
@@ -635,7 +641,6 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                     onValueChange={([val]) => setUnitMixConfig(prev => ({ ...prev, [type]: val }))}
                                                     className={cn(
                                                         "[&_.relative]:h-1.5 [&_span]:h-3 [&_span]:w-3",
-                                                        type === '1BHK' && "[&_.absolute]:bg-[#80BC65]",
                                                         type === '2BHK' && "[&_.absolute]:bg-[#1E90FF]",
                                                         type === '3BHK' && "[&_.absolute]:bg-[#DA70D6]",
                                                         type === '4BHK' && "[&_.absolute]:bg-[#FFD700]"
@@ -643,6 +648,19 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 />
                                             </div>
                                         ))}
+                                    </div>
+
+                                    {/* Shuffle Toggle */}
+                                    <div className="flex items-center justify-between pt-1 border-t border-border/30">
+                                        <Label className="text-[10px] text-muted-foreground cursor-pointer" onClick={() => setShuffleUnits(!shuffleUnits)}>
+                                            Shuffle Unit Order
+                                        </Label>
+                                        <input
+                                            type="checkbox"
+                                            checked={shuffleUnits}
+                                            onChange={(e) => setShuffleUnits(e.target.checked)}
+                                            className="h-3 w-3 accent-primary"
+                                        />
                                     </div>
                                 </div>
                             )}
@@ -939,17 +957,33 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             {/* Site Coverage Configuration */}
                             <div className="space-y-1.5 pt-2">
                                 <div className="flex justify-between text-[10px]">
-                                    <span className="font-bold uppercase text-muted-foreground tracking-wider">Site Utilization</span>
-                                    <span>{(siteCoverage * 100).toFixed(0)}%</span>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="font-bold uppercase text-muted-foreground tracking-wider">Site Utilization</span>
+                                        <span className="text-[9px] text-muted-foreground/60">(Reg: {(regulationMaxCoverage * 100).toFixed(0)}%)</span>
+                                    </div>
+                                    <span className={cn(
+                                        "font-medium",
+                                        siteCoverage > regulationMaxCoverage ? "text-amber-500" : "text-foreground"
+                                    )}>
+                                        {(siteCoverage * 100).toFixed(0)}%
+                                    </span>
                                 </div>
-                                <Slider
-                                    value={[siteCoverage]}
-                                    min={0.1}
-                                    max={regulationMaxCoverage}
-                                    step={0.05}
-                                    onValueChange={([v]) => setSiteCoverage(v)}
-                                    className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
-                                />
+                                <div className="relative pt-1">
+                                    <Slider
+                                        value={[siteCoverage]}
+                                        min={0.05}
+                                        max={1.0}
+                                        step={0.01}
+                                        onValueChange={([v]) => setSiteCoverage(v)}
+                                        className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
+                                    />
+                                    {/* Regulation Limit Marker */}
+                                    <div 
+                                        className="absolute top-1 h-1.5 w-0.5 bg-destructive/40 pointer-events-none"
+                                        style={{ left: `${regulationMaxCoverage * 100}%` }}
+                                        title={`Regulation Limit: ${(regulationMaxCoverage * 100).toFixed(0)}%`}
+                                    />
+                                </div>
                             </div>
 
                             {/* Utilities Selection */}
@@ -961,7 +995,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         size="sm"
                                         className="h-4 p-0 text-[10px] text-primary"
                                         onClick={() => {
-                                            const ALL = ['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin', 'Solar PV'];
+                                            const ALL = ['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin', 'Solar PV', 'EV Charging'];
                                             if (selectedUtilities.length === ALL.length) setSelectedUtilities([]);
                                             else setSelectedUtilities(ALL);
                                         }}
@@ -970,7 +1004,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     </Button>
                                 </div>
                                 <div className="grid grid-cols-3 gap-2">
-                                    {['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin', 'Solar PV'].map(type => (
+                                    {['Roads', 'Water', 'Rainwater Harvesting', 'Electrical', 'HVAC', 'DG Set', 'Gas', 'Fire', 'STP', 'Solid Waste', 'WTP', 'Admin', 'Solar PV', 'EV Charging'].map(type => (
                                         <Tooltip key={type}>
                                             <TooltipTrigger asChild>
                                                 <button
@@ -986,7 +1020,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                             : 'bg-muted/10 border-border text-muted-foreground hover:bg-muted/30'
                                                     )}
                                                 >
-                                                    {type === 'Rainwater Harvesting' ? 'RWH' : type === 'Solid Waste' ? 'Waste/OWC' : type === 'DG Set' ? 'DG Set' : type === 'Solar PV' ? 'Solar PV' : type}
+                                                    {type === 'Rainwater Harvesting' ? 'RWH' : type === 'Solid Waste' ? 'Waste/OWC' : type === 'DG Set' ? 'DG Set' : type === 'Solar PV' ? 'Solar PV' : type === 'EV Charging' ? 'EV Charging' : type}
                                                 </button>
                                             </TooltipTrigger>
                                             <TooltipContent side="bottom">
@@ -1151,11 +1185,26 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         </div>
                                     </div>
 
+                                    {/* Use Floor Limit Toggle */}
+                                    <div className="flex items-center justify-between">
+                                        <Label className="text-[10px] font-medium text-foreground/80 cursor-pointer" onClick={() => setUseFloorLimit(!useFloorLimit)}>
+                                            Use Floor Limit
+                                        </Label>
+                                        <input
+                                            type="checkbox"
+                                            checked={useFloorLimit}
+                                            onChange={(e) => setUseFloorLimit(e.target.checked)}
+                                            className="h-3 w-3 accent-primary"
+                                        />
+                                    </div>
+
                                     <div className="space-y-2">
                                         <div className="flex justify-between items-center">
-                                            <Label className="text-[10px] font-medium text-foreground/80">Floors</Label>
+                                            <Label className="text-[10px] font-medium text-foreground/80">
+                                                {useFloorLimit ? "Floors Range" : "Max Allowed Floors"}
+                                            </Label>
                                             <span className={cn("text-[10px] text-muted-foreground", floorRange[1] > regulationMaxFloors && "text-red-500 font-bold")}>
-                                                {floorRange[0]} - {floorRange[1]} floors (Reg: {regulationMaxFloors})
+                                                {useFloorLimit ? `${floorRange[0]} - ${floorRange[1]}` : `Up to ${floorRange[1]}`} floors (Reg: {regulationMaxFloors})
                                             </span>
                                         </div>
                                         <Slider
@@ -1167,6 +1216,38 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             onValueChange={setFloorRange}
                                             className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3.5 [&_span]:w-3.5"
                                         />
+                                        {!useFloorLimit && (
+                                            <>
+                                                <p className="text-[9px] text-muted-foreground italic mt-1 leading-tight">
+                                                    Floors will be assigned sequentially to hit target GFA, capping at {floorRange[1]} floors per building. Infill footprints added only if needed.
+                                                </p>
+                                                <div className="flex items-center gap-2 mt-2">
+                                                    <Label className="text-[10px] font-medium text-foreground/80 whitespace-nowrap">Infill Setback</Label>
+                                                    <Input
+                                                        type="number"
+                                                        step="1"
+                                                        min={3}
+                                                        max={50}
+                                                        value={infillSetback}
+                                                        onChange={e => setInfillSetback(Number(e.target.value) || 6)}
+                                                        className="h-7 text-[10px] bg-muted/20 border-border w-16"
+                                                    />
+                                                    <span className="text-[9px] text-muted-foreground">m</span>
+                                                </div>
+                                                <div className="flex items-center gap-2 mt-2">
+                                                    <Label className="text-[10px] font-medium text-foreground/80 whitespace-nowrap">Infill Mode</Label>
+                                                    <select
+                                                        value={infillMode}
+                                                        onChange={e => setInfillMode(e.target.value as 'ring' | 'grid' | 'hybrid')}
+                                                        className="h-7 text-[10px] bg-muted/20 border border-border rounded px-1 text-foreground"
+                                                    >
+                                                        <option value="hybrid">Hybrid (Ring + Grid)</option>
+                                                        <option value="ring">Ring Only</option>
+                                                        <option value="grid">Grid Only</option>
+                                                    </select>
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
 
