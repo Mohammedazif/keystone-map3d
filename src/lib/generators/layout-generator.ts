@@ -1330,8 +1330,8 @@ export function generateSiteUtilities(
     // STP (Sewage Treatment Plant)
     // Formula: Capacity = Population * 120 LPCD * 1.2
     const stpCapacityKLD = (population * 120 * 1.2) / 1000;
-    // Area conversion: Roughly 0.8 to 1.0 sqm per KLD for modern compact plants
-    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 0.9)); 
+    // Area conversion: Roughly 1.2 sqm per KLD as per reference doc
+    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 1.2)); 
 
     // UGT (Underground Water Tank)
     // Formula: Capacity = Population * 135 LPCD * 1.0 (Full Day Storage)
@@ -1342,12 +1342,12 @@ export function generateSiteUtilities(
     // WTP (Water Treatment Plant)
     // Capacity = Pop * 135 * 1.2
     const wtpCapacityKLD = (population * 135 * 1.2) / 1000;
-    // WTPs are generally more compact than STPs, about 0.4 - 0.5 sqm per KLD
-    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 0.45));
+    // WTPs are generally more compact than STPs, but 0.45 was too low. Using 2.0 sqm/KLD.
+    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 2.0));
 
     // OWC (Organic Waste Converter)
-    // Formula: Capacity = Total Units * 0.5 kg/day
-    const owcCapacityKg = totalUnits * 0.5;
+    // Formula: Capacity = Population * 0.3 kg/day (Updated from per-unit to per-person)
+    const owcCapacityKg = population * 0.3;
     const owcArea = Math.max(8, Math.ceil(owcCapacityKg / 30));
 
     // DG Set (Diesel Generator)
@@ -1407,12 +1407,13 @@ export function generateSiteUtilities(
     const rwhArea = Math.max(15, Math.ceil(rwhVolume / 2.5));
 
     // EV Charging
-    const evPoints = Math.ceil(totalUnits * 0.1); // 10%
+    // Points = Units * 1.5 * 0.2 (30% of parking slots)
+    const evPoints = Math.ceil(totalUnits * 1.5 * 0.2); 
 
     // console.groupCollapsed(`[Utility Math] Calculation Audit for Pop: ${population}`);
     console.log(`Units: ${totalUnits}, Pop: ${population}`);
-    console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@0.9 sqm/KLD)`);
-    console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@0.45 sqm/KLD)`);
+    console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@1.2 sqm/KLD)`);
+    console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@2.0 sqm/KLD)`);
     console.log(`UGT (Water) -> Vol: ${ugtVolume.toFixed(1)} m3 | Area: ${ugtArea} sqm (3.5m depth)`);
     console.log(`RWH -> Roof Area: ${roofAreaSum.toFixed(1)} sqm | Annual Harvest: ${annualHarvestVol.toFixed(1)} m3 | Storage Vol: ${rwhVolume.toFixed(1)} m3 | Area: ${rwhArea} sqm (2.5m depth)`);
     console.log(`Electrical -> Essential Load: ${essentialLoad} kW | DG kVA: ${dgKVA.toFixed(1)}`);
@@ -1748,7 +1749,8 @@ export function generateSiteUtilities(
                         name: util.name,
                         type: util.type,
                         geometry: poly as Feature<Polygon>,
-                        area: util.area,
+                        area: turf.area(poly), // Actual physical area on map
+                        targetArea: util.area, // Theoretical target area from formula
                         centroid: turf.centroid(poly),
                         visible: util.level !== undefined && util.level < 0 ? false : true,
                         color: util.color,

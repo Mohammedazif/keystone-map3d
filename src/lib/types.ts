@@ -150,6 +150,7 @@ export interface UtilityArea {
   geometry: Feature<Polygon>;
   centroid: Feature<Point>;
   area: number;
+  targetArea?: number;
   visible: boolean;
   level?: number;
   height?: number;
