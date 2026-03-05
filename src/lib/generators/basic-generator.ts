@@ -27,6 +27,7 @@ export interface AlgoParams {
     minFloors?: number;
     maxFloors?: number;
     shuffleUnits?: boolean;
+    exactTypologyAllocation?: boolean; // Use exact Method B typology sizes
     minHeight?: number;
     maxHeight?: number; // Only used for constraints, not direct generation yet?
     minFootprint?: number;

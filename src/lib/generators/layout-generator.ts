@@ -17,6 +17,7 @@ interface LayoutParams {
     numFloors?: number;
     floorHeight?: number;
     shuffleUnits?: boolean; // Randomize unit order on each floor
+    exactTypologyAllocation?: boolean; // Use exact Method B typology sizes instead of fitted geometry
     buildingId?: string; // Used to detect podium vs tower for utility placement
     selectedUtilities?: string[]; // List of enabled utilities
 }
@@ -530,7 +531,8 @@ export function generateBuildingLayout(
     let coreGeom = cores[0].geometry;
 
     const shouldInclude = (type: string) => {
-        if (!params.selectedUtilities || params.selectedUtilities.length === 0) return true;
+        // If explicitly undefined, we default to true (legacy support). If empty array, respect it (none).
+        if (!params.selectedUtilities) return true;
         // Map Utility Infrastructure names to UtilityType if they differ
         const mapping: Record<string, string> = {
             'Electrical': UtilityType.Electrical,
@@ -547,25 +549,60 @@ export function generateBuildingLayout(
     };
 
     // 1.1 Generate Electrical Shaft (Vertical Utility)
-    // Place it adjacent to the core
+    // Place it at the SE corner of the building (Vastu: Agni/Fire zone)
     if (shouldInclude('Electrical')) {
     try {
         const bBox = turf.bbox(workingPoly);
-        const minX = bBox[0];
-        const minY = bBox[1];
         
         // Electrical Shaft Area: ~1.0% to 1.5% of the single floor Gross Area
-        // Typical rule of thumb: 1.5% for robust distribution
         const elecTargetArea = Math.max(2, (width * depth) * 0.015);
-        const elecDim = Math.sqrt(elecTargetArea); // Square shaft
         
-        // Find a safe spot inside the building, ideally near the core spine
-        const startPoint = coreGeom ? turf.centroid(coreGeom) : turf.pointOnFeature(workingPoly);
+        let elecW: number, elecD: number;
+        let coreEdgeCenter: Feature<Point>;
+        let shiftDirection: number;
+        let offsetDist: number;
         
-        // Create an exact geometric square of the target area
-        const elecBoxFeature = turf.envelope(turf.buffer(startPoint, elecDim / 2, { units: 'meters' }));
+        const coreBox = coreGeom ? turf.bbox(coreGeom) : bBox;
+
+        if (isHorizontal) {
+            // Core is long East-West. Match core's exact height (D) so it doesn't push the strip boundaries up/down
+            elecD = coreD;
+            elecW = elecTargetArea / elecD;
+            // Attach to the East edge of the core
+            coreEdgeCenter = turf.point([coreBox[2], (coreBox[1] + coreBox[3]) / 2]);
+            shiftDirection = 90; // East
+            offsetDist = elecW / 2;
+        } else {
+            // Core is long North-South. Match core's exact width (W)
+            elecW = coreW;
+            elecD = elecTargetArea / elecW;
+            // Attach to the South edge of the core
+            coreEdgeCenter = turf.point([(coreBox[0] + coreBox[2]) / 2, coreBox[1]]);
+            shiftDirection = 180; // South
+            offsetDist = elecD / 2;
+        }
         
-        // Force Intersection inside the building to prevent overhangs in weird shapes
+        // Offset outward by half the shaft dimension so it attaches flush to the core
+        const startPoint = turf.destination(
+            coreEdgeCenter, 
+            offsetDist / 1000, 
+            shiftDirection, 
+            { units: 'kilometers' }
+        );
+        
+        // Create an exact geometric rectangle perfectly matching the core thickness
+        const cPt = startPoint.geometry.coordinates;
+        const elecWDeg = elecW / ((40008000 / 360) * Math.cos(cPt[1] * Math.PI / 180)); // Approx degrees X at this latitude
+        const elecDDeg = elecD / 111111; // Approx degrees Y
+        
+        const elecBoxFeature = turf.bboxPolygon([
+            cPt[0] - elecWDeg / 2,
+            cPt[1] - elecDDeg / 2,
+            cPt[0] + elecWDeg / 2,
+            cPt[1] + elecDDeg / 2
+        ]);
+        
+        // Force Intersection inside the building to prevent overhangs
         // @ts-ignore
         const safeElecPoly = turf.intersect(elecBoxFeature, workingPoly) || elecBoxFeature;
 
@@ -578,7 +615,22 @@ export function generateBuildingLayout(
             area: turf.area(safeElecPoly as Feature<Polygon>),
             visible: true
         });
-        console.log('[Layout Generator] Placed Parameterized Electrical Shaft');
+        
+        // Include electrical shaft area in the core geometry so it's counted as core area
+        try {
+            // @ts-ignore
+            const merged = turf.union(coreGeom, safeElecPoly);
+            if (merged && merged.geometry.type === 'Polygon') {
+                coreGeom = merged as Feature<Polygon>;
+            } else if (merged && merged.geometry.type === 'MultiPolygon') {
+                // Keep as multipolygon wrapped in first polygon for compatibility
+                coreGeom = merged as any;
+            }
+        } catch (e) {
+            console.warn('[Layout Generator] Failed to merge electrical shaft with core geometry', e);
+        }
+        
+        console.log('[Layout Generator] Placed Electrical Shaft at SE corner, merged into core area');
     } catch (e) {
         console.warn('Failed to place Electrical Shaft', e);
     }
@@ -745,14 +797,8 @@ export function generateBuildingLayout(
         const coreWithCorridor = turf.buffer(coreGeom, corridorW / 1000, { units: 'kilometers' });
 
         // Combine Core + Electrical + Corridor for subtraction
+        // (Electrical shaft is already included in coreGeom from line 586)
         obstacles = coreWithCorridor || coreGeom;
-        const elecShaft = utilities.find(u => u.type === UtilityType.Electrical);
-        if (elecShaft) {
-            // Buffer electrical slightly to include in obstacle
-            const bufferedElec = turf.buffer(elecShaft.geometry, 0.1 / 1000, { units: 'kilometers' });
-            // @ts-ignore
-            obstacles = turf.union(obstacles, bufferedElec || elecShaft.geometry);
-        }
     }
 
     // Use the obstacles to cut the hole on the ALIGNED workingPoly
@@ -880,6 +926,15 @@ export function generateBuildingLayout(
         : turf.centroid(workingPoly);
     const coreCenter = coreCentroidPt.geometry.coordinates;
     
+    // Get the core's actual physical outer edges (bbox) to avoid overlap with core hole in leasablePoly
+    // IMPORTANT: Use the merged coreGeom (which includes the Electrical Shaft) 
+    // Adding a small buffer (corridor width) to account for the corridor around the core
+    const corridorBuffer = params.corridorWidth || 1.5; // meters
+    const coreForStrips = coreGeom 
+        ? turf.buffer(coreGeom, corridorBuffer / 1000, { units: 'kilometers' })
+        : null;
+    const coreBbox = coreForStrips ? turf.bbox(coreForStrips) : null;
+    
     const isHorizontalBuilding = width > depth;
     
     // Degree-to-meter scale factors at this location
@@ -887,43 +942,48 @@ export function generateBuildingLayout(
     const degPerMeterY = (lMaxY - lMinY) / depth;
     
     // Compute two strips
+    // For EXACT TYPOLOGY: use core outer edges so strips don't overlap the core hole (precise area)
+    // For NORMAL mode: use core center (old behavior, units stretch to fill the floor)
     let stripA: { minX: number, maxX: number, minY: number, maxY: number, depth: number, length: number };
     let stripB: { minX: number, maxX: number, minY: number, maxY: number, depth: number, length: number };
     
     if (isHorizontalBuilding) {
         // Horizontal building: core runs E-W, strips are N and S
-        // Strip A = above core (north), Strip B = below core (south)
-        const coreY = coreCenter[1];
+        const coreMaxY = (params.exactTypologyAllocation && coreBbox) ? coreBbox[3] : coreCenter[1];
+        const coreMinY = (params.exactTypologyAllocation && coreBbox) ? coreBbox[1] : coreCenter[1];
         stripA = {
             minX: lMinX, maxX: lMaxX,
-            minY: coreY, maxY: lMaxY,
-            depth: (lMaxY - coreY) / degPerMeterY,
+            minY: coreMaxY, maxY: lMaxY,
+            depth: (lMaxY - coreMaxY) / degPerMeterY,
             length: width
         };
         stripB = {
             minX: lMinX, maxX: lMaxX,
-            minY: lMinY, maxY: coreY,
-            depth: (coreY - lMinY) / degPerMeterY,
+            minY: lMinY, maxY: coreMinY,
+            depth: (coreMinY - lMinY) / degPerMeterY,
             length: width
         };
     } else {
         // Vertical building: core runs N-S, strips are E and W
-        const coreX = coreCenter[0];
+        const coreMaxX = (params.exactTypologyAllocation && coreBbox) ? coreBbox[2] : coreCenter[0];
+        const coreMinX = (params.exactTypologyAllocation && coreBbox) ? coreBbox[0] : coreCenter[0];
         stripA = {
-            minX: coreX, maxX: lMaxX,
+            minX: coreMaxX, maxX: lMaxX,
             minY: lMinY, maxY: lMaxY,
-            depth: (lMaxX - coreX) / degPerMeterX,
+            depth: (lMaxX - coreMaxX) / degPerMeterX,
             length: depth
         };
         stripB = {
-            minX: lMinX, maxX: coreX,
+            minX: lMinX, maxX: coreMinX,
             minY: lMinY, maxY: lMaxY,
-            depth: (coreX - lMinX) / degPerMeterX,
+            depth: (coreMinX - lMinX) / degPerMeterX,
             length: depth
         };
     }
     
-    console.log(`[Layout Generator] Strips: A depth=${stripA.depth.toFixed(1)}m len=${stripA.length.toFixed(1)}m, B depth=${stripB.depth.toFixed(1)}m len=${stripB.length.toFixed(1)}m`);
+    console.log(`[Layout Generator] Strips: A depth=${stripA.depth.toFixed(1)}m len=${stripA.length.toFixed(1)}m, B depth=${stripB.depth.toFixed(1)}m len=${stripB.length.toFixed(1)}m`,
+        coreBbox ? `coreBbox=[${coreBbox.map((v: number) => v.toFixed(6)).join(',')}]` : 'no-core-bbox',
+        `building=${width.toFixed(1)}×${depth.toFixed(1)}m`);
     
     // Calculate unit widths for each strip
     const computeUnitWidths = (stripDepth: number) => {
@@ -967,69 +1027,172 @@ export function generateBuildingLayout(
         unitCounts.map(u => `${u.name}=${u.count}×${u.unitWidth.toFixed(1)}m`).join(', '),
         `total=${totalWidthUsed.toFixed(0)}m / ${(totalLength*2).toFixed(0)}m`);
     
-    // Build interleaved deck
-    let unitDeck: { type: string, color: string, targetArea: number, unitWidth: number }[] = [];
-    const remaining = unitCounts.map(u => ({ ...u, left: u.count, colorIdx: 0 }));
-    let left = remaining.reduce((s, u) => s + u.left, 0);
-    while (left > 0) {
-        for (const u of remaining) {
-            if (u.left > 0) {
-                const color = u.colorIdx % 2 === 0 
-                    ? getColorForUnitType(u.name) 
-                    : darkenColor(getColorForUnitType(u.name));
-                unitDeck.push({ type: u.name, color, targetArea: u.area, unitWidth: u.unitWidth });
-                u.left--;
-                u.colorIdx++;
-                left--;
+    // EXACT TYPOLOGY ALLOCATION MODE
+    // When enabled, strictly bound the units by the mathematical physical leasable area left after subtracting the core
+    if (params.exactTypologyAllocation && leasableAreaM2 > 0) {
+        // No arbitrary efficiency factor. The leasablePoly is the true physical functional leftover space.
+        let targetTotalArea = 0;
+        
+        // Initial distribution based on mix ratio. 
+        // Guarantee at least 1 of each requested type to prevent large units (4BHK) from rolling down to 0 
+        // on small floor plates, letting the subsequent trim logic mathematically resolve any true physical overflow.
+        unitCounts.forEach(u => {
+            if (u.mixRatio > 0) {
+                const rawProportion = leasableAreaM2 * u.mixRatio;
+                // Force at least 1 if requested, otherwise proportional
+                u.count = Math.max(1, Math.round(rawProportion / u.area));
+            } else {
+                u.count = 0;
+            }
+            targetTotalArea += u.count * u.area;
+        });
+
+        // If the rounding caused us to exceed the physical bounds, trim units!
+        while (targetTotalArea > leasableAreaM2 && targetTotalArea > 0) {
+            // Trim from the largest unit type that has count > 0 to resolve area overage quickly
+            const validToTrim = [...unitCounts].filter(u => u.count > 0).sort((a, b) => b.area - a.area);
+            if (validToTrim.length > 0) {
+                const targetToTrim = unitCounts.find(u => u.name === validToTrim[0].name)!;
+                targetToTrim.count--;
+                targetTotalArea -= targetToTrim.area;
+            } else {
+                break;
             }
         }
-    }
-    
-    // Shuffle the deck if user requested randomized order
-    if (params.shuffleUnits) {
-        // Create a basic seeded random function based on the building coordinates
-        // This ensures each building gets a unique shuffle, but stable across re-renders
-        const buildingSeed = Math.floor(coreCenter[0] * 100000 + coreCenter[1] * 100000);
-        const seededRandom = (seed: number) => {
-            const x = Math.sin(seed++) * 10000;
-            return x - Math.floor(x);
-        };
-        
-        // Fisher-Yates shuffle with seeded random
-        let currentSeed = buildingSeed;
-        for (let i = unitDeck.length - 1; i > 0; i--) {
-            const j = Math.floor(seededRandom(currentSeed++) * (i + 1));
-            [unitDeck[i], unitDeck[j]] = [unitDeck[j], unitDeck[i]];
+
+        // Fill remaining physical space if a smaller unit can exactly fit the gap
+        let remainingSpace = leasableAreaM2 - targetTotalArea;
+        const typesSmallToLarge = [...unitCounts].sort((a, b) => a.area - b.area);
+        for (const u of typesSmallToLarge) {
+            // Allows ~5% stretch tolerance to fill gaps cleanly
+            while (remainingSpace >= u.area * 0.95) {
+                const originalU = unitCounts.find(x => x.name === u.name)!;
+                originalU.count++;
+                targetTotalArea += originalU.area;
+                remainingSpace -= originalU.area;
+            }
         }
-        console.log(`[Layout Generator] Deck shuffled randomly.`);
+
+        console.log(`[Layout Generator] [exactTypology] Fixed Allocation: sum=${targetTotalArea.toFixed(0)}m2 <= leasable=${leasableAreaM2.toFixed(0)}m2 | counts:`, 
+            unitCounts.map(u => `${u.name}=${u.count}`).join(', '));
+    }
+
+    let deckA: { type: string, color: string, targetArea: number, unitWidth: number }[] = [];
+    let deckB: { type: string, color: string, targetArea: number, unitWidth: number }[] = [];
+
+    if (params.exactTypologyAllocation) {
+        // ── EXACT TYPOLOGY PATH ──────────────────────────────────────────────────
+        // Build flat list, sorted largest first so big units are always placed first
+        const allUnitsToPlace: typeof deckA = [];
+        unitCounts.forEach(u => {
+            for (let i = 0; i < u.count; i++) {
+                allUnitsToPlace.push({
+                    type: u.name,
+                    color: getColorForUnitType(u.name),
+                    targetArea: u.area,
+                    unitWidth: u.area / avgStripDepth
+                });
+            }
+        });
+        allUnitsToPlace.sort((a, b) => b.targetArea - a.targetArea);
+
+        // Interleave by type: alternate each type's units between A and B
+        // so both strips get a proportional mix of all sizes
+        const typeGroups: Record<string, typeof allUnitsToPlace> = {};
+        for (const u of allUnitsToPlace) {
+            if (!typeGroups[u.type]) typeGroups[u.type] = [];
+            typeGroups[u.type].push(u);
+        }
+        for (const typeName of Object.keys(typeGroups)) {
+            const group = typeGroups[typeName];
+            for (let i = 0; i < group.length; i++) {
+                if (i % 2 === 0) deckA.push(group[i]);
+                else deckB.push(group[i]);
+            }
+        }
+        // Within each strip, largest units first
+        deckA.sort((a, b) => b.targetArea - a.targetArea);
+        deckB.sort((a, b) => b.targetArea - a.targetArea);
+
+    } else {
+        // ── NORMAL MIX PATH (original logic) ─────────────────────────────────────
+        const unitDeck: typeof deckA = [];
+        const remaining = unitCounts.map(u => ({ ...u, left: u.count, colorIdx: 0 }));
+        let left = remaining.reduce((s, u) => s + u.left, 0);
+        while (left > 0) {
+            for (const u of remaining) {
+                if (u.left > 0) {
+                    const color = u.colorIdx % 2 === 0
+                        ? getColorForUnitType(u.name)
+                        : darkenColor(getColorForUnitType(u.name));
+                    unitDeck.push({ type: u.name, color, targetArea: u.area, unitWidth: u.unitWidth });
+                    u.left--;
+                    u.colorIdx++;
+                    left--;
+                }
+            }
+        }
+
+        // Shuffle if requested
+        if (params.shuffleUnits) {
+            const buildingSeed = Math.floor(coreCenter[0] * 100000 + coreCenter[1] * 100000);
+            const seededRandom = (seed: number) => {
+                const x = Math.sin(seed++) * 10000;
+                return x - Math.floor(x);
+            };
+            let currentSeed = buildingSeed;
+            for (let i = unitDeck.length - 1; i > 0; i--) {
+                const j = Math.floor(seededRandom(currentSeed++) * (i + 1));
+                [unitDeck[i], unitDeck[j]] = [unitDeck[j], unitDeck[i]];
+            }
+        }
+
+        // Even split between strips (original behaviour)
+        const aSlots = Math.round(unitDeck.length * 0.5);
+        deckA = unitDeck.slice(0, aSlots);
+        deckB = unitDeck.slice(aSlots);
     }
     
-    // Split deck between strips proportionally to their available length
-    const aSlots = Math.round(unitDeck.length * 0.5); // Even split since both strips have same length
-    const deckA = unitDeck.slice(0, aSlots);
-    const deckB = unitDeck.slice(aSlots);
-    
-    // Create rectangular unit geometries by slicing the strip
     const createStripUnits = (
         strip: typeof stripA,
-        deck: typeof unitDeck,
+        deck: typeof deckA,
         unitStartIdx: number
     ): number => {
         if (deck.length === 0 || strip.depth < 1 || strip.length < 1) return unitStartIdx;
         
         // Compute total width needed by this deck
-        const totalDeckWidth = deck.reduce((s, u) => s + u.unitWidth, 0);
-        // Scale factor: stretch/compress to fill the strip exactly
-        const scaleFactor = strip.length / totalDeckWidth;
+        // For exact allocation, total width is the sum of exact widths needed on THIS specific strip
+        const exactDeckWidth = params.exactTypologyAllocation 
+            ? deck.reduce((s, u) => s + (u.targetArea / strip.depth), 0)
+            : deck.reduce((s, u) => s + u.unitWidth, 0);
+
+        // Scale factor: stretch/compress to fill the strip exactly (ONLY if not exact sizes)
+        const scaleFactor = params.exactTypologyAllocation ? 1 : (strip.length / exactDeckWidth);
         
         let currentPos = 0; // meters from start of strip
         
         for (let d = 0; d < deck.length; d++) {
             const assignment = deck[d];
-            const scaledWidth = assignment.unitWidth * scaleFactor; // adjusted to fill strip perfectly
-            const nextPos = (d === deck.length - 1) 
-                ? strip.length  // Last unit takes all remaining space (avoids rounding gaps)
-                : currentPos + scaledWidth;
+            // EXACT AREA FIX: calculate width specifically for THIS strip's depth to hit exact targetArea
+            const exactWidthForThisStrip = params.exactTypologyAllocation ? (assignment.targetArea / strip.depth) : assignment.unitWidth;
+            const scaledWidth = exactWidthForThisStrip * scaleFactor; // adjusted to fill strip perfectly, unless exactTypologyAllocation
+            
+            if (params.exactTypologyAllocation && currentPos + scaledWidth > strip.length * 1.05) {
+                // If we are in exact typology mode, do not place units that spill off the strip by more than 5%.
+                // Instead of breaking the whole strip, SKIP this unit and try the next (smaller) ones.
+                console.log(`[Layout Generator] Exact Typology: Skipped unit ${assignment.type} due to strip length constraints. Trying smaller units in remaining space.`);
+                continue;
+            }
+
+            // Since we might skip units, the "last unit" logic needs to just take exactly what it needs
+            // or stretch to the end IF it's the terminal unit and close enough
+            let nextPos = currentPos + scaledWidth;
+            if (d === deck.length - 1 && (!params.exactTypologyAllocation || (currentPos + scaledWidth > strip.length * 0.95))) {
+                nextPos = strip.length; // Snap to end if it's the final unit and fits within tolerance
+            }
+            if (params.exactTypologyAllocation) {
+                 nextPos = Math.min(nextPos, strip.length); // Never legally exceed the strip
+            }
             
             // Create rectangle in geographic coordinates
             let unitRect: Feature<Polygon>;
@@ -1075,8 +1238,16 @@ export function generateBuildingLayout(
             
             currentPos = nextPos;
         }
+
+        // ----------------------------------------------------
+        // NO GAP FILLING FOR EXACT TYPOLOGY
+        // ----------------------------------------------------
+        // Because unitCounts is now strictly bound by the mathematical leasable area 
+        // earlier in the algorithm, we do not want to dynamically construct extra 
+        // units that mathematically exceed the available bounds. 
+        // Any physical gaps left at the end of a strip are realistic structural voids.
         
-        return unitStartIdx + deck.length;
+        return unitStartIdx + deck.length + (params.exactTypologyAllocation ? 999 : 0); // Next index offset safely (rough estimate to avoid clashes)
     };
     
     const nextIdx = createStripUnits(stripA, deckA, 0);
@@ -1319,110 +1490,97 @@ export function generateSiteUtilities(
 
     if (totalUnits === 0) totalUnits = 50; // Safety baseline
 
-    // Assumptions
-    const avgPersonsPerUnit = 4; // Standard assumption
-    const population = totalUnits * avgPersonsPerUnit;
-    const waterDemandPerPerson = 135; // LPCD
+    // Assumptions — aligned with building-calc.tsx (NBC/IS Standards)
+    const avgPersonsPerUnit = 3.5; // building-calc.tsx uses avgOccupancy = 3.5
+    const population = Math.round(totalUnits * avgPersonsPerUnit);
+    const waterDemandPerPerson = 135; // LPCD (IS 1172)
+    const sewageDemandPerPerson = 120; // LPCD
     const totalWaterDemand = population * waterDemandPerPerson; // Liters/Day
 
-    // --- 2. SIZING UTILITIES ---
+    // --- 2. SIZING UTILITIES (formulas from building-calc.tsx) ---
 
-    // STP (Sewage Treatment Plant)
-    // Formula: Capacity = Population * 120 LPCD * 1.2
-    const stpCapacityKLD = (population * 120 * 1.2) / 1000;
-    // Area conversion: Roughly 1.2 sqm per KLD as per reference doc
-    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 1.2)); 
+    // STP (Sewage Treatment Plant) — building-calc: stpCapacity * 8 m²/KLD
+    const stpCapacityKLD = (population * sewageDemandPerPerson * 1.2) / 1000;
+    const stpArea = Math.max(15, Math.ceil(stpCapacityKLD * 8)); // 8 m²/KLD (Extended Aeration)
 
-    // UGT (Underground Water Tank)
-    // Formula: Capacity = Population * 135 LPCD * 1.0 (Full Day Storage)
-    const ugtVolume = (population * 135 * 1.0) / 1000; // m3
-    // Assume 3.5m effective depth for large underground tanks to save surface footprint
-    const ugtArea = Math.max(20, Math.ceil(ugtVolume / 3.5)); 
+    // WTP (Water Treatment Plant) — building-calc: wtpCapacity * 6 m²/KLD
+    const wtpCapacityKLD = (population * waterDemandPerPerson * 1.2) / 1000;
+    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 6)); // 6 m²/KLD
 
-    // WTP (Water Treatment Plant)
-    // Capacity = Pop * 135 * 1.2
-    const wtpCapacityKLD = (population * 135 * 1.2) / 1000;
-    // WTPs are generally more compact than STPs, but 0.45 was too low. Using 2.0 sqm/KLD.
-    const wtpArea = Math.max(10, Math.ceil(wtpCapacityKLD * 2.0));
+    // UGT (Underground Water Tank) — building-calc: capacity * 0.4 (depth 2.5m)
+    const ugtVolume = (population * waterDemandPerPerson) / 1000; // m³ (full day storage)
+    const ugtArea = Math.max(20, Math.ceil(ugtVolume * 0.4)); // depth 2.5m → multiply by 0.4
 
-    // OWC (Organic Waste Converter)
-    // Formula: Capacity = Population * 0.3 kg/day (Updated from per-unit to per-person)
-    const owcCapacityKg = population * 0.3;
-    const owcArea = Math.max(8, Math.ceil(owcCapacityKg / 30));
+    // OWC (Organic Waste Converter) — building-calc: capacity * 0.5 + 10
+    const owcCapacityKg = population * 0.3; // kg/day
+    const owcArea = Math.max(8, Math.ceil(owcCapacityKg * 0.5 + 10)); // 0.5 m²/kg + 10m² buffer
 
-    // DG Set (Diesel Generator)
-    // Formula: KVA = (Essential Load * 0.8) / (0.9 * 0.8)
-    // Essential Load = 3kW * No of units
-    // Space: 0.8-1.2 sqm per kVA (From Methodology)
-    const essentialLoad = 3 * totalUnits;
-    const dgKVA = (essentialLoad * 0.8) / (0.9 * 0.8);
-    // Use 1.0 sqm per kVA as strictly requested by the rule document
-    const dgArea = Math.max(15, Math.min(250, Math.ceil(dgKVA * 1.0)));
+    // DG Set (Diesel Generator) — building-calc: (pop*0.8*0.7*0.4*1.25)/500 * 25
+    const totalLoadKW = population * 0.8 * 0.7; // 0.8kW/person, 0.7 diversity factor
+    const essentialLoad = totalLoadKW * 0.4; // 40% essential
+    const dgKVA = essentialLoad * 1.25; // 25% margin
+    const dgArea = Math.max(15, Math.ceil((dgKVA / 500) * 25)); // 25 m² per 500 kVA set
 
-    // Transformer / HT Yard
-    // Space: 500 kVA -> 25–35 sqm (~0.06 sqm/kVA)
-    const transformerArea = Math.max(25, Math.min(150, Math.ceil(dgKVA * 0.06)));
+    // Electrical Substation — building-calc: 40 + (units/100) * 15
+    const substationArea = Math.max(25, Math.ceil(40 + (totalUnits / 100) * 15));
+
+    // Transformer Yard — building-calc: 20 + (units/100) * 8
+    const transformerArea = Math.max(20, Math.ceil(20 + (totalUnits / 100) * 8));
 
     // Gas Bank (LPG Manifold)
-    // Space: 15–40 sqm
     const gasArea = Math.max(15, Math.min(40, Math.ceil(population * 0.02)));
 
-    // Fire Pump Room & Tank
-    // Tank = High rise -> 200KL -> 200/3.5 = 57sqm.
-    // Pump Room = Basement/Ground
-    const fireTankVolume = 200; // 200KL standard for high rise
-    const fireTankArea = Math.ceil(fireTankVolume / 3.5); // 3.5m depth
+    // Fire Pump Room & Tank — building-calc: hydrantCount * 40, depth 3m
+    const avgFloors = buildings.length > 0 
+        ? Math.round(buildings.reduce((s: number, b: any) => s + (b.numFloors || 1), 0) / buildings.length)
+        : 5;
+    const hydrantCount = Math.ceil(avgFloors / 5) * 2;
+    const fireTankVolume = Math.max(hydrantCount * 40, (300 * 5) / 1000 * 1000 / 60) * 30 / 1000; // 30min storage
+    const fireTankArea = Math.max(20, Math.ceil(fireTankVolume / 3.0)); // 3.0m depth (building-calc uses 0.35 factor ≈ 1/3m)
     const firePumpRoomArea = 30;
 
     // Admin / Security Office (SW)
     const adminBlockArea = Math.max(20, Math.ceil(population * 0.01));
 
-    // Solar PV (Roof/Ground) - For Info/Capacity mainly
-    const solarCapacityKW = population * 0.8 * 0.7 * 0.25;
+    // Solar PV (Roof/Ground)
+    const solarCapacityKW = totalLoadKW * 0.25; // 25% of peak load
     const solarAreaReq = solarCapacityKW * 10; // 10 sqm/kW
 
-    // Rainwater Harvesting (RWH)
-    // Formula: Harvest = Roof Area * Rainfall (e.g., 0.8m) * Runoff(0.85)
-    // Storage = min(Harvest * 0.15, Pop * 30 * 30) (in Liters)
+    // Rainwater Harvesting (RWH) — building-calc: roofArea * (1200/1000) * 0.85, depth 2.5m
     let roofAreaSum = 0;
     buildings.forEach(b => {
         try {
             if (b.area && b.area > 0) {
-                // Plain Building object from store — use the actual computed area
                 roofAreaSum += b.area;
             } else if (b.properties?.area && b.properties.area > 0) {
-                // GeoJSON Feature with area in properties
                 roofAreaSum += b.properties.area;
             } else {
-                // Last resort: compute from geometry
                 roofAreaSum += turf.area(b.geometry || b);
             }
         } catch (e) {}
     });
-    const annualHarvestVol = roofAreaSum * 0.8 * 0.85; // m3
-    // Storage needed is 15% of annual harvest or 30 days of 30 LPCD
-    const maxStorageVol = (population * 30 * 30) / 1000; // m3
+    const annualRainfall = 1200; // mm (building-calc default)
+    const annualHarvestVol = roofAreaSum * (annualRainfall / 1000) * 0.85; // m³
+    const maxStorageVol = (population * 30 * 30) / 1000; // m³ (30L/person for 30 days)
     const rwhVolume = Math.min(annualHarvestVol * 0.15, maxStorageVol);
-    // Area mapped to 2.5m depth
-    const rwhArea = Math.max(15, Math.ceil(rwhVolume / 2.5));
+    const rwhArea = Math.max(15, Math.ceil(rwhVolume * 0.4)); // depth 2.5m → 1/2.5 = 0.4
 
     // EV Charging
-    // Points = Units * 1.5 * 0.2 (30% of parking slots)
     const evPoints = Math.ceil(totalUnits * 1.5 * 0.2); 
 
-    // console.groupCollapsed(`[Utility Math] Calculation Audit for Pop: ${population}`);
-    console.log(`Units: ${totalUnits}, Pop: ${population}`);
-    console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@1.2 sqm/KLD)`);
-    console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@2.0 sqm/KLD)`);
-    console.log(`UGT (Water) -> Vol: ${ugtVolume.toFixed(1)} m3 | Area: ${ugtArea} sqm (3.5m depth)`);
-    console.log(`RWH -> Roof Area: ${roofAreaSum.toFixed(1)} sqm | Annual Harvest: ${annualHarvestVol.toFixed(1)} m3 | Storage Vol: ${rwhVolume.toFixed(1)} m3 | Area: ${rwhArea} sqm (2.5m depth)`);
-    console.log(`Electrical -> Essential Load: ${essentialLoad} kW | DG kVA: ${dgKVA.toFixed(1)}`);
-    console.log(`DG Set Area -> ${dgArea} sqm (@1.0 sqm/kVA, max 250)`);
-    console.log(`Transformer Area -> ${transformerArea} sqm (@0.06 sqm/kVA, max 150)`);
-    console.log(`Fire Tank -> Vol: ${fireTankVolume} m3 | Area: ${fireTankArea} sqm (3.5m depth)`);
-    console.log(`Gas Area -> ${gasArea} sqm | Admin Area -> ${adminBlockArea} sqm | OWC Area -> ${owcArea} sqm`);
-    console.log(`Solar PV -> ${solarCapacityKW.toFixed(1)} kW req = ${solarAreaReq.toFixed(1)} sqm`);
-    console.log(`EV Points -> ${evPoints} points`);
+    console.log(`[Utility Sizing - NBC/IS Standards]`);
+    console.log(`Units: ${totalUnits}, Pop: ${population} (${avgPersonsPerUnit}/unit)`);
+    console.log(`STP -> Cap: ${stpCapacityKLD.toFixed(1)} KLD | Area: ${stpArea} sqm (@8 m²/KLD)`);
+    console.log(`WTP -> Cap: ${wtpCapacityKLD.toFixed(1)} KLD | Area: ${wtpArea} sqm (@6 m²/KLD)`);
+    console.log(`UGT (Water) -> Vol: ${ugtVolume.toFixed(1)} m³ | Area: ${ugtArea} sqm (2.5m depth)`);
+    console.log(`RWH -> Roof: ${roofAreaSum.toFixed(1)} m² | Harvest: ${annualHarvestVol.toFixed(1)} m³ | Storage: ${rwhVolume.toFixed(1)} m³ | Area: ${rwhArea} sqm (2.5m depth)`);
+    console.log(`Electrical -> Peak: ${totalLoadKW.toFixed(0)} kW | Essential: ${essentialLoad.toFixed(0)} kW | DG: ${dgKVA.toFixed(0)} kVA`);
+    console.log(`DG Set Area -> ${dgArea} sqm (25m²/500kVA)`);
+    console.log(`Substation -> ${substationArea} sqm | Transformer -> ${transformerArea} sqm`);
+    console.log(`Fire Tank -> Vol: ${fireTankVolume.toFixed(0)} m³ | Area: ${fireTankArea} sqm (3.0m depth)`);
+    console.log(`Gas: ${gasArea} sqm | Admin: ${adminBlockArea} sqm | OWC: ${owcArea} sqm`);
+    console.log(`Solar PV -> ${solarCapacityKW.toFixed(1)} kW = ${solarAreaReq.toFixed(1)} sqm`);
+    console.log(`EV Points -> ${evPoints}`);
     console.groupEnd();
 
     // --- 3. GROUPING & PLACEMENT ZONES ---
@@ -1442,7 +1600,7 @@ export function generateSiteUtilities(
     if (shouldInclude(UtilityType.RainwaterHarvesting)) groupNE.push({ type: UtilityType.RainwaterHarvesting, name: 'RWH Tank', area: rwhArea, color: '#81D4FA', height: 2.5, level: -1 });
 
     // SE: Fire / Electrical (Vastu: Agni)
-    if (shouldInclude(UtilityType.Electrical)) groupSE.push({ type: UtilityType.Electrical, name: 'Transformer Yard', area: transformerArea, color: '#FF9800', height: 2.5, level: 0 });
+    if (shouldInclude(UtilityType.Electrical)) groupSE.push({ type: UtilityType.Electrical, name: 'Substation/Transf.', area: transformerArea + substationArea, color: '#FF9800', height: 2.5, level: 0 });
     if (shouldInclude(UtilityType.DGSet)) groupSE.push({ type: UtilityType.DGSet, name: 'DG Set', area: dgArea, color: '#FFB74D', height: 2.5, level: 0 });
     if (shouldInclude(UtilityType.Gas)) groupSE.push({ type: UtilityType.Gas, name: 'Gas Bank', area: gasArea, color: '#F48FB1', height: 2, level: 0 });
     // Fire Pump Room usually near clusters, SE is good or near entry

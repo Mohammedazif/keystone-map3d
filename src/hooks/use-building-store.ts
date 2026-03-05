@@ -61,6 +61,7 @@ interface BuildingState {
     activeBhuvanOpacity: number;
     bhuvanData: any | null;
     isFetchingBhuvan: boolean;
+    districtNameHint?: string;
     isLoading: boolean;
     active: boolean;
     isSaving: boolean;
@@ -135,6 +136,7 @@ interface BuildingState {
         setActiveBhuvanLayer: (layerId: string | null) => void;
         setBhuvanOpacity: (opacity: number) => void;
         setBhuvanData: (data: any | null, isFetching?: boolean) => void;
+        setDistrictNameHint: (hint: string | undefined) => void;
         moveObject: (plotId: string, objectId: string, objectType: SelectableObjectType, deltaLng: number, deltaLat: number) => void;
         recalculateGreenAreas: (plotId: string) => void;
         recalculateParkingAreas: (plotId: string) => void;
@@ -1251,10 +1253,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 } = complianceOutput;
 
                 // Use user overrides if provided, otherwise use site utilization (userMaxCoverage)
-                // Coverage is relative to BUILDABLE area (validAreaPoly, after roads/parking/green subtracted)
-                // so that 40% visually means 40% of the visible buildable area, not 40% of the total plot
+                // Coverage is strictly relative to TOTAL plot area per standard real estate regulations
+                // e.g. 40% ground coverage on a 10,000sqm plot = 4,000sqm max footprint
                 const buildableArea = turf.area(validAreaPoly);
-                const effectiveMaxFootprint = params.maxFootprint ?? (buildableArea * userMaxCoverage / 100);
+                const effectiveMaxFootprint = params.maxFootprint ?? (plotArea * userMaxCoverage / 100);
                 const effectiveMinFootprint = params.minFootprint ?? 100;
                 const effectiveMaxFloors = params.maxFloors ?? regulationMaxFloors;
                 const effectiveMaxFAR = params.maxAllowedFAR ?? (currentRegulation.geometry.floor_area_ratio?.value || 2.0);
@@ -1262,7 +1264,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 console.log(`[Compliance] Plot Area: ${plotArea.toFixed(0)}m², Buildable Area: ${buildableArea.toFixed(0)}m² (${(buildableArea/plotArea*100).toFixed(0)}% of plot)`);
                 console.log(`[Compliance] Regulation Defaults: MaxFootprint=${regulationMaxFootprint.toFixed(0)}m², MaxFloors=${regulationMaxFloors}, MaxGFA=${maxGFA.toFixed(0)}m²`);
-                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m² (buildable=${buildableArea.toFixed(0)} × coverage=${userMaxCoverage}%), MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}, MaxGFA=${effectiveMaxGFA.toFixed(0)}m²`);
+                console.log(`[Compliance] Effective Values: MaxFootprint=${effectiveMaxFootprint.toFixed(0)}m² (plotArea=${plotArea.toFixed(0)} × coverage=${userMaxCoverage}%), MinFootprint=${effectiveMinFootprint}m², MaxFloors=${effectiveMaxFloors}, MaxGFA=${effectiveMaxGFA.toFixed(0)}m²`);
 
                 if (params.maxFootprint) {
                     console.warn(`[Override] User set maxFootprint to ${params.maxFootprint}m² (regulation: ${regulationMaxFootprint.toFixed(0)}m²)`);
@@ -1314,7 +1316,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                 console.log(`[Chunking] Plot split into ${validChunks.length} chunks`);
 
+                let primaryCoverageMet = false;
+
                 sortedTypologies.forEach((typology: string, index: number) => {
+                    if (primaryCoverageMet) return;
                     // small plot check (warn/skip if too small)
 
                     // Dynamic Target Assignment
@@ -1365,6 +1370,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                     // Iterate over ALL chunks for this typology
                     for (const chunk of validChunks) {
+                        if (primaryCoverageMet) break;
                         let chunkGenerated: Feature<Polygon>[] = [];
 
                         // --- LARGE-FOOTPRINT MODE for Commercial / Institutional / Industrial ---
@@ -1515,27 +1521,26 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
                         // Handle segments and collisions
                         const isLargeFootprint = ['commercial', 'institutional', 'industrial'].includes(effectiveLandUse);
-                        if (isLargeFootprint) {
-                            // Large-footprint buildings are already clipped to valid area — skip collision check
-                            // (boundary overlap with peripheral zones causes false positives)
-                            chunkGenerated.forEach(g => {
+                        
+                        for (const g of chunkGenerated) {
+                            if (primaryCoverageMet) break;
+                            
+                            const currentFp = geomFeatures.reduce((sum, f) => sum + turf.area(f), 0);
+                            if (currentFp + turf.area(g) > effectiveMaxFootprint) {
+                                console.log(`[Primary Generation] Coverage limit reached (${currentFp.toFixed(0)}m²). Stopping primary buildings.`);
+                                primaryCoverageMet = true;
+                                break;
+                            }
+                            
+                            if (isLargeFootprint) {
                                 builtObstacles.push(g);
                                 geomFeatures.push(g);
-                            });
-                        } else if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(typology)) {
-                            chunkGenerated.forEach(segment => {
-                                if (!checkCollision(segment, builtObstacles)) {
-                                    builtObstacles.push(segment);
-                                    geomFeatures.push(segment);
-                                }
-                            });
-                        } else {
-                            chunkGenerated.forEach(g => {
+                            } else {
                                 if (!checkCollision(g, builtObstacles)) {
                                     builtObstacles.push(g);
                                     geomFeatures.push(g);
                                 }
-                            });
+                            }
                         }
                     }
                 });
@@ -1565,6 +1570,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const gfaMet = fp * userMaxFloors >= gfaTarget;
                         const coverageMet = fp >= coverageLimitArea;
                         return { stop: gfaMet || coverageMet, fp, reason: gfaMet ? 'GFA' : coverageMet ? 'coverage' : 'none' };
+                    };
+
+                    // Pre-check: would adding this specific candidate exceed the coverage limit?
+                    const wouldExceedCoverage = (candidate: Feature<Polygon>) => {
+                        const fp = geomFeatures.reduce((sum, f) => sum + turf.area(f), 0);
+                        return (fp + turf.area(candidate)) > coverageLimitArea;
                     };
 
                     if (maxPrimaryGFA >= gfaTarget) {
@@ -1745,8 +1756,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     ringGFAMet = true;
                                     break;
                                 }
-                                // Check collision ONLY against buildings
-                                if (!checkCollision(candidate, infillObstacles)) {
+                                // Check collision ONLY against buildings, and ensure adding won't exceed coverage
+                                if (!wouldExceedCoverage(candidate) && !checkCollision(candidate, infillObstacles)) {
                                     infillObstacles.push(candidate);
                                     builtObstacles.push(candidate);
                                     geomFeatures.push(candidate);
@@ -1771,7 +1782,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     const runGridInfill = () => {
                         const gridWidthM = p.minBuildingWidth ?? 20;
                         const gridLengthM = p.minBuildingLength ?? 25;
-                        const gridSideGapM = Math.max(p.sideSetback ?? 3, 2);
+                        // Use the main setback parameter from the toolbar for grid spacing, falling back to sideSetback
+                        const gridSideGapM = Math.max(p.setback ?? p.sideSetback ?? 6, 2);
                         const gridStepXM = gridWidthM + gridSideGapM;
                         const gridStepYM = gridLengthM + gridSideGapM;
                         const gridBbox = turf.bbox(validAreaPoly);
@@ -1792,6 +1804,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         let gridOutside = 0;
 
                         for (let x = gridBbox[0] + halfWidthDeg; x < gridBbox[2]; x += gridStepXDeg) {
+                            if (shouldStopInfill().stop) break;
                             for (let y = gridBbox[1] + halfLengthDeg; y < gridBbox[3]; y += gridStepYDeg) {
                                 if (shouldStopInfill().stop) break;
 
@@ -1812,16 +1825,46 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 // @ts-ignore
                                 const clipped = turf.intersect(poly, validAreaPoly);
                                 const fullArea = gridWidthM * gridLengthM;
-                                if (!clipped || turf.area(clipped) < fullArea * 0.60) {
+                                
+                                if (!clipped) {
                                     gridOutside++;
                                     continue;
                                 }
 
-                                const useClipped = turf.area(clipped) < fullArea * 0.95;
-                                const candidate = (useClipped ? clipped : poly) as Feature<Polygon>;
-                                candidate.properties = { typology: 'slab', isGridInfill: true };
+                                // Handle case where intersection returns MultiPolygon or GeometryCollection
+                                let bestPoly: Feature<Polygon> | null = null;
+                                // @ts-ignore
+                                if (clipped.geometry.type === 'Polygon') {
+                                    bestPoly = clipped as Feature<Polygon>;
+                                } else if (clipped.geometry.type === 'MultiPolygon' || clipped.geometry.type === 'GeometryCollection') {
+                                    // Extract largest polygon
+                                    // @ts-ignore
+                                    const parts = turf.flatten(clipped);
+                                    let maxAreaPart = 0;
+                                    for (const part of parts.features) {
+                                        if (part.geometry.type === 'Polygon') {
+                                            const a = turf.area(part);
+                                            if (a > maxAreaPart) {
+                                                maxAreaPart = a;
+                                                bestPoly = part as Feature<Polygon>;
+                                            }
+                                        }
+                                    }
+                                }
 
-                                if (!checkCollision(candidate, infillObstacles)) {
+                                if (!bestPoly || turf.area(bestPoly) < fullArea * 0.60) {
+                                    gridOutside++;
+                                    continue;
+                                }
+
+                                // Clean coordinates to prevent polygon-clipping errors downstream
+                                bestPoly = turf.cleanCoords(bestPoly);
+
+                                const useClipped = turf.area(bestPoly) < fullArea * 0.95;
+                                const candidate = (useClipped ? bestPoly : poly) as Feature<Polygon>;
+                                candidate.properties = { typology: 'slab', subtype: 'slab', type: 'generated', isGridInfill: true };
+
+                                if (!wouldExceedCoverage(candidate) && !checkCollision(candidate, infillObstacles)) {
                                     infillObstacles.push(candidate);
                                     builtObstacles.push(candidate);
                                     geomFeatures.push(candidate);
@@ -1840,6 +1883,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             console.log(`[GFA Grid] Still short. Trying offset grid...`);
                             let rotAdded = 0;
                             for (let x = gridBbox[0] + halfWidthDeg + gridStepXDeg / 2; x < gridBbox[2]; x += gridStepXDeg) {
+                                if (shouldStopInfill().stop) break;
                                 for (let y = gridBbox[1] + halfLengthDeg + gridStepYDeg / 2; y < gridBbox[3]; y += gridStepYDeg) {
                                     if (shouldStopInfill().stop) break;
 
@@ -1857,13 +1901,37 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                     // @ts-ignore
                                     const clipped2 = turf.intersect(poly2, validAreaPoly);
                                     const fullArea2 = gridWidthM * gridLengthM;
-                                    if (!clipped2 || turf.area(clipped2) < fullArea2 * 0.50) continue;
+                                    
+                                    if (!clipped2) continue;
 
-                                    const useClip2 = turf.area(clipped2) < fullArea2 * 0.95;
-                                    const cand2 = (useClip2 ? clipped2 : poly2) as Feature<Polygon>;
-                                    cand2.properties = { typology: 'slab', isGridInfill: true };
+                                    let bestPoly2: Feature<Polygon> | null = null;
+                                    // @ts-ignore
+                                    if (clipped2.geometry.type === 'Polygon') {
+                                        bestPoly2 = clipped2 as Feature<Polygon>;
+                                    } else if (clipped2.geometry.type === 'MultiPolygon' || clipped2.geometry.type === 'GeometryCollection') {
+                                        // @ts-ignore
+                                        const parts = turf.flatten(clipped2);
+                                        let maxAreaPart = 0;
+                                        for (const part of parts.features) {
+                                            if (part.geometry.type === 'Polygon') {
+                                                const a = turf.area(part);
+                                                if (a > maxAreaPart) {
+                                                    maxAreaPart = a;
+                                                    bestPoly2 = part as Feature<Polygon>;
+                                                }
+                                            }
+                                        }
+                                    }
 
-                                    if (!checkCollision(cand2, infillObstacles)) {
+                                    if (!bestPoly2 || turf.area(bestPoly2) < fullArea2 * 0.50) continue;
+
+                                    bestPoly2 = turf.cleanCoords(bestPoly2);
+
+                                    const useClip2 = turf.area(bestPoly2) < fullArea2 * 0.95;
+                                    const cand2 = (useClip2 ? bestPoly2 : poly2) as Feature<Polygon>;
+                                    cand2.properties = { typology: 'slab', subtype: 'slab', type: 'generated', isGridInfill: true };
+
+                                    if (!wouldExceedCoverage(cand2) && !checkCollision(cand2, infillObstacles)) {
                                         infillObstacles.push(cand2);
                                         builtObstacles.push(cand2);
                                         geomFeatures.push(cand2);
@@ -2174,6 +2242,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         // are generated axis-aligned and then rotated back to match the building
                         alignmentRotation: alignRot,
                         shuffleUnits: params.shuffleUnits,
+                        exactTypologyAllocation: params.exactTypologyAllocation,
                         selectedUtilities: params.selectedUtilities || activeProject?.feasibilityParams?.selectedUtilities
                     });
                     const layout: any = {
@@ -2288,7 +2357,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             numFloors: tFloors,
                             alignmentRotation: towerAlignRotForLayout,
                             shuffleUnits: params.shuffleUnits,
-                            buildingId: `${id}-tower`
+                            exactTypologyAllocation: params.exactTypologyAllocation,
+                            buildingId: `${id}-tower`,
+                            selectedUtilities: params.selectedUtilities || activeProject?.feasibilityParams?.selectedUtilities
                         });
 
                         // Multiply units across floors — only on Residential floors for floor-wise mixed use
@@ -2553,8 +2624,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 level: 0,
                                 parkingCapacity: capacityPerFloor
                             });
-                            // Increase total height to account for stilt lifting the tower
-                            b.height += 3.5;
+                            // Height recalculation: Stilt is parking, so it shouldn't add to the occupiable height
+                            // But stilt physically lifts the building. However, user wants "4 floors" to mean "14m" 
+                            // of occupiable space. If they want total structural height, we should add it.
+                            // To match the previous fix where `building.height` = occupiable height, we won't add it.
+                            // If they want structural height, we would do:
+                            // b.height = b.floors.filter(f => f.level !== undefined && f.level >= 0).reduce((sum, f) => sum + (f.height || 0), 0);
                         }
                     });
                 }
@@ -3090,6 +3165,15 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 } catch (error) {
                     console.error('[Green Area] Failed to generate automatic green areas:', error);
                 }
+
+                // --- FINAL HEIGHT NORMALIZATION ---
+                // Ensure building.height strictly represents the occupiable above-ground floors
+                // This strips out any height falsely added by utilities, basements, or stilts during generation
+                plotClone.buildings.forEach((b: Building) => {
+                    b.height = b.floors
+                        .filter((f: any) => (f.type !== 'Parking' && f.type !== 'Utility') || (f.level !== undefined && f.level >= 0 && f.type !== 'Utility'))
+                        .reduce((sum: number, f: any) => sum + (f.height || 0), 0);
+                });
 
                 return { plots: [plotClone] };
             };
@@ -4038,7 +4122,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             }
 
                             building.floors = [...specialFloors, ...newFloors];
-                            building.height = building.floors.reduce((sum, f) => sum + (f.height || 0), 0);
+                            // Height = only ABOVE-GROUND occupiable floors (exclude basements, utility rooftops, etc)
+                            building.height = building.floors
+                                .filter(f => (f.type !== 'Parking' && f.type !== 'Utility') || (f.level !== undefined && f.level >= 0 && f.type !== 'Utility'))
+                                .reduce((sum, f) => sum + (f.height || 0), 0);
                             console.log(`[DEBUG] updateBuilding: Regenerated floors for ${building.id}. Total floors: ${building.floors.length}. newNumFloors: ${newNumFloors}. newFloors length: ${newFloors.length}`);
 
 
@@ -4083,6 +4170,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                             floorHeight: newTypicalHeight,
                                             // Pass the stored alignmentRotation so the grid is axis-aligned
                                             alignmentRotation: (building.geometry as any)?.properties?.alignmentRotation ?? 0,
+                                            selectedUtilities: get().projects.find(p => p.id === get().activeProjectId)?.feasibilityParams?.selectedUtilities
                                         }
                                     );
                                     if (freshLayout.cores && freshLayout.cores.length > 0) {
@@ -4199,6 +4287,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         // Visual renderer sorts by level or handles it. 
                         // Basements usually push to end of array in generation, but here we can just push.
                         building.floors.push(newFloor);
+                        
+                        // Recalculate building height (above ground occupiable only)
+                        building.height = building.floors
+                            .filter(f => (f.type !== 'Parking' && f.type !== 'Utility') || (f.level !== undefined && f.level >= 0 && f.type !== 'Utility'))
+                            .reduce((sum, f) => sum + (f.height || 0), 0);
                         break;
                     }
                 }
@@ -5260,6 +5353,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             set({ activeBhuvanOpacity: opacity });
         },
 
+        setDistrictNameHint: (hint: string | undefined) => {
+            set({ districtNameHint: hint });
+        },
+
         setBhuvanData: (data: any | null, isFetching: boolean = false) => {
             set({ bhuvanData: data, isFetchingBhuvan: isFetching });
         },
@@ -5628,6 +5725,13 @@ const useProjectData = () => {
     const { projects, activeProjectId, plots } = useBuildingStore();
     const selectedPlot = useSelectedPlot();
 
+    const depsStr = useMemo(() => {
+        const project = projects.find(p => p.id === activeProjectId);
+        if (!project) return 'no-project';
+        const plotsStr = plots.map(p => `${p.id}-${p.area}-${p.buildings.map(b => `${b.id}-${b.area}-${b.numFloors}`).join('_')}`).join('|');
+        return `${project.id}-${project.totalPlotArea}-${plotsStr}-${selectedPlot?.id}`;
+    }, [projects, activeProjectId, plots, selectedPlot]);
+
     return useMemo(() => {
         const project = projects.find(p => p.id === activeProjectId);
 
@@ -5681,7 +5785,8 @@ const useProjectData = () => {
             consumedPlotArea,
             totalPlotArea: project.totalPlotArea ?? consumedPlotArea,
         };
-    }, [projects, activeProjectId, plots, selectedPlot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [depsStr]);
 }
 
 export { useBuildingStore, useSelectedBuilding, useProjectData, useSelectedPlot };

@@ -243,6 +243,7 @@ export interface FeasibilityParams {
   unitMix: UnitTypology[];
   efficiencyTarget: number; // e.g., 0.70
   selectedUtilities?: string[]; // Optional list of enabled utilities
+  exactTypologyAllocation?: boolean; // Force grid allocation based strictly on theoretical unit mix
 }
 
 export interface DevelopmentStats {
@@ -383,7 +384,18 @@ export interface AdvancedKPIs {
     bylaws: number;
     green: number;
     vastu: number;
+    // Per-item breakdowns for dashboard display
+    bylawItems: ComplianceItem[];
+    greenItems: ComplianceItem[];
+    vastuItems: ComplianceItem[];
   };
+}
+
+export interface ComplianceItem {
+  label: string;
+  status: 'pass' | 'fail' | 'warn' | 'na';
+  detail?: string; // e.g. "4.12 / 2.0"
+  weight: number;  // 0-100 contribution to the category score
 }
 
 
@@ -533,12 +545,35 @@ export interface CostRevenueParameters {
   location: string; // "Delhi", "Mumbai", etc.
   building_type: 'Residential' | 'Commercial' | 'Mixed Use' | 'Industrial' | 'Public';
 
-  // Cost Parameters (per sqm in local currency)
+  // Cost Parameters (per sqm in local currency) — mid/mode values
   earthwork_cost_per_sqm: number;
   structure_cost_per_sqm: number;
   finishing_cost_per_sqm: number;
   services_cost_per_sqm: number; // MEP
   total_cost_per_sqm: number; // Calculated field
+
+  // Range fields for Monte Carlo simulation (min/max)
+  earthwork_cost_per_sqm_min?: number;
+  earthwork_cost_per_sqm_max?: number;
+  structure_cost_per_sqm_min?: number;
+  structure_cost_per_sqm_max?: number;
+  finishing_cost_per_sqm_min?: number;
+  finishing_cost_per_sqm_max?: number;
+  services_cost_per_sqm_min?: number;
+  services_cost_per_sqm_max?: number;
+
+  // Utility Costs (absolute or per-unit)
+  utility_costs?: {
+    ugt_pumping?: number;       // ₹ crore (Underground tank + pumping)
+    stp_per_kld?: number;       // ₹ per KLD (Sewage Treatment Plant)
+    wtp_cost?: number;          // ₹ lakh (Water Treatment Plant)
+    transformer_per_kva?: number; // ₹ per kVA
+    dg_per_kva?: number;        // ₹ per kVA (Diesel Generator)
+    fire_fighting?: number;     // ₹ crore
+    lifts_per_unit?: number;    // ₹ crore per lift
+    solar_per_kw?: number;      // ₹ per kW
+    hvac_per_tr?: number;       // ₹ per TR (Ton of Refrigeration)
+  };
 
   // Revenue Parameters
   market_rate_per_sqm: number; // Selling price per sqm
@@ -556,13 +591,32 @@ export interface TimeEstimationParameter {
   building_type: 'Residential' | 'Commercial' | 'Mixed Use' | 'Industrial' | 'Public';
   height_category: 'Low-Rise (<15m)' | 'Mid-Rise (15-45m)' | 'High-Rise (>45m)';
 
-  // Durations (in months unless specified)
+  // Durations (in months unless specified) — mid/mode values
   excavation_timeline_months: number;
   foundation_timeline_months: number;
   structure_per_floor_days: number;
   finishing_per_floor_days: number;
   services_overlap_factor: number; // 0.0 - 1.0 (overlap with structure)
   contingency_buffer_months: number;
+
+  // Range fields for Monte Carlo simulation (min/max)
+  excavation_timeline_months_min?: number;
+  excavation_timeline_months_max?: number;
+  foundation_timeline_months_min?: number;
+  foundation_timeline_months_max?: number;
+  structure_per_floor_days_min?: number;
+  structure_per_floor_days_max?: number;
+  finishing_per_floor_days_min?: number;
+  finishing_per_floor_days_max?: number;
+
+  // Delay factors (percentage of productivity loss)
+  delay_factors?: {
+    monsoon_pct: number;   // 25-40%
+    summer_pct: number;    // 10-20%
+    festival_pct: number;  // 10-15%
+    winter_pct: number;    // 5-15%
+    rework_pct: number;    // 10-20%
+  };
 
   last_updated: string;
 }
@@ -587,6 +641,151 @@ export interface PlanningParameter {
 
   description?: string;
   last_updated: string;
+}
+
+// Simulation histogram bin
+export interface SimBin {
+  x: number;     // bin center value
+  count: number; // frequency
+}
+
+// Sensitivity variable for tornado chart
+export interface SensitivityVar {
+  label: string;
+  low: number;   // impact when variable at min
+  high: number;  // impact when variable at max
+  range: number; // high - low
+}
+
+// Phase breakdown for multi-phase project division
+export interface ProjectPhase {
+  name: string;
+  activities: string[];
+  durationMonths: number;
+  costShare: number;
+  costAmount: number;
+  costAmountMin: number;
+  costAmountMax: number;
+}
+
+// ─── STANDARD AREA-BASED TIME ───────────────────────────────────────────────
+export interface StandardTimePhase {
+  name: string;
+  durationDays: number;
+  durationMonths: number;
+}
+
+export interface BuildingStandardTime {
+  buildingId: string;
+  buildingName: string;
+  totalDurationDays: number;
+  totalDurationMonths: number;
+  offsetMonths?: number; // Added to support staggered start visualization
+  phases: StandardTimePhase[];
+}
+
+export interface StandardTimeEstimation {
+  buildings: BuildingStandardTime[];
+  totalProjectDurationDays: number; // Based on staggering or critical path
+  totalProjectDurationMonths: number;
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+// Building delivery phase — groups buildings into construction phases
+export interface DeliveryPhaseBuilding {
+  buildingId: string;
+  buildingName: string;
+  gfa: number;
+  floors: number;
+  startMonth: number;
+  endMonth: number;
+  cost: number;
+}
+
+export interface DeliveryPhase {
+  phaseNumber: number;
+  phaseName: string;
+  startMonth: number;
+  endMonth: number;
+  durationMonths: number;
+  totalCost: number;
+  totalGFA: number;
+  buildings: DeliveryPhaseBuilding[];
+}
+
+// Utility cost breakdown
+export interface UtilityCostBreakdown {
+  label: string;
+  amount: number;
+  unit: string;
+}
+
+// Simulation results from Monte Carlo
+export interface SimulationResults {
+  // Cost simulation
+  cost_histogram: SimBin[];
+  cost_cdf: { x: number; y: number }[];
+  cost_p10: number;
+  cost_p50: number;
+  cost_p90: number;
+  cost_mean: number;
+  cost_sensitivity: SensitivityVar[];
+
+  // Time simulation
+  time_histogram: SimBin[];
+  time_cdf: { x: number; y: number }[];
+  time_p10: number;
+  time_p50: number;
+  time_p90: number;
+  time_mean: number;
+  time_sensitivity: SensitivityVar[];
+
+  // Phase breakdown
+  phases: ProjectPhase[];
+  numPhases: number;
+
+  // Utility costs
+  utility_costs: UtilityCostBreakdown[];
+  total_utility_cost: number;
+
+  // S-curve bands
+  scurve_p10: number[];
+  scurve_p50: number[];
+  scurve_p90: number[];
+
+  // Gantt uncertainty (per construction activity)
+  gantt: {
+    activity: string;
+    minStart: number;
+    expectedStart: number;
+    expectedEnd: number;
+    maxEnd: number;
+    color: string;
+  }[];
+
+  // Delay factor breakdown
+  delay_breakdown?: {
+    factor: string;
+    pct: number;
+    impactMonths: number;
+  }[];
+
+  // Building delivery phases
+  delivery_phases?: DeliveryPhase[];
+
+  // Raw simulation arrays for advanced charts
+  cost_raw?: number[];
+  time_raw?: number[];
+  cost_components_raw?: {
+    earthwork: number[];
+    structure: number[];
+    finishing: number[];
+    services: number[];
+  };
+  critical_path_probability?: {
+    activity: string;
+    criticalPct: number;
+  }[];
 }
 
 export interface ProjectEstimates {
@@ -621,6 +820,10 @@ export interface ProjectEstimates {
     target: number; // from planning params
     status: 'Optimal' | 'Inefficient' | 'Aggressive';
   };
+  
+  // Deterministic area-based timeline based on productivity standards
+  standardTimeEstimates?: StandardTimeEstimation;
+
   breakdown?: {
     buildingId: string;
     buildingName: string;
@@ -634,4 +837,7 @@ export interface ProjectEstimates {
         ratePerSqm: number;
     };
   }[];
+
+  // Monte Carlo simulation results
+  simulation?: SimulationResults;
 }

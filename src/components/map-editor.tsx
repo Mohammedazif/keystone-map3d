@@ -4,7 +4,6 @@ import { useToast } from '@/hooks/use-toast';
 import { BuildingIntendedUse, GreenRegulationData, UtilityType, Building, Core, Unit, Plot, GreenArea, ParkingArea, BuildableArea, UtilityArea, SelectableObjectType } from '@/lib/types';
 import { Feature, Polygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import centerOfMass from '@turf/center-of-mass';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import Script from 'next/script';
@@ -1009,6 +1008,56 @@ export function MapEditor({
     return () => { map.current?.off('idle', detectRoads); };
   }, [isMapLoaded, actions]);
 
+  // District name hint for accurate Bhuvan layer resolution when bboxes overlap
+  const [districtNameHint, setDistrictNameHint] = useState<string | undefined>();
+
+  // Reverse geocode plot coordinates to get true district name
+  useEffect(() => {
+    const { plots: storePlots } = getStoreState();
+    let plotLat: number | undefined;
+    let plotLng: number | undefined;
+    if (storePlots.length > 0 && storePlots[0].geometry?.geometry) {
+      const geom = storePlots[0].geometry.geometry as Polygon;
+      if (geom.coordinates?.[0]?.[0]) {
+        const coord = geom.coordinates[0][0];
+        plotLng = coord[0];
+        plotLat = coord[1];
+      }
+    }
+
+    if (!plotLat || !plotLng) {
+      setDistrictNameHint(undefined);
+      return;
+    }
+
+    const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
+    if (!mapboxToken) return;
+
+    fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${plotLng},${plotLat}.json?access_token=${mapboxToken}&types=district,place,locality,neighborhood,postcode&country=IN`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.features && data.features.length > 0) {
+          const hints: string[] = [];
+          
+          // Mapbox sometimes assigns old district boundaries (e.g. Vasant Kunj -> South Delhi).
+          // Bhuvan uses the updated 11 districts (Vasant Kunj -> South West). 
+          // Extract ALL location names Mapbox provides and send them to the matching engine.
+          data.features.forEach((f: any) => {
+            if (f.text && !hints.includes(f.text)) {
+              hints.push(f.text);
+            }
+          });
+          
+          if (hints.length > 0) {
+            setDistrictNameHint(hints.join('|'));
+          } else {
+            setDistrictNameHint(undefined);
+          }
+        }
+      })
+      .catch(err => console.error('Reverse geocoding error for district hint:', err));
+  }, [plots.length > 0 ? plots[0].geometry : null, getStoreState]);
+
   useEffect(() => {
     const mapInst = map.current;
     if (!mapInst || !isMapLoaded || !styleLoaded) return;
@@ -1035,8 +1084,8 @@ export function MapEditor({
         }
       }
 
-      // Pass coordinates so buildBhuvanLayerName can do precise bbox-based district lookup
-      const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode, undefined, plotLat, plotLng);
+      // Pass coordinates so buildBhuvanLayerName can do precise bbox-based district lookup, with the geocoded hint
+      const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode, districtNameHint, plotLat, plotLng);
       const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
 
       // ── Availability guard: skip loading if the layer has no coverage ──
@@ -1551,6 +1600,22 @@ useEffect(() => {
                 ];
               }
 
+              // Find the lowest 3D building layer to insert the heatmap beneath it
+              let insertBeforeId = LABELS_LAYER_ID;
+              const styleLayers = map.current.getStyle().layers;
+              if (styleLayers) {
+                const firstBuildingLayer = styleLayers.find((l: any) => 
+                  l.id.startsWith('building-') || 
+                  l.id === 'analysis-walls' ||
+                  l.id.startsWith('slab-') ||
+                  l.id.startsWith('core-') ||
+                  l.id.startsWith('util-')
+                );
+                if (firstBuildingLayer && firstBuildingLayer.id) {
+                  insertBeforeId = firstBuildingLayer.id;
+                }
+              }
+
               map.current.addLayer({
                 id: heatmapId,
                 type: 'heatmap',
@@ -1570,7 +1635,7 @@ useEffect(() => {
                   ] as any,
                   'heatmap-opacity': 0.7
                 }
-              }, LABELS_LAYER_ID); // Place below labels
+              }, insertBeforeId); // Place strictly below buildings
             }
 
             // --- WIND STREAMLINES (Animated) ---
@@ -2848,7 +2913,7 @@ useEffect(() => {
         if (area.centroid) {
           allLabels.push(
             turf.point(area.centroid.geometry.coordinates, {
-              label: `${area.name}\n(${area.type})\n${area.area.toFixed(0)} m²`,
+              label: `${area.name}\n(${area.type})\n${(area.targetArea || area.area).toFixed(0)} m²`,
               id: `utility-area-label-${area.id}`
             })
           )
@@ -3273,13 +3338,22 @@ useEffect(() => {
           `;
         } else if (f.layer?.id.startsWith('utility-area-') || f.layer?.id.startsWith('parking-area-')) {
           const typeLabel = props.type || (f.layer?.id.startsWith('parking-area-') ? 'Parking' : 'Utility');
-          const areaLabel = props.area ? `${Math.round(props.area)} m²` : '';
-          const capacityLabel = props.capacity ? `<div class="text-xs text-neutral-600">Capacity: ${props.capacity} cars</div>` : '';
+          
+          let actualArea = 0;
+          try {
+            actualArea = turf.area(f as any);
+          } catch (e) {
+            actualArea = props.area || 0;
+          }
+          
+          const areaLabel = actualArea ? `Footprint: ${actualArea.toFixed(1)} m²` : '';
+          const targetAreaLabel = props.area ? `<span style="color:#737373;">(target: ${Math.round(props.area)} m²)</span>` : '';
+          const capacityLabel = props.capacity ? `<div class="text-xs text-neutral-600 mt-0.5">Capacity: ${props.capacity} cars</div>` : '';
 
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || typeLabel}</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">${typeLabel}</div>
-            ${areaLabel ? `<div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${areaLabel}</div>` : ''}
+            ${areaLabel ? `<div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${areaLabel} ${targetAreaLabel}</div>` : ''}
             ${capacityLabel}
           `;
         } else if (f.layer?.id.startsWith('gates-circle-')) {
@@ -3326,11 +3400,11 @@ useEffect(() => {
         } else if (f.layer?.id.startsWith('units-')) {
           const typeLabel = props.type || 'Unit';
           const targetArea = props.targetArea;
-          const displayArea = targetArea ? `${targetArea}` : `${turf.area(f as any).toFixed(1)}`;
+          const actualArea = turf.area(f as any).toFixed(1);
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${typeLabel}</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">Internal Unit Layout</div>
-            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${displayArea} m²</div>
+            <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Area: ${actualArea} m²${targetArea ? ` <span style="color:#737373;">(target: ${targetArea} m²)</span>` : ''}</div>
           `;
         }
 

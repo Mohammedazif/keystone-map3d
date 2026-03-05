@@ -300,7 +300,7 @@ function BuildingProperties() {
                                             </span>
                                         </div>
                                     )}
-                                    {/* {totalOccupiableUnits > 0 && (
+                                    {totalOccupiableUnits > 0 && (
                                         <div className="pl-5 text-muted-foreground/80 text-[10px] space-y-0.5">
                                             {unitTypeStrings.map((str, idx) => (
                                                 <div key={idx} className="flex items-center gap-1.5">
@@ -309,7 +309,7 @@ function BuildingProperties() {
                                                 </div>
                                             ))}
                                         </div>
-                                    )} */}
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -520,7 +520,7 @@ function PlotProperties() {
                         )}
                     </div>
                 )}
-                <div>
+                {/* <div>
                     <Label htmlFor="plot-setback" className="text-sm font-medium text-muted-foreground">Setback ({selectedPlot.setback}m)</Label>
                     <Slider
                         id="plot-setback"
@@ -530,7 +530,7 @@ function PlotProperties() {
                         value={[selectedPlot.setback]}
                         onValueChange={(v) => actions.updatePlot(selectedPlot.id, { setback: v[0] })}
                     />
-                </div>
+                </div> */}
             </div>
 
             <Separator />
@@ -646,8 +646,12 @@ function ZoneProperties() {
 
             <div className="p-3 bg-secondary rounded-md space-y-2 text-sm mt-4">
                 <div className="flex justify-between">
-                    <span className="text-muted-foreground">Footprint Area:</span>
-                    <span className="font-mono">{object.area.toFixed(2)} m²</span>
+                    <span className="text-muted-foreground">Required Area (NBC/IS):</span>
+                    <span className="font-mono font-bold">{((object as any).targetArea || object.area).toFixed(2)} m²</span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-muted-foreground">Actual Footprint:</span>
+                    <span className="font-mono text-muted-foreground">{object.area.toFixed(2)} m²</span>
                 </div>
             </div>
         </div>

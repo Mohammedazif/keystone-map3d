@@ -141,6 +141,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     });
 
     const [shuffleUnits, setShuffleUnits] = useState(false);
+    const [exactTypologyAllocation, setExactTypologyAllocation] = useState(false); // Use exact Method B typology sizes
     const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('floor'); // New Allocation Mode
     const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'Water', 'Electrical', 'HVAC', 'STP', 'WTP', 'Solar PV', 'EV Charging']);
 
@@ -411,7 +412,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                 { name: '3BHK', mixRatio: unitMixConfig['3BHK'] / 100, area: 185 },
                 { name: '4BHK', mixRatio: unitMixConfig['4BHK'] / 100, area: 245 }
             ].filter(u => u.mixRatio > 0),
-            shuffleUnits
+            shuffleUnits,
+            exactTypologyAllocation
         };
 
         // Increment seed offset for NEXT generation (Simulation of "Refresh")
@@ -659,6 +661,24 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             type="checkbox"
                                             checked={shuffleUnits}
                                             onChange={(e) => setShuffleUnits(e.target.checked)}
+                                            className="h-3 w-3 accent-primary"
+                                        />
+                                    </div>
+
+                                    {/* Exact Typology Allocation Toggle */}
+                                    <div className="flex items-center justify-between pt-1">
+                                        <div>
+                                            <Label className="text-[10px] text-muted-foreground cursor-pointer" onClick={() => setExactTypologyAllocation(!exactTypologyAllocation)}>
+                                                Exact Typology Sizes
+                                            </Label>
+                                            <p className="text-[9px] text-muted-foreground/60 italic leading-tight mt-0.5">
+                                                Uses theoretical m² per BHK type instead of fitted geometry
+                                            </p>
+                                        </div>
+                                        <input
+                                            type="checkbox"
+                                            checked={exactTypologyAllocation}
+                                            onChange={(e) => setExactTypologyAllocation(e.target.checked)}
                                             className="h-3 w-3 accent-primary"
                                         />
                                     </div>
@@ -1221,7 +1241,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 <p className="text-[9px] text-muted-foreground italic mt-1 leading-tight">
                                                     Floors will be assigned sequentially to hit target GFA, capping at {floorRange[1]} floors per building. Infill footprints added only if needed.
                                                 </p>
-                                                <div className="flex items-center gap-2 mt-2">
+                                                {/* <div className="flex items-center gap-2 mt-2">
                                                     <Label className="text-[10px] font-medium text-foreground/80 whitespace-nowrap">Infill Setback</Label>
                                                     <Input
                                                         type="number"
@@ -1233,7 +1253,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                         className="h-7 text-[10px] bg-muted/20 border-border w-16"
                                                     />
                                                     <span className="text-[9px] text-muted-foreground">m</span>
-                                                </div>
+                                                </div> */}
+                                                {/* Infill Mode selector — hidden for now, default is hybrid
                                                 <div className="flex items-center gap-2 mt-2">
                                                     <Label className="text-[10px] font-medium text-foreground/80 whitespace-nowrap">Infill Mode</Label>
                                                     <select
@@ -1246,6 +1267,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                         <option value="grid">Grid Only</option>
                                                     </select>
                                                 </div>
+                                                */}
                                             </>
                                         )}
                                     </div>

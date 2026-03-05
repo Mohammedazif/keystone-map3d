@@ -92,21 +92,25 @@ export function TimeEstimationPanel() {
 
     const handleSelectParam = (param: TimeEstimationParameter) => {
         setSelectedParam(param);
-        setFormData(param);
+        const defaultParam = DEFAULT_TIME_PARAMETERS.find(p => p.building_type === param.building_type && p.height_category === param.height_category) || DEFAULT_TIME_PARAMETERS[0];
+        setFormData({
+            ...defaultParam,
+            ...param,
+            delay_factors: {
+                ...(defaultParam.delay_factors || {}),
+                ...(param.delay_factors || {})
+            }
+        } as any);
         setIsEditing(false);
     };
 
     const handleNewParam = () => {
         setSelectedParam(null);
+        const defaultParam = DEFAULT_TIME_PARAMETERS.find(p => p.building_type === 'Residential' && p.height_category === 'Mid-Rise (15-45m)') || DEFAULT_TIME_PARAMETERS[0];
         setFormData({
+            ...defaultParam,
             building_type: 'Residential',
             height_category: 'Mid-Rise (15-45m)',
-            excavation_timeline_months: 3,
-            foundation_timeline_months: 4,
-            structure_per_floor_days: 12,
-            finishing_per_floor_days: 15,
-            services_overlap_factor: 0.5,
-            contingency_buffer_months: 3
         });
         setIsEditing(true);
     };
@@ -123,15 +127,10 @@ export function TimeEstimationPanel() {
             const now = new Date().toISOString();
 
             const paramData: TimeEstimationParameter = {
+                ...(formData as TimeEstimationParameter),
                 id,
                 building_type: formData.building_type!,
                 height_category: formData.height_category!,
-                excavation_timeline_months: formData.excavation_timeline_months || 0,
-                foundation_timeline_months: formData.foundation_timeline_months || 0,
-                structure_per_floor_days: formData.structure_per_floor_days || 0,
-                finishing_per_floor_days: formData.finishing_per_floor_days || 0,
-                services_overlap_factor: formData.services_overlap_factor || 0,
-                contingency_buffer_months: formData.contingency_buffer_months || 0,
                 last_updated: now
             };
 
@@ -185,6 +184,10 @@ export function TimeEstimationPanel() {
         return acc;
     }, {} as Record<string, TimeEstimationParameter[]>);
 
+    const defaultParamsForType = DEFAULT_TIME_PARAMETERS.find(
+        p => p.building_type === formData.building_type && p.height_category === formData.height_category
+    ) || DEFAULT_TIME_PARAMETERS[0];
+
     return (
         <div className="grid grid-cols-[300px_1fr] gap-6 h-full">
             {/* Left Sidebar */}
@@ -237,7 +240,7 @@ export function TimeEstimationPanel() {
             </div>
 
             {/* Right Panel */}
-            <div>
+            <div className="h-[calc(100vh-140px)] overflow-y-auto pr-4 custom-scrollbar">
                 {selectedParam || isEditing ? (
                     <Card>
                         <CardHeader>
@@ -298,7 +301,14 @@ export function TimeEstimationPanel() {
                                     <Label htmlFor="type">Building Type</Label>
                                     <Select
                                         value={formData.building_type}
-                                        onValueChange={(v: any) => setFormData({ ...formData, building_type: v })}
+                                        onValueChange={(v: any) => {
+                                            if (!selectedParam) {
+                                                const defaultParam = DEFAULT_TIME_PARAMETERS.find(p => p.building_type === v && p.height_category === formData.height_category) || DEFAULT_TIME_PARAMETERS[0];
+                                                setFormData({ ...defaultParam, building_type: v, height_category: formData.height_category });
+                                            } else {
+                                                setFormData({ ...formData, building_type: v });
+                                            }
+                                        }}
                                         disabled={!isEditing}
                                     >
                                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -311,7 +321,14 @@ export function TimeEstimationPanel() {
                                     <Label htmlFor="height">Height Category</Label>
                                     <Select
                                         value={formData.height_category}
-                                        onValueChange={(v: any) => setFormData({ ...formData, height_category: v })}
+                                        onValueChange={(v: any) => {
+                                            if (!selectedParam) {
+                                                const defaultParam = DEFAULT_TIME_PARAMETERS.find(p => p.building_type === formData.building_type && p.height_category === v) || DEFAULT_TIME_PARAMETERS[0];
+                                                setFormData({ ...defaultParam, building_type: formData.building_type, height_category: v });
+                                            } else {
+                                                setFormData({ ...formData, height_category: v });
+                                            }
+                                        }}
                                         disabled={!isEditing}
                                     >
                                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -324,86 +341,142 @@ export function TimeEstimationPanel() {
 
                             <Separator />
 
-                            <div className="grid grid-cols-2 gap-6">
-                                <div className="space-y-4">
-                                    <h4 className="text-sm font-semibold flex items-center gap-2">
-                                        <Calendar className="h-4 w-4" /> Phase 1: Substructure
+                            <div className="grid grid-cols-[1fr_1fr] gap-6">
+                                <div className="space-y-4 text-sm">
+                                    <h4 className="font-semibold flex items-center gap-2 border-b border-border/10 pb-2">
+                                        <Calendar className="h-4 w-4 text-amber-500" /> Phase 1: Substructure
                                     </h4>
-                                    <div className="space-y-2">
-                                        <Label>Excavation (Months)</Label>
-                                        <Input
-                                            type="number"
-                                            value={formData.excavation_timeline_months}
-                                            onChange={e => setFormData({ ...formData, excavation_timeline_months: parseFloat(e.target.value) })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>Foundation (Months)</Label>
-                                        <Input
-                                            type="number"
-                                            value={formData.foundation_timeline_months}
-                                            onChange={e => setFormData({ ...formData, foundation_timeline_months: parseFloat(e.target.value) })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
+                                    
+                                    {(['excavation_timeline_months', 'foundation_timeline_months'] as const).map(key => (
+                                        <div key={key} className="p-3 bg-secondary/10 rounded-lg border border-border/40">
+                                            <Label className="capitalize font-semibold mb-3 block">{key.split('_')[0]} (Months)</Label>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <div className="space-y-1">
+                                                    <span className="text-[10px] text-muted-foreground uppercase">Min (P10)</span>
+                                                    <Input type="number" className="h-8 text-xs"
+                                                        value={(formData as any)[`${key}_min`] || ''}
+                                                        onChange={e => setFormData({ ...formData, [`${key}_min`]: parseFloat(e.target.value) || undefined })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <span className="text-[10px] text-muted-foreground uppercase text-primary font-medium">Expected*</span>
+                                                    <Input type="number" className="h-8 text-xs border-primary/30"
+                                                        value={(formData as any)[key]}
+                                                        onChange={e => setFormData({ ...formData, [key]: parseFloat(e.target.value) || 0 })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <span className="text-[10px] text-muted-foreground uppercase">Max (P90)</span>
+                                                    <Input type="number" className="h-8 text-xs"
+                                                        value={(formData as any)[`${key}_max`] || ''}
+                                                        onChange={e => setFormData({ ...formData, [`${key}_max`]: parseFloat(e.target.value) || undefined })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
 
-                                <div className="space-y-4">
-                                    <h4 className="text-sm font-semibold flex items-center gap-2">
-                                        <Clock className="h-4 w-4" /> Phase 2: Superstructure
+                                <div className="space-y-4 text-sm">
+                                    <h4 className="font-semibold flex items-center gap-2 border-b border-border/10 pb-2">
+                                        <Clock className="h-4 w-4 text-blue-500" /> Phase 2: Superstructure
                                     </h4>
-                                    <div className="space-y-2">
-                                        <Label>Structure Speed (Days/Floor)</Label>
-                                        <Input
-                                            type="number"
-                                            value={formData.structure_per_floor_days}
-                                            onChange={e => setFormData({ ...formData, structure_per_floor_days: parseFloat(e.target.value) })}
-                                            disabled={!isEditing}
-                                        />
-                                        <p className="text-xs text-muted-foreground">Time to cast one complete slab</p>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>Finishing Speed (Days/Floor)</Label>
-                                        <Input
-                                            type="number"
-                                            value={formData.finishing_per_floor_days}
-                                            onChange={e => setFormData({ ...formData, finishing_per_floor_days: parseFloat(e.target.value) })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
+                                    
+                                    {(['structure_per_floor_days', 'finishing_per_floor_days'] as const).map(key => (
+                                        <div key={key} className="p-3 bg-secondary/10 rounded-lg border border-border/40">
+                                            <Label className="capitalize font-semibold mb-3 block">{key.split('_')[0]} (Days/Floor)</Label>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <div className="space-y-1">
+                                                    <span className="text-[10px] text-muted-foreground uppercase">Min (P10)</span>
+                                                    <Input type="number" className="h-8 text-xs"
+                                                        value={(formData as any)[`${key}_min`] || ''}
+                                                        onChange={e => setFormData({ ...formData, [`${key}_min`]: parseFloat(e.target.value) || undefined })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <span className="text-[10px] text-muted-foreground uppercase text-primary font-medium">Expected*</span>
+                                                    <Input type="number" className="h-8 text-xs border-primary/30"
+                                                        value={(formData as any)[key]}
+                                                        onChange={e => setFormData({ ...formData, [key]: parseFloat(e.target.value) || 0 })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <span className="text-[10px] text-muted-foreground uppercase">Max (P90)</span>
+                                                    <Input type="number" className="h-8 text-xs"
+                                                        value={(formData as any)[`${key}_max`] || ''}
+                                                        onChange={e => setFormData({ ...formData, [`${key}_max`]: parseFloat(e.target.value) || undefined })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
 
                             <Separator />
 
-                            <div className="space-y-4">
-                                <h4 className="text-sm font-semibold">Phase 3: Overlap & Buffers</h4>
+                            <div className="grid grid-cols-2 gap-6">
                                 <div className="space-y-4">
-                                    <div className="space-y-2">
-                                        <div className="flex justify-between">
-                                            <Label>Services Overlap Factor ({((formData.services_overlap_factor || 0) * 100).toFixed(0)}%)</Label>
+                                    <h4 className="text-sm font-semibold border-b border-border/10 pb-2">Phase 3: Overlap & Buffers</h4>
+                                    <div className="space-y-4 p-3 bg-secondary/10 rounded-lg border border-border/40">
+                                        <div className="space-y-2">
+                                            <div className="flex justify-between">
+                                                <Label className="text-xs">Services Overlap Factor</Label>
+                                                <span className="text-xs text-primary font-medium">{((formData.services_overlap_factor || 0) * 100).toFixed(0)}%</span>
+                                            </div>
+                                            <Slider
+                                                value={[formData.services_overlap_factor || 0]}
+                                                min={0} max={1} step={0.1}
+                                                onValueChange={([v]) => setFormData({ ...formData, services_overlap_factor: v })}
+                                                disabled={!isEditing}
+                                            />
+                                            <p className="text-[10px] text-muted-foreground">0% = Sequential, 100% = Fully Parallel</p>
                                         </div>
-                                        <Slider
-                                            value={[formData.services_overlap_factor || 0]}
-                                            min={0}
-                                            max={1}
-                                            step={0.1}
-                                            onValueChange={([v]) => setFormData({ ...formData, services_overlap_factor: v })}
-                                            disabled={!isEditing}
-                                        />
-                                        <p className="text-xs text-muted-foreground">
-                                            0% = Sequential (Finishing starts after structure), 100% = Fully Parallel
-                                        </p>
+                                        <div className="space-y-2 pt-2 border-t border-border/10">
+                                            <Label className="text-xs">Contingency Buffer (Months)</Label>
+                                            <Input
+                                                type="number" className="h-8 text-xs"
+                                                value={formData.contingency_buffer_months}
+                                                onChange={e => setFormData({ ...formData, contingency_buffer_months: parseFloat(e.target.value) })}
+                                                disabled={!isEditing}
+                                            />
+                                        </div>
                                     </div>
-                                    <div className="space-y-2">
-                                        <Label>Contingency Buffer (Months)</Label>
-                                        <Input
-                                            type="number"
-                                            value={formData.contingency_buffer_months}
-                                            onChange={e => setFormData({ ...formData, contingency_buffer_months: parseFloat(e.target.value) })}
-                                            disabled={!isEditing}
-                                        />
+                                </div>
+
+                                {/* Delay Factors */}
+                                <div className="space-y-4">
+                                    <h4 className="text-sm font-semibold border-b border-border/10 pb-2 text-amber-500">Risk & Delay Factors (%)</h4>
+                                    <div className="grid grid-cols-2 gap-3 p-3 bg-amber-500/5 rounded-lg border border-amber-500/20">
+                                        {[
+                                            { key: 'monsoon_pct', label: 'Monsoon' },
+                                            { key: 'summer_pct', label: 'Summer Heat' },
+                                            { key: 'festival_pct', label: 'Festivals' },
+                                            { key: 'winter_pct', label: 'Winter' },
+                                            { key: 'rework_pct', label: 'Rework/Quality' },
+                                        ].map(d => (
+                                            <div key={d.key} className="space-y-1.5">
+                                                <Label className="text-[10px] uppercase text-muted-foreground">{d.label}</Label>
+                                                <Input
+                                                    type="number" className="h-8 text-xs"
+                                                    value={formData.delay_factors?.[d.key as keyof typeof formData.delay_factors] || ''}
+                                                    onChange={e => setFormData({
+                                                        ...formData,
+                                                        delay_factors: {
+                                                            ...formData.delay_factors,
+                                                            [d.key]: parseFloat(e.target.value) || 0
+                                                        } as any
+                                                    })}
+                                                    disabled={!isEditing}
+                                                />
+                                            </div>
+                                        ))}
                                     </div>
                                 </div>
                             </div>

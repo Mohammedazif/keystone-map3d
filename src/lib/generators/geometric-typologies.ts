@@ -27,6 +27,7 @@ export interface GeometricTypologyParams {
     rearSetback?: number;
     roadAccessSides?: string[];
     seed?: number; // For deterministic selection
+    selectedUtilities?: string[]; // Propagate utility selection
 }
 
 export function checkCollision(poly: Feature<Polygon>, obstacles?: Feature<Polygon>[]): boolean {
@@ -1149,7 +1150,8 @@ export function generateHShapes(
                                                 const layout = generateBuildingLayout(unionForLayout as unknown as Feature<Polygon>, {
                                                     subtype: 'hshaped',
                                                     unitMix: params.unitMix,
-                                                    alignmentRotation: 0
+                                                    alignmentRotation: 0,
+                                                    selectedUtilities: params.selectedUtilities
                                                 });
 
                                                 shape.properties = {
@@ -1469,7 +1471,7 @@ export function generateSlabShapes(
                     if (validPoly) {
                         const area = turf.area(validPoly);
                         const layout = generateBuildingLayout(validPoly, {
-                            subtype: 'slab', unitMix: params.unitMix, alignmentRotation: edgeData.bearing
+                            subtype: 'slab', unitMix: params.unitMix, alignmentRotation: edgeData.bearing, selectedUtilities: params.selectedUtilities
                         });
 
                         validPoly.properties = {
@@ -1662,7 +1664,7 @@ export function generatePointShapes(
                     if (validPoly) {
                         const area = turf.area(validPoly);
                         const layout = generateBuildingLayout(validPoly, {
-                            subtype: 'point', unitMix: params.unitMix, alignmentRotation: bearing
+                            subtype: 'point', unitMix: params.unitMix, alignmentRotation: bearing, selectedUtilities: params.selectedUtilities
                         });
 
                         validPoly.properties = {

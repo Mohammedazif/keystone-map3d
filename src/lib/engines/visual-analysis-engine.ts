@@ -1077,7 +1077,14 @@ export async function runGroundAnalysis(
     // console.log('[GroundAnalysis] Grid config', { area, cellSideKm });
 
     const grid = turf.pointGrid(bbox, cellSideKm, { units: 'kilometers', mask: plotGeometry });
-    const points = grid.features;
+    // Exclude points that fall within any building footprint to prevent heatmap overlap with buildings
+    const rawPoints = grid.features;
+    const points = rawPoints.filter((pt: any) => {
+      // Return true if point is NOT inside any building geometry
+      return !buildings.some((b) => {
+        return b.geometry && turf.booleanPointInPolygon(pt, b.geometry);
+      });
+    });
 
     console.log(`[GroundAnalysis] Generated ${points.length} points for heatmap (spacing: ${(cellSideKm * 1000).toFixed(1)}m)`);
 

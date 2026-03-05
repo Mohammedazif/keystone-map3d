@@ -6,13 +6,17 @@ import {
     TimeEstimationParameter,
     PlanningParameter,
     ProjectEstimates,
-    FeasibilityParams
+    FeasibilityParams,
+    StandardTimeEstimation
 } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { db } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
+import { runFullSimulation } from '@/lib/cost-time-simulation';
+import { calculateStandardTimeEstimates, BuildingTimeInput } from '@/lib/standard-time-calc';
 
 export function useProjectEstimates(project: Project | null, metrics: AdvancedKPIs | null) {
+    const projectId = project?.id;
     const [costs, setCosts] = useState<CostRevenueParameters[]>([]);
     const [times, setTimes] = useState<TimeEstimationParameter[]>([]);
     const [planning, setPlanning] = useState<PlanningParameter[]>([]);
@@ -46,12 +50,32 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
 
 
 
-        if (project?.id) {
+        if (costs.length === 0 || times.length === 0 || planning.length === 0) {
             fetchAllParams();
         }
-    }, [project?.id]); // Only re-fetch if project ID changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Run ONLY once on mount or if explicitly recalled
 
     // Calculate Estimates
+    
+    // Create a stable dependency string for the core metrics and building data
+    // to prevent continuous recalculation when insignificant project properties (like selection/hover state) change
+    const projectDepsStr = useMemo(() => {
+        if (!project || !metrics) return '';
+        
+        // Only trigger recalculation when building shapes/counts change, or total areas change
+        const allBuildings = project.plots?.flatMap(p => p.buildings || []) || [];
+        const buildingData = allBuildings.map(b => `${b.id}-${b.area}-${b.numFloors}-${b.height}`).join('|');
+        const metricsData = `${metrics.totalBuiltUpArea}-${metrics.totalPlotArea}`;
+        
+        return `${project.id}-${buildingData}-${metricsData}`;
+    }, [
+        project?.id,
+        project?.plots?.map(p => p.buildings?.map(b => `${b.id}-${b.area}-${b.numFloors}-${b.height}`).join(',')).join('|'),
+        metrics?.totalBuiltUpArea,
+        metrics?.totalPlotArea
+    ]);
+
     const estimates: ProjectEstimates | null = useMemo(() => {
         if (!project || !metrics || isLoading) return null;
 
@@ -153,25 +177,45 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                 totalServices += bServices;
 
                 // Timeline
+                const isTower = b.id.includes('-tower');
+                let startOffset = 0;
+
+                if (isTower) {
+                    const podiumId = b.id.replace('-tower', '-podium');
+                    const podium = buildings.find(p => p.id === podiumId);
+                    if (podium) {
+                        const pTimeParam = getTimeParam(podium.intendedUse || buildingType, podium.height);
+                        const pFloors = podium.numFloors || Math.ceil(podium.height / (podium.typicalFloorHeight || 3));
+                        // Tower starts after podium excavation, foundation, and structure
+                        startOffset = pTimeParam.excavation_timeline_months + pTimeParam.foundation_timeline_months + ((pFloors * pTimeParam.structure_per_floor_days) / 30);
+                    }
+                }
+
+                // Towers don't need their own excavation/foundation - they use the podium's
+                const excMonths = isTower ? 0 : bTimeParam.excavation_timeline_months;
+                const fndMonths = isTower ? 0 : bTimeParam.foundation_timeline_months;
+
                 const structureDays = floors * bTimeParam.structure_per_floor_days;
                 const finishingDays = floors * bTimeParam.finishing_per_floor_days;
+                const overlapMonths = (finishingDays / 30) * bTimeParam.services_overlap_factor;
+
                 const totalDays = 
-                    (bTimeParam.excavation_timeline_months * 30) +
-                    (bTimeParam.foundation_timeline_months * 30) +
+                    (excMonths * 30) +
+                    (fndMonths * 30) +
                     structureDays +
                     finishingDays - 
-                    ((finishingDays/30) * bTimeParam.services_overlap_factor * 30) +
+                    (overlapMonths * 30) +
                     (bTimeParam.contingency_buffer_months * 30);
                 
                 const bMonths = totalDays / 30;
+                const timelineEnd = startOffset + bMonths;
                 
                 // Track critical path (longest duration building)
-                if (bMonths > maxTimelineMonths) {
-                    maxTimelineMonths = bMonths;
-                    const overlapMonths = (finishingDays / 30) * bTimeParam.services_overlap_factor;
+                if (timelineEnd > maxTimelineMonths) {
+                    maxTimelineMonths = timelineEnd;
                     criticalPathPhases = {
-                        excavation: bTimeParam.excavation_timeline_months,
-                        foundation: bTimeParam.foundation_timeline_months,
+                        excavation: excMonths,
+                        foundation: fndMonths,
                         structure: structureDays / 30,
                         finishing: finishingDays / 30,
                         overlap: overlapMonths,
@@ -183,25 +227,28 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                     buildingId: b.id,
                     buildingName: b.name || `Building ${b.id.slice(0, 4)}`,
                     timeline: {
-                        total: bMonths,
+                        startOffset: startOffset,
+                        total: bMonths, // duration of just this building
+                        substructure: excMonths + fndMonths,
                         structure: structureDays / 30,
-                        finishing: finishingDays / 30
+                        finishing: (finishingDays / 30) - overlapMonths,
+                        contingency: bTimeParam.contingency_buffer_months
                     },
                     cost: {
                         total: bCost,
                         ratePerSqm: bCostParam.total_cost_per_sqm
-                    }
+                    },
+                    gfa: bGFA,
+                    floors: floors,
                 });
             });
         } else {
              // Fallback if no buildings generated yet (use plot potential)
             isPotential = true;
-            // Existing potential logic...
+            
+            // Wait, if the user explicitly deleted all buildings on an active plot, we shouldn't show massive "potential" costs
+            // No potential fallback if the plot is empty. User requested 0.
             let gfa = metrics.totalBuiltUpArea;
-            if (gfa === 0 && project.plots.length > 0) {
-                 const plotStats = calculateDevelopmentStats(project.plots[0], project.feasibilityParams || DEFAULT_FEASIBILITY_PARAMS);
-                 gfa = plotStats.totalBuiltUpArea;
-            }
             
             totalEarthwork = gfa * costParam.earthwork_cost_per_sqm;
             totalStructure = gfa * costParam.structure_cost_per_sqm;
@@ -212,27 +259,42 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
             totalRev = gfa * costParam.sellable_ratio * costParam.market_rate_per_sqm;
             
             // Standard timeline for potential
-            const floors = Math.ceil(metrics.achievedFAR / (metrics.groundCoveragePct / 100 || 0.4)) || 10;
-            const structureDays = floors * timeParam.structure_per_floor_days;
-            const finishingDays = floors * timeParam.finishing_per_floor_days;
-            const overlapMonths = (finishingDays / 30) * timeParam.services_overlap_factor;
-             const totalDays =
-                (timeParam.excavation_timeline_months * 30) +
-                (timeParam.foundation_timeline_months * 30) +
-                structureDays +
-                finishingDays -
-                (overlapMonths * 30) +
-                (timeParam.contingency_buffer_months * 30);
-            maxTimelineMonths = totalDays / 30;
+            if (gfa > 0) {
+                const floors = Math.ceil(metrics.achievedFAR / (metrics.groundCoveragePct / 100 || 0.4)) || 10;
+                const structureDays = floors * timeParam.structure_per_floor_days;
+                const finishingDays = floors * timeParam.finishing_per_floor_days;
+                const overlapMonths = (finishingDays / 30) * timeParam.services_overlap_factor;
+                 const totalDays =
+                    (timeParam.excavation_timeline_months * 30) +
+                    (timeParam.foundation_timeline_months * 30) +
+                    structureDays +
+                    finishingDays -
+                    (overlapMonths * 30) +
+                    (timeParam.contingency_buffer_months * 30);
+                maxTimelineMonths = totalDays / 30;
+                
+                criticalPathPhases = {
+                    excavation: timeParam.excavation_timeline_months,
+                    foundation: timeParam.foundation_timeline_months,
+                    structure: structureDays / 30,
+                    finishing: finishingDays / 30,
+                    overlap: overlapMonths,
+                    contingency: timeParam.contingency_buffer_months
+                };
+            } else {
+                maxTimelineMonths = 0;
+                criticalPathPhases = {
+                    excavation: 0,
+                    foundation: 0,
+                    structure: 0,
+                    finishing: 0,
+                    overlap: 0,
+                    contingency: 0
+                };
+            }
             
-            criticalPathPhases = {
-                excavation: timeParam.excavation_timeline_months,
-                foundation: timeParam.foundation_timeline_months,
-                structure: structureDays / 30,
-                finishing: finishingDays / 30,
-                overlap: overlapMonths,
-                contingency: timeParam.contingency_buffer_months
-            };
+            // Generate basic plot timeline if needed
+            // (The variables above correctly set the maxTimeline and critical path)
         }
 
         // Add 5% contingency to total cost (if not already in param, but param usually has raw. Let's add project level soft cost buffer?)
@@ -262,6 +324,97 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
             if (achievedEfficiency > targetEfficiency + 0.05) effStatus = 'Aggressive';
         }
 
+        // ─── UTILITIES PRESENT ─────────────────────────────────────────
+        const utilitiesSet = new Set<string>();
+        if (!isPotential && project.plots) {
+            project.plots.forEach(p => {
+                if (p.utilityAreas) p.utilityAreas.forEach(u => { utilitiesSet.add(u.type); if (u.name) utilitiesSet.add(u.name); });
+            });
+            buildings.forEach(b => {
+                if (b.utilities) b.utilities.forEach(u => utilitiesSet.add(u));
+                if (b.internalUtilities) b.internalUtilities.forEach(u => { utilitiesSet.add(u.type); if (u.name) utilitiesSet.add(u.name); });
+                if (b.cores && b.cores.length > 0) {
+                    utilitiesSet.add('Core');
+                    utilitiesSet.add('Lifts');
+                    utilitiesSet.add('Fire Fighting');
+                }
+            });
+        }
+        // If isPotential AND no built-up area, use empty array so hasUtility returns false for everything
+        const utilitiesPresent = isPotential
+            ? (metrics.totalBuiltUpArea > 0 ? undefined : [])
+            : Array.from(utilitiesSet);
+
+        // ─── MONTE CARLO SIMULATION ────────────────────────────────────
+        // Run full simulation using the matched cost/time params
+        const simGFA = isPotential
+            ? metrics.totalBuiltUpArea
+            : processedGFA;
+
+        // If GFA is 0, floors should be 0 too (not fallback to 10)
+        const simFloors = simGFA === 0 ? 0
+            : isPotential
+                ? (Math.ceil(metrics.achievedFAR / (metrics.groundCoveragePct / 100 || 0.4)) || 10)
+                : (buildings.length > 0 ? Math.max(...buildings.map(b => b.numFloors || Math.ceil(b.height / (b.typicalFloorHeight || 3)))) : 10);
+
+        let simulation;
+        try {
+            // Skip simulation entirely if nothing to simulate
+            if (simGFA > 0) {
+                simulation = runFullSimulation({
+                    costParam,
+                    timeParam,
+                    gfa: simGFA,
+                    floors: simFloors,
+                    numPhases: 3, // Default; UI can override
+                    iterations: 3000, // ~3000 for performance
+                    utilitiesPresent: utilitiesPresent,
+                    perBuildingBreakdown: perBuildingBreakdown,
+                });
+            }
+        } catch (e) {
+            console.warn('Simulation failed:', e);
+        }
+
+        // ─── AREA-BASED STANDARD TIME ──────────────────────────────────
+        let standardTimeEstimates: StandardTimeEstimation | undefined;
+        try {
+            if (!isPotential && buildings.length > 0) {
+                const bInputs: BuildingTimeInput[] = buildings.map(b => {
+                    const floors = b.numFloors || Math.ceil(b.height / (b.typicalFloorHeight || 3));
+                    const bGFA = b.area * floors;
+                    // For typical basements: check if parking has levels -1, -2, etc under this footprint
+                    // A simple proxy: if the plots have basements, we distribute them or assume 0 for now
+                    const bsmntLevels = 0; // Enhance later if basement parking overlaps this building
+                    
+                    return {
+                        buildingId: b.id,
+                        buildingName: b.name || `Building ${b.id.slice(0, 4)}`,
+                        gfaSqm: bGFA,
+                        footprintSqm: b.area,
+                        floors: floors,
+                        basements: bsmntLevels
+                    };
+                });
+                standardTimeEstimates = calculateStandardTimeEstimates(bInputs, project.totalPlotArea || metrics.totalPlotArea);
+                
+                // Sync the calculated staggered offsets back to the legacy perBuildingBreakdown
+                maxTimelineMonths = 0; // Reset to recalculate with proper staggering
+                perBuildingBreakdown.forEach(pb => {
+                    const matchedStandard = standardTimeEstimates?.buildings.find((sb: any) => sb.buildingId === pb.buildingId);
+                    if (matchedStandard) {
+                        pb.timeline.startOffset = matchedStandard.offsetMonths || 0;
+                    }
+                    const timelineEnd = pb.timeline.startOffset + pb.timeline.total;
+                    if (timelineEnd > maxTimelineMonths) {
+                        maxTimelineMonths = timelineEnd;
+                    }
+                });
+            }
+        } catch(e) {
+            console.warn('Standard time calculation failed:', e);
+        }
+
         return {
             isPotential,
             total_construction_cost: finalTotalCost,
@@ -284,9 +437,12 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                 target: targetEfficiency,
                 status: effStatus
             },
-            breakdown: perBuildingBreakdown
+            standardTimeEstimates,
+            breakdown: perBuildingBreakdown,
+            simulation,
         };
-    }, [project, metrics, costs, times, planning, isLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [projectDepsStr, costs, times, planning, isLoading]);
 
     return { estimates, isLoading, params: { costs, times, planning } };
 }

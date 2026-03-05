@@ -29,7 +29,8 @@ function checkAvailability(
   themeId: string,
   stateCode: string,
   lat?: number,
-  lng?: number
+  lng?: number,
+  districtNameHint?: string
 ): { status: 'available' | 'unavailable' | 'unknown'; message: string | null } {
   const theme = BHUVAN_THEMES.find(t => t.id === themeId);
   if (!theme) return { status: 'unknown', message: 'Theme not found.' };
@@ -42,7 +43,7 @@ function checkAvailability(
   // These may not all be in bhuvan-extents.json (e.g. AMRUT is on vec3 which wasn't scraped).
   const indexType = getIndexType(themeId);
   if (indexType) {
-    const district = getBestBhuvanDistrict(indexType, stateCode);
+    const district = getBestBhuvanDistrict(indexType, stateCode, districtNameHint);
     if (district) {
       // State has entries in the district index → available
       return { status: 'available', message: null };
@@ -58,7 +59,8 @@ function checkAvailability(
 
   // 0. Check if ANY layer exists for this state and theme in the extents
   const hasStateCoverage = Object.keys(BHUVAN_EXTENTS).some(name =>
-    name.includes(`${stateCode}_`) && (name.includes(suffix) || name.includes(theme.id))
+    (name.includes(`_${stateCode}_`) || name.includes(`${stateCode}_`) || name.endsWith(`_${stateCode}`)) && 
+    (name.includes(suffix) || name.includes(theme.id))
   );
 
   if (!hasStateCoverage && !theme.fixedLayerName) {
@@ -69,7 +71,7 @@ function checkAvailability(
   }
 
   // 1. General availability check using buildBhuvanLayerName
-  const layerName = buildBhuvanLayerName(themeId, stateCode, undefined, lat, lng);
+  const layerName = buildBhuvanLayerName(themeId, stateCode, districtNameHint, lat, lng);
   if (isLayerAvailableInIndex(layerName)) return { status: 'available', message: null };
 
   return {
@@ -79,13 +81,14 @@ function checkAvailability(
 }
 
 export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
-  const { activeBhuvanLayer, activeBhuvanOpacity, bhuvanData, isFetchingBhuvan, plots, actions } = useBuildingStore(s => ({
+  const { activeBhuvanLayer, activeBhuvanOpacity, bhuvanData, isFetchingBhuvan, plots, actions, districtNameHint } = useBuildingStore(s => ({
     activeBhuvanLayer: s.activeBhuvanLayer,
     activeBhuvanOpacity: s.activeBhuvanOpacity,
     bhuvanData: s.bhuvanData,
     isFetchingBhuvan: s.isFetchingBhuvan,
     plots: s.plots,
-    actions: s.actions
+    actions: s.actions,
+    districtNameHint: s.districtNameHint
   }));
 
   const selectedPlot = useSelectedPlot();
@@ -188,10 +191,10 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
               const isCategoryActive = groupThemes.some(t => t.id === activeBhuvanLayer);
               
               // Find first available variant if not active
-              const firstAvailable = groupThemes.find(t => checkAvailability(t.id, stateCode, plotLat, plotLng).status === 'available');
+              const firstAvailable = groupThemes.find(t => checkAvailability(t.id, stateCode, plotLat, plotLng, districtNameHint).status === 'available');
               const displayTheme = groupThemes.find(t => t.id === activeBhuvanLayer) || firstAvailable || primaryTheme;
               
-              const { status: availStatus, message: error } = checkAvailability(displayTheme.id, stateCode, plotLat, plotLng);
+              const { status: availStatus, message: error } = checkAvailability(displayTheme.id, stateCode, plotLat, plotLng, districtNameHint);
               const isUnavailable = availStatus === 'unavailable';
 
               return (
@@ -244,7 +247,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                           <Label className="text-[9px] text-muted-foreground uppercase tracking-widest font-bold">Select Year / Scale</Label>
                           <div className="flex flex-wrap gap-1.5">
                             {groupThemes.map(variant => {
-                              const variantAvail = checkAvailability(variant.id, stateCode, plotLat, plotLng);
+                              const variantAvail = checkAvailability(variant.id, stateCode, plotLat, plotLng, districtNameHint);
                               const vDisabled = variantAvail.status === 'unavailable';
                               const vActive = activeBhuvanLayer === variant.id;
 

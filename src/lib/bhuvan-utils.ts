@@ -406,10 +406,48 @@ export function getIndianStateCode(lat: number, lng: number): string {
 // Values: { [stateCode]: string[] }  (array of available district/city names)
 const BHUVAN_DISTRICT_INDEX = bhuvanIndex as Record<string, Record<string, string[]>>;
 
-// ── Bounding boxes scraped from Bhuvan WMS GetCapabilities ──
 // Keys: full WMS layer name (e.g. 'sisdpv2:DL_New_Delhi_lulc_v2')
 // Values: [minLng, minLat, maxLng, maxLat]
 export const BHUVAN_EXTENTS = bhuvanExtents as unknown as Record<string, [number, number, number, number]>;
+
+// ── Known Locality Overrides ──
+// Mapbox uses outdated administrative boundaries (e.g., 9 Delhi districts instead of 11).
+// This dictionary catches specific neighborhoods and forces their correct modern district name.
+const KNOWN_LOCALITY_OVERRIDES: Record<string, string> = {
+  'vasant kunj': 'South West',
+  'dwarka': 'South West',
+  'najafgarh': 'South West',
+  'saket': 'South',
+  'hauz khas': 'South',
+  'kalkaji': 'South East',
+  'okhla': 'South East',
+  'lajpat nagar': 'South East',
+  'rohini': 'North West',
+  'karol bagh': 'Central',
+  'paharganj': 'Central',
+  'connaught place': 'New Delhi',
+  'chanakyapuri': 'New Delhi',
+  'vasant vihar': 'New Delhi',
+  // Add more Indian locality overrides here as needed
+};
+
+/**
+ * Normalizes an array of hints and injects any known overrides.
+ */
+function expandHintsWithOverrides(hintsStr: string): string[] {
+  const hints = hintsStr.split('|').map(h => h.trim()).filter(h => h.length > 0);
+  const expanded = [...hints];
+  
+  for (const hint of hints) {
+    const lower = hint.toLowerCase();
+    for (const [locality, overrideDist] of Object.entries(KNOWN_LOCALITY_OVERRIDES)) {
+      if (lower.includes(locality) && !expanded.includes(overrideDist)) {
+        expanded.unshift(overrideDist); // Put override at the front to prioritize it
+      }
+    }
+  }
+  return expanded;
+}
 
 /**
  * Finds the best matching Bhuvan WMS layer name for district-level themes
@@ -421,7 +459,8 @@ export function findBhuvanLayerByCoord(
   themeId: string,
   stateCode: string,
   lat: number,
-  lng: number
+  lng: number,
+  districtNameHint?: string
 ): string | undefined {
   // Build suffix pattern based on theme
   let suffix = '';
@@ -433,36 +472,106 @@ export function findBhuvanLayerByCoord(
   else if (themeId === 'lulc' || themeId === 'lulc_1112' || themeId === 'lulc_0506') suffix = '_LULC50K';
   else if (themeId === 'geomorphology') suffix = '_GM50K';
   else if (themeId === 'lineament') suffix = '_LN50K';
-
-  if (!suffix) return undefined;
+  
+  // For SIS-DP Phase 2, the pattern is usually: sisdp_phase2:SISDP_P2_LULC_10K_X_Y_{stateCode}_{district}
+  // There is no static suffix at the end, the varying part IS at the end. We handle this differently.
+  
+  if (!suffix && themeId !== 'lulc_10k_sisdp2') return undefined;
 
   // Find all WMS layer names for this state + theme, then check which bbox contains the point
-  const candidates = Object.entries(BHUVAN_EXTENTS).filter(([name]) =>
-    name.includes(`${stateCode}_`) && name.endsWith(suffix)
-  );
+  let candidates: [string, [number, number, number, number]][] = [];
+  
+  if (themeId === 'lulc_10k_sisdp2') {
+    // Look for layers that start with the state prefix but have extra text (district)
+    const baseName = `SISDP_P2_LULC_10K_2016_2019_${stateCode}_`;
+    // also support variations in year (some are 20116)
+    candidates = Object.entries(BHUVAN_EXTENTS).filter(([name]) => 
+      name.includes(`_${stateCode}_`) && name.includes('SISDP_P2_LULC') && !name.endsWith(`_${stateCode}`)
+    );
+  } else {
+    candidates = Object.entries(BHUVAN_EXTENTS).filter(([name]) =>
+      name.includes(`${stateCode}_`) && name.endsWith(suffix)
+    );
+  }
 
-  // 1. Find the smallest bbox that still contains the point (most precise district)
+  // 1. Find bounding boxes that contain the point. If multiple overlap (common near borders),
+  //    use a "centrality" score: how deeply inside the bbox the point sits.
+  //    Score is min(normalized-X-depth, normalized-Y-depth) where 0 = at edge, 0.5 = center.
+  //    The bbox where the point is most centrally placed (furthest from edges) wins.
+  //    This fixes the Delhi South vs South_West case where center-distance gives wrong results.
   const containing = candidates
     .filter(([, box]) => lng >= box[0] && lat >= box[1] && lng <= box[2] && lat <= box[3])
     .sort(([, a], [, b]) => {
-      const areaA = (a[2] - a[0]) * (a[3] - a[1]);
-      const areaB = (b[2] - b[0]) * (b[3] - b[1]);
-      return areaA - areaB; // smallest bbox = most specific district
+      // Normalized position within bbox: 0 = at min edge, 1 = at max edge, 0.5 = center
+      const normAx = (a[2] - a[0]) > 0 ? (lng - a[0]) / (a[2] - a[0]) : 0.5;
+      const normAy = (a[3] - a[1]) > 0 ? (lat - a[1]) / (a[3] - a[1]) : 0.5;
+      const normBx = (b[2] - b[0]) > 0 ? (lng - b[0]) / (b[2] - b[0]) : 0.5;
+      const normBy = (b[3] - b[1]) > 0 ? (lat - b[1]) / (b[3] - b[1]) : 0.5;
+      // Centrality = how far from the nearest edge (0 = at edge, 0.5 = perfectly centered)
+      const centralA = Math.min(normAx, 1 - normAx, normAy, 1 - normAy);
+      const centralB = Math.min(normBx, 1 - normBx, normBy, 1 - normBy);
+      return centralB - centralA; // Higher centrality first (descending)
     });
 
-  if (containing.length > 0) {
-    // Extract the district part (e.g. 'sisdpv2:DL_New_Delhi_lulc_v2' -> 'New_Delhi')
-    const layerName = containing[0][0];
+  const getDistrictPart = (layerName: string) => {
     const colonParts = layerName.split(':');
     const namePart = colonParts.length > 1 ? colonParts[1] : colonParts[0];
-    // Remove prefix like 'DL_' and suffix like '_lulc_v2'
-    const withoutSuffix = namePart.slice(0, namePart.length - suffix.length);
-    const withoutState = withoutSuffix.startsWith(`${stateCode}_`)
-      ? withoutSuffix.slice(stateCode.length + 1)
-      : withoutSuffix;
-    return withoutState;
-  }
+    if (themeId === 'lulc_10k_sisdp2') {
+      const match = namePart.match(new RegExp(`_${stateCode}_(.+)$`));
+      return match ? match[1] : undefined;
+    } else {
+      const withoutSuffix = namePart.slice(0, namePart.length - suffix.length);
+      const withoutState = withoutSuffix.startsWith(`${stateCode}_`)
+        ? withoutSuffix.slice(stateCode.length + 1)
+        : withoutSuffix;
+      return withoutState;
+    }
+  };
 
+  if (containing.length > 0) {
+    let bestMatch = containing[0];
+
+    // Override centrality if Mapbox gives us explicit district names that match
+    if (districtNameHint && containing.length > 1) {
+      const hints = expandHintsWithOverrides(districtNameHint);
+      
+      for (const hint of hints) {
+        // Strip common administrative suffixes before normalizing
+        const cleanHint = hint.toLowerCase()
+          .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+          .replace(/[^a-z0-9]/g, '');
+        
+        const exactMatches = containing.filter(([name]) => {
+           const distPart = getDistrictPart(name);
+           if (!distPart) return false;
+           // Also strip suffixes from candidate just in case
+           const distNorm = distPart.toLowerCase()
+             .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+             .replace(/[^a-z0-9]/g, '');
+             
+           // Use length check and includes to ensure robust matching
+           return (distNorm.length > 2 && cleanHint.length > 2) && 
+                  (distNorm === cleanHint || distNorm.includes(cleanHint) || cleanHint.includes(distNorm));
+        }).sort(([nameA], [nameB]) => {
+          // 1. Prioritize Exact Match
+          const distPartA = getDistrictPart(nameA) || '';
+          const distPartB = getDistrictPart(nameB) || '';
+          const normA = distPartA.toLowerCase().replace(/\b(delhi|district|city|urban|rural|town)\b/g, '').replace(/[^a-z0-9]/g, '');
+          const normB = distPartB.toLowerCase().replace(/\b(delhi|district|city|urban|rural|town)\b/g, '').replace(/[^a-z0-9]/g, '');
+          if (normA === cleanHint && normB !== cleanHint) return -1;
+          if (normB === cleanHint && normA !== cleanHint) return 1;
+          // 2. Prioritize Longest Substring Match (e.g., South_West beats South)
+          return normB.length - normA.length;
+        });
+        if (exactMatches.length > 0) {
+          bestMatch = exactMatches[0];
+          break; // Stop checking subsequent hints
+        }
+      }
+    }
+
+    return getDistrictPart(bestMatch[0]);
+  }
   // 2. If no exact bbox match, return the nearest district centroid
   if (candidates.length > 0) {
     const nearest = candidates.sort(([, a], [, b]) => {
@@ -473,15 +582,44 @@ export function findBhuvanLayerByCoord(
       const distA = Math.hypot(lng - centerALng, lat - centerALat);
       const distB = Math.hypot(lng - centerBLng, lat - centerBLat);
       return distA - distB;
-    })[0];
-    const layerName = nearest[0];
-    const colonParts = layerName.split(':');
-    const namePart = colonParts.length > 1 ? colonParts[1] : colonParts[0];
-    const withoutSuffix = namePart.slice(0, namePart.length - suffix.length);
-    const withoutState = withoutSuffix.startsWith(`${stateCode}_`)
-      ? withoutSuffix.slice(stateCode.length + 1)
-      : withoutSuffix;
-    return withoutState;
+    });
+
+    let bestMatch = nearest[0];
+
+    if (districtNameHint) {
+      const hints = expandHintsWithOverrides(districtNameHint);
+      for (const hint of hints) {
+        const cleanHint = hint.toLowerCase()
+          .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+          .replace(/[^a-z0-9]/g, '');
+        
+        const exactMatches = nearest.filter(([name]) => {
+           const distPart = getDistrictPart(name);
+           if (!distPart) return false;
+           const distNorm = distPart.toLowerCase()
+             .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+             .replace(/[^a-z0-9]/g, '');
+             
+           return (distNorm.length > 2 && cleanHint.length > 2) && 
+                  (distNorm === cleanHint || distNorm.includes(cleanHint) || cleanHint.includes(distNorm));
+        }).sort(([nameA], [nameB]) => {
+          const distPartA = getDistrictPart(nameA) || '';
+          const distPartB = getDistrictPart(nameB) || '';
+          const normA = distPartA.toLowerCase().replace(/\b(delhi|district|city|urban|rural|town)\b/g, '').replace(/[^a-z0-9]/g, '');
+          const normB = distPartB.toLowerCase().replace(/\b(delhi|district|city|urban|rural|town)\b/g, '').replace(/[^a-z0-9]/g, '');
+          if (normA === cleanHint && normB !== cleanHint) return -1;
+          if (normB === cleanHint && normA !== cleanHint) return 1;
+          return normB.length - normA.length;
+        });
+        
+        if (exactMatches.length > 0) {
+          bestMatch = exactMatches[0];
+          break;
+        }
+      }
+    }
+
+    return getDistrictPart(bestMatch[0]);
   }
 
   return undefined;
@@ -517,18 +655,47 @@ export function getBestBhuvanDistrict(
 
   if (!geocodedDistrict) return stateData[0]; // fallback: first available
 
-  const needle = geocodedDistrict.toLowerCase().replace(/[\s-]/g, '_');
+  const hints = expandHintsWithOverrides(geocodedDistrict);
 
   // 1. Exact match
-  const exact = stateData.find(d => d.toLowerCase() === needle);
-  if (exact) return exact;
+  for (const hint of hints) {
+    const cleanHint = hint.toLowerCase()
+      .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+      .replace(/[^a-z0-9]/g, '');
 
-  // 2. Prefix match (needle starts with district or vice-versa)
-  const prefix = stateData.find(d => {
-    const d2 = d.toLowerCase();
-    return d2.startsWith(needle.slice(0, 4)) || needle.startsWith(d2.slice(0, 4));
-  });
-  if (prefix) return prefix;
+    const exact = stateData.find(d => {
+      const cleanDbName = d.toLowerCase()
+        .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+        .replace(/[^a-z0-9]/g, '');
+      return cleanDbName === cleanHint || 
+             (cleanDbName.length > 2 && cleanHint.length > 2 && 
+               (cleanDbName.includes(cleanHint) || cleanHint.includes(cleanDbName)));
+    });
+
+    if (exact) {
+      return exact;
+    }
+  }
+
+  // 2. Prefix match fallback
+  for (const hint of hints) {
+    const cleanHint = hint.toLowerCase()
+      .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+      .replace(/[^a-z0-9]/g, '');
+      
+    if (cleanHint.length < 3) continue;
+
+    const prefix = stateData.find(d => {
+      const cleanDbName = d.toLowerCase()
+        .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
+        .replace(/[^a-z0-9]/g, '');
+      return cleanDbName.startsWith(cleanHint.slice(0, 4)) || cleanHint.startsWith(cleanDbName.slice(0, 4));
+    });
+    
+    if (prefix) {
+      return prefix;
+    }
+  }
 
   // 3. Fallback: return first available for that state
   return stateData[0];
@@ -556,8 +723,23 @@ export function buildBhuvanLayerName(
 
   const workspace = theme.wmsWorkspace || theme.categoryId || theme.id;
 
-  // ── SIS-DP Phase 2: workspace:themeCode_STATE (state-level, no district) ──
+  // ── SIS-DP Phase 2: workspace:themeCode_STATE (and sometimes district level) ──
   if (theme.id === 'lulc_10k_sisdp2') {
+    // For SIS-DP Phase 2, some states (like MP) have district-level layers instead of 1 big state layer.
+    // Try to find the district using coordinates first.
+    if (lat !== undefined && lng !== undefined) {
+      const sisdp2District = findBhuvanLayerByCoord('lulc_10k_sisdp2', stateCode, lat, lng, districtNameHint);
+      // NOTE: sisdp2 layers in bhuvan sometimes have typo "20116_2019", we should just return the whole matched name
+      // To be safe, let's look up the EXACT layer name from findBhuvanLayerByCoord using a special return or rebuilding it
+      if (sisdp2District) {
+        // Find the exact key from the extents that matched this district
+        const exactLayer = Object.keys(BHUVAN_EXTENTS).find(name => 
+          name.includes(`_${stateCode}_${sisdp2District}`) && name.includes('SISDP_P2_LULC')
+        );
+        if (exactLayer) return exactLayer;
+        return `${workspace}:${theme.themeCode}_${stateCode}_${sisdp2District}`;
+      }
+    }
     return `${workspace}:${theme.themeCode}_${stateCode}`;
   }
 
@@ -574,7 +756,7 @@ export function buildBhuvanLayerName(
     // SIS-DP: NO workspace prefix — using virtual service endpoint /bhuvan/sisdpv2/wms
     if (theme.id === 'lulc_10k_sisdp') {
       const district = (lat !== undefined && lng !== undefined)
-        ? findBhuvanLayerByCoord('lulc_10k_sisdp', stateCode, lat, lng)
+        ? findBhuvanLayerByCoord('lulc_10k_sisdp', stateCode, lat, lng, districtNameHint)
         : getBestBhuvanDistrict('sisdp', stateCode, districtNameHint);
       return district
         ? `${stateCode}_${district}_lulc_v2`
@@ -583,7 +765,7 @@ export function buildBhuvanLayerName(
     // NUIS: no workspace prefix
     if (theme.id === 'ulu_10k_nuis') {
       const districtCode = (lat !== undefined && lng !== undefined)
-        ? findBhuvanLayerByCoord('ulu_10k_nuis', stateCode, lat, lng)
+        ? findBhuvanLayerByCoord('ulu_10k_nuis', stateCode, lat, lng, districtNameHint)
         : getBestBhuvanDistrict('nuis', stateCode, districtNameHint);
       return districtCode
         ? `${stateCode}_${districtCode}_${theme.themeCode}`

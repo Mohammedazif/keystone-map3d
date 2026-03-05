@@ -115,21 +115,25 @@ export function CostRevenuePanel() {
 
     const handleSelectParam = (param: CostRevenueParameters) => {
         setSelectedParam(param);
-        setFormData(param);
+        const defaultParam = DEFAULT_COST_PARAMETERS.find(p => p.location === param.location && p.building_type === param.building_type) || DEFAULT_COST_PARAMETERS[0];
+        setFormData({
+            ...defaultParam,
+            ...param,
+            utility_costs: {
+                ...(defaultParam.utility_costs || {}),
+                ...(param.utility_costs || {})
+            }
+        } as any);
         setIsEditing(false);
     };
 
     const handleNewParam = () => {
         setSelectedParam(null);
+        const defaultParam = DEFAULT_COST_PARAMETERS.find(p => p.location === 'Delhi' && p.building_type === 'Residential') || DEFAULT_COST_PARAMETERS[0];
         setFormData({
+            ...defaultParam,
             location: 'Delhi',
             building_type: 'Residential',
-            earthwork_cost_per_sqm: 0,
-            structure_cost_per_sqm: 0,
-            finishing_cost_per_sqm: 0,
-            services_cost_per_sqm: 0,
-            total_cost_per_sqm: 0,
-            market_rate_per_sqm: 0,
             sellable_ratio: 0.75,
             currency: 'INR',
             notes: ''
@@ -153,17 +157,10 @@ export function CostRevenuePanel() {
             const paramId = `${formData.location}-${formData.building_type}`;
 
             const paramData: CostRevenueParameters = {
+                ...(formData as Required<CostRevenueParameters>),
                 id: paramId,
                 location: formData.location!,
                 building_type: formData.building_type!,
-                earthwork_cost_per_sqm: formData.earthwork_cost_per_sqm || 0,
-                structure_cost_per_sqm: formData.structure_cost_per_sqm || 0,
-                finishing_cost_per_sqm: formData.finishing_cost_per_sqm || 0,
-                services_cost_per_sqm: formData.services_cost_per_sqm || 0,
-                total_cost_per_sqm: formData.total_cost_per_sqm || 0,
-                market_rate_per_sqm: formData.market_rate_per_sqm || 0,
-                sellable_ratio: formData.sellable_ratio || 0.75,
-                currency: formData.currency || 'INR',
                 last_updated: new Date().toISOString(),
                 notes: formData.notes
             };
@@ -214,6 +211,10 @@ export function CostRevenuePanel() {
             maximumFractionDigits: 0
         }).format(value);
     };
+
+    const defaultParamsForType = DEFAULT_COST_PARAMETERS.find(
+        p => p.location === formData.location && p.building_type === formData.building_type
+    ) || DEFAULT_COST_PARAMETERS[0];
 
     return (
         <div className="grid grid-cols-[320px_1fr] gap-6 h-full">
@@ -338,7 +339,14 @@ export function CostRevenuePanel() {
                                     <Label htmlFor="location">Location *</Label>
                                     <Select
                                         value={formData.location}
-                                        onValueChange={(value) => setFormData({ ...formData, location: value })}
+                                        onValueChange={(value) => {
+                                            if (!selectedParam) {
+                                                const defaultParam = DEFAULT_COST_PARAMETERS.find(p => p.location === value && p.building_type === formData.building_type) || DEFAULT_COST_PARAMETERS[0];
+                                                setFormData({ ...defaultParam, location: value, building_type: formData.building_type });
+                                            } else {
+                                                setFormData({ ...formData, location: value });
+                                            }
+                                        }}
                                         disabled={!isEditing}
                                     >
                                         <SelectTrigger>
@@ -355,7 +363,14 @@ export function CostRevenuePanel() {
                                     <Label htmlFor="building_type">Building Type *</Label>
                                     <Select
                                         value={formData.building_type}
-                                        onValueChange={(value: any) => setFormData({ ...formData, building_type: value })}
+                                        onValueChange={(value: any) => {
+                                            if (!selectedParam) {
+                                                const defaultParam = DEFAULT_COST_PARAMETERS.find(p => p.location === formData.location && p.building_type === value) || DEFAULT_COST_PARAMETERS[0];
+                                                setFormData({ ...defaultParam, location: formData.location, building_type: value });
+                                            } else {
+                                                setFormData({ ...formData, building_type: value });
+                                            }
+                                        }}
                                         disabled={!isEditing}
                                     >
                                         <SelectTrigger>
@@ -375,47 +390,41 @@ export function CostRevenuePanel() {
                             {/* Cost Breakdown */}
                             <div className="space-y-4">
                                 <h4 className="text-sm font-semibold">Cost Breakdown (per sqm)</h4>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <Label htmlFor="earthwork">Earthwork Cost</Label>
-                                        <Input
-                                            id="earthwork"
-                                            type="number"
-                                            value={formData.earthwork_cost_per_sqm}
-                                            onChange={(e) => setFormData({ ...formData, earthwork_cost_per_sqm: parseFloat(e.target.value) || 0 })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label htmlFor="structure">Structure Cost</Label>
-                                        <Input
-                                            id="structure"
-                                            type="number"
-                                            value={formData.structure_cost_per_sqm}
-                                            onChange={(e) => setFormData({ ...formData, structure_cost_per_sqm: parseFloat(e.target.value) || 0 })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label htmlFor="finishing">Finishing Cost</Label>
-                                        <Input
-                                            id="finishing"
-                                            type="number"
-                                            value={formData.finishing_cost_per_sqm}
-                                            onChange={(e) => setFormData({ ...formData, finishing_cost_per_sqm: parseFloat(e.target.value) || 0 })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label htmlFor="services">Services (MEP) Cost</Label>
-                                        <Input
-                                            id="services"
-                                            type="number"
-                                            value={formData.services_cost_per_sqm}
-                                            onChange={(e) => setFormData({ ...formData, services_cost_per_sqm: parseFloat(e.target.value) || 0 })}
-                                            disabled={!isEditing}
-                                        />
-                                    </div>
+                                <div className="space-y-6">
+                                    {(['earthwork', 'structure', 'finishing', 'services'] as const).map(key => (
+                                        <div key={key} className="p-3 bg-secondary/10 rounded-lg border border-border/40">
+                                            <Label className="capitalize font-semibold mb-3 block">{key} Cost</Label>
+                                            <div className="grid grid-cols-3 gap-3">
+                                                <div className="space-y-1.5">
+                                                    <span className="text-[10px] text-muted-foreground uppercase">Min (P10)</span>
+                                                    <Input
+                                                        type="number" className="h-8 text-sm"
+                                                        value={(formData as any)[`${key}_cost_per_sqm_min`] || ''}
+                                                        onChange={(e) => setFormData({ ...formData, [`${key}_cost_per_sqm_min`]: parseFloat(e.target.value) || undefined })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    <span className="text-[10px] text-muted-foreground uppercase text-primary font-medium">Expected (P50) *</span>
+                                                    <Input
+                                                        type="number" className="h-8 text-sm border-primary/30"
+                                                        value={(formData as any)[`${key}_cost_per_sqm`]}
+                                                        onChange={(e) => setFormData({ ...formData, [`${key}_cost_per_sqm`]: parseFloat(e.target.value) || 0 })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    <span className="text-[10px] text-muted-foreground uppercase">Max (P90)</span>
+                                                    <Input
+                                                        type="number" className="h-8 text-sm"
+                                                        value={(formData as any)[`${key}_cost_per_sqm_max`] || ''}
+                                                        onChange={(e) => setFormData({ ...formData, [`${key}_cost_per_sqm_max`]: parseFloat(e.target.value) || undefined })}
+                                                        disabled={!isEditing}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
 
                                 <div className="p-4 bg-secondary/30 rounded-lg">
@@ -426,6 +435,42 @@ export function CostRevenuePanel() {
                                         </span>
                                     </div>
                                     <p className="text-xs text-muted-foreground mt-1">Auto-calculated from above costs</p>
+                                </div>
+                            </div>
+
+                            <Separator />
+
+                            {/* Utility Costs */}
+                            <div className="space-y-4">
+                                <h4 className="text-sm font-semibold flex items-center gap-2">Utility Costs</h4>
+                                <div className="grid grid-cols-2 gap-4">
+                                    {[
+                                        { key: 'ugt_pumping', label: 'UGT + Pumping (Fixed, ₹)' },
+                                        { key: 'stp_per_kld', label: 'STP (₹ per KLD)' },
+                                        { key: 'wtp_cost', label: 'WTP (Fixed, ₹)' },
+                                        { key: 'transformer_per_kva', label: 'Transformer (₹/kVA)' },
+                                        { key: 'dg_per_kva', label: 'DG Set (₹/kVA)' },
+                                        { key: 'fire_fighting', label: 'Fire Fighting (Fixed, ₹)' },
+                                        { key: 'lifts_per_unit', label: 'Lifts (₹ per lift)' },
+                                        { key: 'solar_per_kw', label: 'Solar PV (₹/kW)' },
+                                        { key: 'hvac_per_tr', label: 'HVAC (₹/TR)' },
+                                    ].map(u => (
+                                        <div key={u.key} className="space-y-2">
+                                            <Label className="text-xs">{u.label}</Label>
+                                            <Input
+                                                type="number" className="h-8 text-sm"
+                                                value={formData.utility_costs?.[u.key as keyof typeof formData.utility_costs] || ''}
+                                                onChange={(e) => setFormData({
+                                                    ...formData,
+                                                    utility_costs: {
+                                                        ...formData.utility_costs,
+                                                        [u.key]: parseFloat(e.target.value) || undefined
+                                                    }
+                                                })}
+                                                disabled={!isEditing}
+                                            />
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
 
