@@ -11,7 +11,6 @@ export const hslToRgb = (h: number, s: number, l: number): string => {
     const r = Math.round(255 * f(0));
     const g = Math.round(255 * f(8));
     const b = Math.round(255 * f(4));
-    // Return hex format for THREE.Color compatibility
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 };
 

@@ -992,45 +992,33 @@ export async function runVisualAnalysis(
 
 /**
  * Calculate the shadow polygon for a building at a given sun position
- * Shadow is the union of the base polygon and the projected top polygon (extrusion shadow)
  */
 export function calculateBuildingShadow(
     building: Building,
     azimuth: number,
     altitude: number
-): any { // Returns turf.Feature<turf.Polygon> | null
-    if (altitude <= 0) return null; // Sun is below horizon
+): any { 
+    if (altitude <= 0) return null; 
 
     const height = building.height || (building.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
 
-    // Shadow length = h / tan(altitude)
     const tanAlt = Math.tan(altitude);
-    // Cap shadow length to avoid infinite/huge shadows at sunset
     const shadowLen = tanAlt > 0.1 ? height / tanAlt : height * 20;
 
-    // Sun/Wind Azimuth convention: 0 = North, PI/2 = East
-    // Vector TO Sun/Source: x = sin(az), y = cos(az)
-    // Shadow is FROM building: vector = -sourceVec
     const sunVecX = Math.sin(azimuth);
     const sunVecY = Math.cos(azimuth);
 
     const shadowX = -sunVecX * shadowLen;
     const shadowY = -sunVecY * shadowLen;
 
-    // Project the building base polygon
     const basePoly = building.geometry;
     if (!basePoly || !basePoly.geometry) return null;
 
-    // Handle MultiPolygon (simplified: take first polygon)
-    // Ensure consistent winding
     const safePoly = turf.rewind(basePoly as any, { reverse: false });
     const coords = (safePoly.geometry.type === 'Polygon')
         ? safePoly.geometry.coordinates[0]
         : (safePoly.geometry as any).coordinates[0][0];
 
-    // Shift coords to get the projected top
-    // Approximate meters to degrees conversion
-    // 1 deg Lat ~= 111320m
     const centroid = turf.centroid(basePoly);
     const lat = centroid.geometry.coordinates[1];
     const metersPerDegLat = 111320;
@@ -1041,9 +1029,6 @@ export function calculateBuildingShadow(
 
     const shiftedCoords = coords.map((c: any) => [c[0] + shiftLng, c[1] + shiftLat]);
 
-    // Create a collection of points from base and projected top
-    // Computing convex hull of these points gives the shadow volume footprint
-    // (This ignores the 'hole' if the building is hollow, but acceptable for shadow casting)
     const allPoints = [...coords, ...shiftedCoords].map(c => turf.point(c));
     const collection = turf.featureCollection(allPoints);
 
@@ -1066,21 +1051,14 @@ export async function runGroundAnalysis(
 
     console.time('GroundAnalysis');
 
-    // 1. Generate Grid Points
     const bbox = turf.bbox(plotGeometry);
     const area = turf.area(plotGeometry); // sq meters
 
-    // Target ~400-900 points. sqrt(area/500) = spacing in meters
-    // Example: 10000sqm -> 100x100 -> spacing ~4m -> 625 points
-    let cellSideKm = Math.max(0.002, Math.sqrt(area / 600) / 1000); // Minimum 2m spacing
-
-    // console.log('[GroundAnalysis] Grid config', { area, cellSideKm });
+    let cellSideKm = Math.max(0.002, Math.sqrt(area / 600) / 1000); 
 
     const grid = turf.pointGrid(bbox, cellSideKm, { units: 'kilometers', mask: plotGeometry });
-    // Exclude points that fall within any building footprint to prevent heatmap overlap with buildings
     const rawPoints = grid.features;
     const points = rawPoints.filter((pt: any) => {
-      // Return true if point is NOT inside any building geometry
       return !buildings.some((b) => {
         return b.geometry && turf.booleanPointInPolygon(pt, b.geometry);
       });
@@ -1090,15 +1068,14 @@ export async function runGroundAnalysis(
 
     const results: any[] = [];
 
-    // 2. Calculate Analysis
+    // Calculate Analysis
     const center = turf.centroid(plotGeometry);
     const [lng, lat] = center.geometry.coordinates;
 
     if (mode === 'sun-hours') {
-        const sampleCount = 24; // Higher resolution: every 35 min from 5am-7pm
+        const sampleCount = 24; 
         const hourStep = 14 / sampleCount;
 
-        // Pre-calculate sun and shadows for each hour to avoid re-calc per point
         const hourlyData: any[] = [];
         const baseDate = new Date(date);
 
@@ -1114,7 +1091,6 @@ export async function runGroundAnalysis(
                 continue;
             }
 
-            // Generate shadows for all buildings at this hour
             const shadows: any[] = [];
             buildings.forEach(b => {
                 const s = calculateBuildingShadow(b, azimuth, altitude);
@@ -1124,7 +1100,6 @@ export async function runGroundAnalysis(
             hourlyData.push({ shadows, altitude });
         }
 
-        // Evaluate points
         points.forEach((pt: any) => {
             let exposureCount = 0;
 
@@ -1132,8 +1107,6 @@ export async function runGroundAnalysis(
                 const data = hourlyData[i];
                 if (!data) continue;
 
-                // Check if point is inside any shadow
-                // Optimization: check bounding box first? Turf might do it.
                 const isInShadow = data.shadows.some((shadow: any) => turf.booleanPointInPolygon(pt, shadow));
 
                 if (!isInShadow) {
@@ -1141,10 +1114,8 @@ export async function runGroundAnalysis(
                 }
             }
 
-            const sunHours = (exposureCount / sampleCount) * 14; // 14-hour window
+            const sunHours = (exposureCount / sampleCount) * 14; 
 
-            // Normalize for Heatmap Weight (0-1)
-            // Expect max ~12h. 
             const weight = Math.min(sunHours / 10, 1);
 
             pt.properties = {
@@ -1155,7 +1126,6 @@ export async function runGroundAnalysis(
         });
 
     } else if (mode === 'daylight') {
-        // Simple Snapshot at current time
         const { azimuth, altitude } = getSunPosition(date, lat, lng);
 
         let shadows: any[] = [];
@@ -1172,8 +1142,6 @@ export async function runGroundAnalysis(
                 const isInShadow = shadows.some((shadow: any) => turf.booleanPointInPolygon(pt, shadow));
                 if (!isInShadow) exposed = 1;
             }
-            // Simple daylight factor proxy: Sunlight Intensity
-            // Factor in Angle of Incidence? sunAltitude.
             const val = exposed * Math.sin(altitude);
 
             pt.properties = {
@@ -1184,18 +1152,14 @@ export async function runGroundAnalysis(
         });
 
     } else if (mode === 'wind') {
-        // Use real wind data from API if available
         const currentHour = date.getHours();
         const apiWind = weatherData ? getWindAtHour(weatherData, currentHour) : null;
-        const windDirDeg = apiWind ? apiWind.direction : 45; // Real direction or default NE
-        const refWindSpeed = apiWind ? apiWind.speed : 3.5; // Real m/s or default
+        const windDirDeg = apiWind ? apiWind.direction : 45; 
+        const refWindSpeed = apiWind ? apiWind.speed : 3.5; 
         const windRad = windDirDeg * (Math.PI / 180);
 
-        // Wake zone simulation using shadow casting at low angle
-        const wakeAngle = Math.atan(0.2); // ~11 deg altitude eq. → wake length ~5x building height
+        const wakeAngle = Math.atan(0.2); 
 
-        // Wind is blowing FROM windDirDeg. We cast a "shadow" AWAY from the wind source.
-        // So we pass windRad directly as the "sun" position to cast a downwind wake.
         const wakes: any[] = [];
         buildings.forEach(b => {
             const s = calculateBuildingShadow(b, windRad, wakeAngle);
@@ -1203,13 +1167,10 @@ export async function runGroundAnalysis(
         });
 
         points.forEach((pt: any) => {
-            // Check if point is in wake (wind shadow)
             const isInWake = wakes.some((wake: any) => turf.booleanPointInPolygon(pt, wake));
 
-            // Scale value by real wind speed (or default)
-            // In wake = sheltered (20% of ref speed). In open = full speed.
             const speedFraction = isInWake ? 0.2 : 1.0;
-            const val = speedFraction * (refWindSpeed / 5.0); // Normalize to 0-1 range (5 m/s = 1.0)
+            const val = speedFraction * (refWindSpeed / 5.0); 
 
             const angle = windDirDeg;
 

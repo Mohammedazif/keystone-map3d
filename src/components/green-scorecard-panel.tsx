@@ -1,7 +1,7 @@
 
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useBuildingStore, useProjectData, useSelectedPlot } from '@/hooks/use-building-store';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { useGreenStandardChecks } from '@/hooks/use-green-standard-checks';
@@ -11,15 +11,43 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { CheckCircle2, Circle, XCircle, AlertCircle, Leaf, Wind, Sun, MapPin, Loader2, MousePointerClick } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { CheckCircle2, Circle, XCircle, AlertCircle, Leaf, Wind, Sun, MapPin, Loader2, MousePointerClick, Hand } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Separator } from '@/components/ui/separator';
+
+const CREDIT_MATCH_RULES = [
+    { keywords: ['ventilation', 'wind', 'air quality', 'natural ventilation', 'cross ventilation'], checkKey: 'ventilation' },
+    { keywords: ['daylight', 'solar access', 'natural light'], checkKey: 'daylighting' },
+    { keywords: ['landscape', 'green cover', 'vegetation', 'planting', 'tree', 'habitat', 'biodivers', 'topography'], checkKey: 'green_cover' },
+    { keywords: ['open space', 'outdoor space'], checkKey: 'open_space' },
+    { keywords: ['heat island', 'urban heat', 'uhie'], checkKey: 'heat_island' },
+    { keywords: ['transit', 'transport', 'connectivity', 'bus', 'metro', 'bicycle', 'pedestrian', 'walkable'], checkKey: 'transit_access' },
+    { keywords: ['amenity', 'proximity', 'community', 'basic service', 'social infrastructure'], checkKey: 'amenity_proximity' },
+    { keywords: ['rainwater', 'rain water', 'water harvest', 'rwh', 'storm water'], checkKey: 'rainwater_harvesting' },
+    { keywords: ['solar', 'photovoltaic', 'renewable energy', 'solar pv', 'green power'], checkKey: 'solar_energy' },
+    { keywords: ['stp', 'wtp', 'sewage', 'water recycl', 'water treatment', 'effluent', 'waste water', 'wastewater'], checkKey: 'water_recycling' },
+    { keywords: ['waste', 'owc', 'solid waste', 'organic waste', 'compost', 'recyclable waste'], checkKey: 'waste_management' },
+    { keywords: ['ev ', 'electric vehicle', 'ev charging', 'e-vehicle', 'low-emitting vehicle'], checkKey: 'ev_charging' },
+    { keywords: ['parking', 'vehicle parking'], checkKey: 'parking_compliance' },
+    { keywords: ['far', 'floor area ratio', 'fsi', 'fsr', 'capacity assessment', 'compact'], checkKey: 'far_compliance' },
+    { keywords: ['coverage', 'ground cover', 'plot coverage'], checkKey: 'ground_coverage' },
+    { keywords: ['orientation', 'building orient', 'passive architecture'], checkKey: 'building_orientation' },
+    { keywords: ['depth', 'floor plate'], checkKey: 'floor_plate_depth' },
+    { keywords: ['fire', 'fire safety', 'firefighting'], checkKey: 'fire_safety' },
+    { keywords: ['energy efficien', 'hvac', 'cooling', 'heating', 'mechanical', 'thermal load', 'energy optimization', 'energy performance'], checkKey: 'energy_efficiency' },
+    { keywords: ['site', 'master plan', 'site plan', 'zoning', 'sustainable design'], checkKey: 'site_planning' },
+    { keywords: ['land use', 'mixed use', 'land utiliz', 'equitable development'], checkKey: 'land_use_planning' },
+    { keywords: ['water efficien', 'water conserv', 'water manage', 'water meter', 'plumbing fixture'], checkKey: 'water_recycling' },
+    { keywords: ['construction', 'material', 'embodied energy', 'fly ash', 'aac', 'indoor', 'iaq', 'low voc', 'tobacco', 'innovation', 'bonus', 'exceptional', 'leed ap', 'igbc ap', 'housing', 'employment', 'social', 'cultural', 'tenant', 'commissioning', 'process', 'operation and maintenance', 'green education', 'no smoking', 'refrigerant', 'odp', 'gwp', 'ozone', 'light pollution', 'soil erosion', 'topsoil', 'site disturbance', 'green building', 'decarbonization', 'health', 'wellbeing', 'universal design', 'differently abled', 'measurement & verification', 'smart metering'], checkKey: 'manual_tracking' },
+];
 
 export function GreenScorecardPanel() {
     const activeProject = useProjectData();
     const { regulations, isLoading } = useGreenRegulations(activeProject as unknown as Project);
 
     const creditStatusMap = useGreenStandardChecks(activeProject, activeProject?.simulationResults);
+    const [manualOverrides, setManualOverrides] = useState<Record<string, boolean>>({});
 
     const regulation = regulations && regulations.length > 0 ? regulations[0] : null;
 
@@ -34,66 +62,58 @@ export function GreenScorecardPanel() {
                 const maxPoints = credit.points || 0;
                 let status: 'pending' | 'achieved' | 'failed' = 'pending';
                 let score = 0;
+                let isAuto = false;
+                let isManualOnly = false;
+                let dataKey = '';
+                const overrideKey = credit.code || credit.name;
 
                 const nameLower = credit.name.toLowerCase();
+                
+                // Find matching rule
+                const matchedRule = CREDIT_MATCH_RULES.find(rule => 
+                    rule.keywords.some(kw => nameLower.includes(kw))
+                );
 
-                if (nameLower.includes('ventilation') || nameLower.includes('wind')) {
-                    if (creditStatusMap['ventilation']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
-                    }
-                }
-
-                // Sun / Daylighting
-                if (nameLower.includes('daylight') || nameLower.includes('solar')) {
-                    if (creditStatusMap['daylighting']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
-                    }
-                }
-
-                // Green Cover / Landscape
-                if (nameLower.includes('landscape') || nameLower.includes('green cover') || nameLower.includes('vegetation')) {
-                    if (creditStatusMap['green_cover']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
-                    }
-                }
-
-                // Open Space
-                if (nameLower.includes('open space')) {
-                    if (creditStatusMap['open_space']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
-                    }
-                }
-
-                // Heat Island proxy (Wind + Solar + Green)
-                if (nameLower.includes('heat island')) {
-                    if (creditStatusMap['ventilation']?.status === 'achieved' && creditStatusMap['green_cover']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
-                    }
-                }
-
-                if (nameLower.includes('transit') || nameLower.includes('connectivity')) {
-                    if (creditStatusMap['transit_access']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
-                    }
-                }
-
-                if (nameLower.includes('amenit') || nameLower.includes('proximity')) {
-                    if (creditStatusMap['amenity_proximity']?.status === 'achieved') {
-                        status = 'achieved';
-                        score = maxPoints;
+                if (matchedRule) {
+                    if (matchedRule.checkKey === 'manual_tracking') {
+                        isManualOnly = true;
+                        // Use unique key for manual override state
+                        if (manualOverrides[overrideKey]) {
+                            status = 'achieved';
+                            score = maxPoints;
+                        }
+                    } else if (matchedRule.checkKey === 'heat_island') {
+                        // Special composite check
+                        if (creditStatusMap['ventilation']?.status === 'achieved' && creditStatusMap['green_cover']?.status === 'achieved') {
+                            status = 'achieved';
+                            score = maxPoints;
+                            isAuto = true;
+                        }
+                    } else {
+                        // Standard check from engine
+                        const engineStatus = creditStatusMap[matchedRule.checkKey];
+                        if (engineStatus) {
+                            status = engineStatus.status;
+                            if (status === 'achieved') score = maxPoints;
+                            isAuto = true;
+                            dataKey = matchedRule.checkKey;
+                        }
                     }
                 }
 
                 totalPoints += maxPoints;
                 achievedPoints += score;
 
-                return { ...credit, status, score, maxPoints, isAuto: nameLower.includes('ventilation') || nameLower.includes('daylight') || nameLower.includes('transit') || nameLower.includes('amenit') };
+                return { 
+                    ...credit, 
+                    status, 
+                    score, 
+                    maxPoints, 
+                    isAuto, 
+                    isManualOnly, 
+                    dataKey,
+                    overrideKey
+                };
             });
 
             return { ...cat, credits };
@@ -111,6 +131,7 @@ export function GreenScorecardPanel() {
                     score: transitStatus ? 2 : 0,
                     maxPoints: 2,
                     isAuto: true,
+                    dataKey: 'transit',
                     code: "LOC-1"
                 },
                 {
@@ -120,6 +141,7 @@ export function GreenScorecardPanel() {
                     score: amenityStatus ? 2 : 0,
                     maxPoints: 2,
                     isAuto: true,
+                    dataKey: 'amenity',
                     code: "LOC-2"
                 }
             ];
@@ -136,7 +158,14 @@ export function GreenScorecardPanel() {
         }
 
         return { categories, totalPoints, achievedPoints };
-    }, [regulation, creditStatusMap]);
+    }, [regulation, creditStatusMap, manualOverrides]);
+
+    const handleToggleManual = (overrideKey: string) => {
+        setManualOverrides(prev => ({
+            ...prev,
+            [overrideKey]: !prev[overrideKey]
+        }));
+    };
 
     const plots = useBuildingStore(state => state.plots);
     const isPlotCreated = plots.length > 0;
@@ -166,7 +195,7 @@ export function GreenScorecardPanel() {
         );
     }
 
-    // If we have no data at all yet, show a minimal loading state
+
     if (isLoading && !scorecardData) return (
         <div className="p-8 flex items-center justify-center text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading Green Regulations...
@@ -235,16 +264,38 @@ export function GreenScorecardPanel() {
                                                         </span>
                                                     </div>
 
-                                                    {/* Auto-calc badge */}
-                                                    {(credit.isAuto) && (
-                                                        <div className="flex items-center gap-1 mt-1">
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                        {/* Auto-calc badge */}
+                                                        {credit.isAuto && (
                                                             <Badge variant="secondary" className="h-4 px-1 text-[10px] font-normal gap-1">
                                                                 <Sparkles4Icon className="h-2 w-2" /> Auto-Linked
                                                             </Badge>
-                                                            {credit.name.includes('Ventilation') && <span className="text-[10px] text-muted-foreground">(Requires Wind Sim)</span>}
-                                                            {credit.name.includes('Location') && <span className="text-[10px] text-muted-foreground">(Requires Map Analysis)</span>}
-                                                        </div>
-                                                    )}
+                                                        )}
+                                                        
+                                                        {credit.isManualOnly && (
+                                                            <div className="flex items-center gap-2 w-full justify-between">
+                                                                <Badge variant="outline" className="h-4 px-1 text-[10px] font-normal gap-1 border-dashed">
+                                                                    <Hand className="h-2 w-2" /> Manual Tracking
+                                                                </Badge>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-[10px] text-muted-foreground">Mark Achieved</span>
+                                                                    <Switch 
+                                                                        checked={!!manualOverrides[credit.overrideKey]}
+                                                                        onCheckedChange={() => handleToggleManual(credit.overrideKey)}
+                                                                        className="scale-75 origin-right"
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {credit.dataKey === 'ventilation' && <span className="text-[10px] text-muted-foreground line-clamp-1">(Simulation)</span>}
+                                                        {credit.dataKey === 'daylighting' && <span className="text-[10px] text-muted-foreground line-clamp-1">(Simulation)</span>}
+                                                        {credit.dataKey === 'transit' && <span className="text-[10px] text-muted-foreground line-clamp-1">(Proximity)</span>}
+                                                        {credit.dataKey === 'amenity' && <span className="text-[10px] text-muted-foreground line-clamp-1">(Proximity)</span>}
+                                                        {['green_cover', 'open_space', 'site_planning', 'land_use_planning'].includes(credit.dataKey) && <span className="text-[10px] text-muted-foreground line-clamp-1">(Plot Data)</span>}
+                                                        {['far_compliance', 'ground_coverage', 'parking_compliance'].includes(credit.dataKey) && <span className="text-[10px] text-muted-foreground line-clamp-1">(KPIs)</span>}
+                                                        {['rainwater_harvesting', 'solar_energy', 'water_recycling', 'waste_management', 'ev_charging', 'fire_safety', 'energy_efficiency'].includes(credit.dataKey) && <span className="text-[10px] text-muted-foreground line-clamp-1">(Utilities)</span>}
+                                                    </div>
                                                 </div>
                                             </div>
                                         ))}

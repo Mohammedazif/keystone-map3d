@@ -57,8 +57,8 @@ export function createShaktiChakraGroup(THREE: any, radius: number = 50) {
     // ─── 1. OUTER DEGREE TICK RING ───────────────────────────────────────────
     const outerR = radius * 1.55;
     const tickInnerR = radius * 1.35;
-    const tickMajorR = radius * 1.55;  // every 10°
-    const tickMinorR = radius * 1.42;  // every 5° (between 10° ticks)
+    const tickMajorR = radius * 1.55; 
+    const tickMinorR = radius * 1.42;  
 
     for (let deg = 0; deg < 360; deg += 5) {
         const isMajor = deg % 10 === 0;
@@ -191,9 +191,8 @@ export function createShaktiChakraGroup(THREE: any, radius: number = 50) {
         { label: 'W8', startBearing: 326.25 },
     ];
 
-    const zoneLabelR = radius * 1.1;  // Between inner rings
+    const zoneLabelR = radius * 1.1; 
     zones.forEach(zone => {
-        // Center of zone = startBearing + 5.625°
         const centerBearing = zone.startBearing + 5.625;
         const angle = bearingToAngle(centerBearing);
         const isCardinal = zone.label.endsWith('3') || zone.label.endsWith('4') || zone.label.endsWith('5') || zone.label.endsWith('6');

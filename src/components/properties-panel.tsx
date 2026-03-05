@@ -398,9 +398,6 @@ function UnitMixConfig({ params, onChange }: { params: FeasibilityParams, onChan
     const updateUnitMix = (index: number, field: keyof UnitTypology, value: any) => {
         const newMix = produce(params.unitMix, draft => {
             if (field === 'mixRatio') {
-                // Determine other items to balance? For now, just set it. 
-                // Advanced: Auto-balance other ratios.
-                // Simple: Allow user to set, normalize later or assume they sum to 1.
                 draft[index].mixRatio = value;
             } else if (field === 'area') {
                 draft[index].area = value;

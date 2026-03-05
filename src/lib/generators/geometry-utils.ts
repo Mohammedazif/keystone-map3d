@@ -7,8 +7,8 @@ import * as turf from '@turf/turf';
 import { Feature, Polygon, MultiPolygon } from 'geojson';
 
 export interface PeripheralZoneConfig {
-    parkingWidth: number;  // meters from boundary
-    roadWidth: number;     // meters after parking
+    parkingWidth: number;
+    roadWidth: number;
 }
 
 export interface SetbackConfig {
@@ -20,7 +20,6 @@ export interface SetbackConfig {
 
 /**
  * Apply 11m Peripheral Clear Zone (5m Parking + 6m Road)
- * Returns the buildable area after deducting peripheral zones
  */
 export function applyPeripheralClearZone(
     plotGeometry: Feature<Polygon | MultiPolygon>,
@@ -31,40 +30,29 @@ export function applyPeripheralClearZone(
     roadZone: Feature<Polygon | MultiPolygon> | null;
 } {
     try {
-        const totalClearance = config.parkingWidth + config.roadWidth; // e.g. 11m
+        const totalClearance = config.parkingWidth + config.roadWidth;
 
-        // Clean input geometry first
-        // @ts-ignore
         const cleanedPlot = turf.cleanCoords(plotGeometry);
-
-        // Create the buildable area by buffering inward
-        // @ts-ignore
         const buildable = turf.buffer(cleanedPlot, -totalClearance / 1000, { units: 'kilometers' });
 
-        // Validate buildable area
+        // buildable area
         if (!buildable || turf.area(buildable) < 100) {
             console.warn('[applyPeripheralClearZone] Buildable area too small or vanished after clearance');
             return { buildableArea: null, parkingZone: null, roadZone: null };
         }
 
-        // Ensure buildable area is valid polygon
-        // @ts-ignore
         const buildablePoly = turf.unkinkPolygon(buildable).features.reduce((largest, current) => {
             return turf.area(current) > turf.area(largest) ? current : largest;
         }).geometry;
 
-        // Re-wrap as Feature
         const buildableFeature = turf.polygon(buildablePoly.coordinates);
 
-        // Create parking zone (outer ring: 0-Xm from boundary)
+        // parking zone
         const parkingOuter = cleanedPlot;
-        // @ts-ignore
         const parkingInnerRaw = turf.buffer(cleanedPlot, -config.parkingWidth / 1000, { units: 'kilometers' });
 
         let parkingInner = parkingInnerRaw;
-        // Clean parking inner if valid
         if (parkingInner) {
-            // @ts-ignore
             const piPoly = turf.unkinkPolygon(parkingInner).features.reduce((largest, current) => {
                 return turf.area(current) > turf.area(largest) ? current : largest;
             }).geometry;
@@ -73,16 +61,12 @@ export function applyPeripheralClearZone(
 
         const parkingZone = parkingInner ? turf.difference(parkingOuter, parkingInner) : null;
 
-        // Create road zone (middle ring: X-Ym from boundary)
-        // Note: roadOuter IS parkingInner
+        // road zone
         const roadOuter = parkingInner;
         const roadInner = buildableFeature;
 
-        // Verify roadInner is strictly inside roadOuter
         const roadZone = roadOuter && roadInner ? turf.difference(roadOuter, roadInner) : null;
 
-        // Final Sanity Check: Road zone should not be larger than the plot itself (implied)
-        // And certainly not larger than the buildable area if it's a ring
         if (roadZone && turf.area(roadZone) > turf.area(cleanedPlot) * 0.9) {
             console.warn('[applyPeripheralClearZone] Road zone seemingly covers entire plot, discarding');
             return { buildableArea: buildableFeature, parkingZone: parkingZone as Feature<Polygon>, roadZone: null };
@@ -100,8 +84,7 @@ export function applyPeripheralClearZone(
 }
 
 /**
- * Apply robust setbacks with corner handling
- * Uses polygon buffering for uniform setbacks
+ * Apply setbacks with corner handling
  */
 export function applyRobustSetbacks(
     geometry: Feature<Polygon | MultiPolygon>,
@@ -126,7 +109,6 @@ export function applyRobustSetbacks(
 
 /**
  * Ensure minimum corner clearance between building segments
- * This prevents buildings from touching at corners (especially in T and H shapes)
  */
 export function ensureCornerClearance(
     buildingFootprints: Feature<Polygon>[],
@@ -138,20 +120,16 @@ export function ensureCornerClearance(
         let building = buildingFootprints[i];
         let hasOverlap = false;
 
-        // Check against all other buildings
         for (let j = 0; j < buildingFootprints.length; j++) {
             if (i === j) continue;
 
             const other = buildingFootprints[j];
-
-            // Calculate distance between buildings
             const distance = turf.distance(
                 turf.centroid(building),
                 turf.centroid(other),
                 { units: 'meters' }
             );
 
-            // If too close, shrink this building slightly
             if (distance < minClearance * 2) {
                 const shrunk = turf.buffer(building, -minClearance / 2000, { units: 'kilometers' });
                 if (shrunk && turf.area(shrunk) > 50) {
@@ -168,7 +146,7 @@ export function ensureCornerClearance(
 }
 
 /**
- * Deduct obstacle areas (roads, entries) from buildable area
+ * Deduct obstacle areas from buildable area
  */
 export function deductObstacles(
     buildableArea: Feature<Polygon | MultiPolygon>,

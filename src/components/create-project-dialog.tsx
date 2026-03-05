@@ -130,7 +130,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
             typeof totalPlotArea === 'number' ? totalPlotArea : undefined,
             intendedUse as BuildingIntendedUse,
             location,
-            (selectedRegulationId && selectedRegulationId !== 'generic') ? selectedRegulationId : undefined, // Check for generic or empty
+            (selectedRegulationId && selectedRegulationId !== 'generic') ? selectedRegulationId : undefined,
             greenCertification,
             vastuCompliant
         );

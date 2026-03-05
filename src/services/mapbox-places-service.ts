@@ -50,9 +50,6 @@ export const MapboxPlacesService = {
         }
 
         const query = CATEGORY_KEYWORDS[category];
-        // Using Mapbox Geocoding API for 'places' or 'poi'
-        // Docs: https://docs.mapbox.com/api/search/geocoding/
-        // Use a more specific search term for better results
         const searchTerm = category === 'transit' ? 'transit station' :
             category === 'school' ? 'school' :
                 category === 'hospital' ? 'hospital' :
@@ -81,7 +78,6 @@ export const MapboxPlacesService = {
 
             let features = data.features || [];
 
-            // FALLBACK: If no POIs found, search without the 'poi' type restriction
             if (features.length === 0) {
                 console.log(`[MapboxPlaces] No POIs found for ${category}, trying fallback broader search...`);
                 const fallbackUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchTerm)}.json?` +
@@ -102,12 +98,7 @@ export const MapboxPlacesService = {
             }
 
             return features.map((f: any) => {
-                // Calculate rough distance (Haversine or simple Euclidean for close range)
-                // For better accuracy, use Turf.js outside this service or simple math
                 const distance = calculateDistanceInMeters(center[1], center[0], f.center[1], f.center[0]);
-
-                // Clean up the name to be more specific (e.g. "Delhi Public School")
-                // f.text is usually the specific name, f.place_name is full address
                 const name = f.text || '';
                 let address = f.place_name || '';
 
@@ -160,7 +151,6 @@ export const MapboxPlacesService = {
 
     /**
      * Fetch road geometries around a center point using Mapbox Tilequery API.
-     * Reliable for all map styles as it queries the underlying data directly.
      * @param center [lng, lat]
      * @param radius Search radius in meters
      */
@@ -225,7 +215,6 @@ export const MapboxPlacesService = {
                 }
                 if (f.place_type.includes('region')) {
                     if (!stateCode && f.properties?.short_code) {
-                        // Mapbox usually returns 'IN-DL' for Delhi
                         const code = f.properties.short_code.split('-');
                         stateCode = code.length > 1 ? code[1] : code[0];
                     }
@@ -240,9 +229,9 @@ export const MapboxPlacesService = {
     }
 };
 
-// Helper: Haversine Distance
+// Haversine Distance
 function calculateDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371e3; // metres
+    const R = 6371e3;
     const φ1 = lat1 * Math.PI / 180;
     const φ2 = lat2 * Math.PI / 180;
     const Δφ = (lat2 - lat1) * Math.PI / 180;

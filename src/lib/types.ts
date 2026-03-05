@@ -63,7 +63,6 @@ export interface Building {
   soilData: SoilData | null;
   intendedUse: BuildingIntendedUse;
   floors: Floor[];
-  // Internal Layout
   cores?: Core[];
   units?: Unit[];
   entrances?: EntryPoint[];
@@ -72,15 +71,11 @@ export interface Building {
   typicalFloorHeight: number;
   visible: boolean;
   baseHeight?: number;
-  utilities?: UtilityType[]; // Utilities contained within this building
-  internalUtilities?: UtilityArea[]; // Generated internal utility zones (HVAC, Electrical)
-  // Stored mix allocation so floor adjustments preserve the original ratio
+  utilities?: UtilityType[]; 
+  internalUtilities?: UtilityArea[]; 
   programMix?: { residential: number; commercial: number; hospitality: number; institutional: number };
-  // Whether to show internal elements (cores, units, utilities) on the map for THIS building
   internalsVisible?: boolean;
-  // Rotation angle used to align core/unit grid generation (axis-aligned layout)
   alignmentRotation?: number;
-  // For podium+tower pairs: the combined total floors (podium.numFloors + tower.numFloors)
   totalFloors?: number;
 }
 
@@ -680,13 +675,13 @@ export interface BuildingStandardTime {
   buildingName: string;
   totalDurationDays: number;
   totalDurationMonths: number;
-  offsetMonths?: number; // Added to support staggered start visualization
+  offsetMonths?: number; 
   phases: StandardTimePhase[];
 }
 
 export interface StandardTimeEstimation {
   buildings: BuildingStandardTime[];
-  totalProjectDurationDays: number; // Based on staggering or critical path
+  totalProjectDurationDays: number; 
   totalProjectDurationMonths: number;
 }
 // ────────────────────────────────────────────────────────────────────────────
@@ -816,12 +811,11 @@ export interface ProjectEstimates {
   };
 
   efficiency_metrics: {
-    achieved: number; // calculated from design
-    target: number; // from planning params
+    achieved: number; 
+    target: number; 
     status: 'Optimal' | 'Inefficient' | 'Aggressive';
   };
   
-  // Deterministic area-based timeline based on productivity standards
   standardTimeEstimates?: StandardTimeEstimation;
 
   breakdown?: {

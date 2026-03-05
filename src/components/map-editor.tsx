@@ -89,7 +89,7 @@ export function MapEditor({
 }: MapEditorProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<Map | null>(null);
-  const [buildingsReady, setBuildingsReady] = useState(false); // Track when buildings are ready for analysis
+  const [buildingsReady, setBuildingsReady] = useState(false); 
 
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [styleLoaded, setStyleLoaded] = useState(false);
@@ -98,8 +98,8 @@ export function MapEditor({
   const markers = useRef<Marker[]>([]);
   const vastuObjectsRef = useRef<any[]>([]);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); // Default primary color
-  const hasNavigatedRef = useRef(false); // Track if we've navigated in this component instance
+  const [primaryColor, setPrimaryColor] = useState('hsl(210, 40%, 50%)'); 
+  const hasNavigatedRef = useRef(false); 
   const windStreamlineLayer = useRef<WindStreamlineLayer|null>(null);
 
   // Dragging state
@@ -107,7 +107,7 @@ export function MapEditor({
   const dragStartPosRef = useRef<mapboxgl.LngLat | null>(null);
   const draggedObjectRef = useRef<{ id: string; type: SelectableObjectType; plotId: string } | null>(null);
 
-  // Timed selection highlight: shows teal border for 3 seconds on selection
+  // Timed selection highlight
   const [showSelectionHighlight, setShowSelectionHighlight] = useState(false);
   const selectionHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -138,13 +138,11 @@ export function MapEditor({
   useEffect(() => {
     if (selectedObjectId && selectedObjectId.type === 'Building') {
       setShowSelectionHighlight(true);
-      // Clear any previous timer
       if (selectionHighlightTimerRef.current) clearTimeout(selectionHighlightTimerRef.current);
       selectionHighlightTimerRef.current = setTimeout(() => {
         setShowSelectionHighlight(false);
       }, 3000);
     } else {
-      // Non-building selection: clear immediately
       setShowSelectionHighlight(false);
       if (selectionHighlightTimerRef.current) {
         clearTimeout(selectionHighlightTimerRef.current);
@@ -156,7 +154,6 @@ export function MapEditor({
     };
   }, [selectedObjectId]);
 
-  // Map elements that are currently rendered/visible
   const plotsRendering = plots;
 
 
@@ -193,7 +190,7 @@ export function MapEditor({
     const mapInst = map.current;
     if (!mapInst) return;
 
-    // Only target main movable objects — NOT internals (cores, units, internal utils)
+// Move objects
     const allMapLayers = mapInst.getStyle().layers.map(l => l.id);
     const draggableLayers = plots.flatMap(p => 
       [
@@ -223,10 +220,7 @@ export function MapEditor({
     let type: SelectableObjectType = 'Building';
     let plotId = '';
 
-    // Extract object ID and type from the layer ID
     if (layerId.startsWith('building-floor-fill-')) {
-      // Format: building-floor-fill-{floorId}-{buildingId}
-      // Building IDs contain dashes (e.g., bldg-1737...), so we match against known IDs
       type = 'Building';
       for (const p of plots) {
         const matchedBuilding = p.buildings.find(b => layerId.endsWith(`-${b.id}`));
@@ -253,7 +247,6 @@ export function MapEditor({
 
     if (!id) return;
 
-    // Find the plot that owns this object
     const targetPlot = plots.find(p => 
       (type === 'Building' && p.buildings.some(b => b.id === id)) ||
       (type === 'GreenArea' && p.greenAreas.some(g => g.id === id)) ||
@@ -290,12 +283,9 @@ export function MapEditor({
 
       if (draggedPlotId) {
         if (draggedObj?.type === 'UtilityArea') {
-          // For utility moves: always recalculate parking FIRST (reconstructs the ring),
-          // then green area (uses the updated parking geometry for proper subtraction)
           actions.recalculateParkingAreas(draggedPlotId);
           actions.recalculateGreenAreas(draggedPlotId);
         } else {
-          // Non-utility objects (buildings, etc.) → recalculate both to keep in sync
           actions.recalculateParkingAreas(draggedPlotId);
           actions.recalculateGreenAreas(draggedPlotId);
         }
@@ -323,7 +313,6 @@ export function MapEditor({
       deltaLat
     );
 
-    // Update start pos for next move
     dragStartPosRef.current = currentPos;
   }, [actions]);
 
@@ -336,16 +325,12 @@ export function MapEditor({
 
       const { drawingState, drawingPoints, activeBhuvanLayer, plots } = getStoreState();
 
-      // In Move mode, handleMouseDown handles all interactions — skip click processing
       if (drawingState.objectType === 'Move') return;
 
       if (activeBhuvanLayer) {
         if (actions) actions.setBhuvanData(null, true);
         const mapInst = map.current;
         if (mapInst) {
-          // We create a tiny 10x10 pixel bounding box exactly where the user clicked.
-          // Because Mapbox allows 3D pitch/rotation, a simple lat/lng buffer isn't accurate for WMS.
-          // By unprojecting screen pixels back to lat/lng, we get a perfect 2D map query.
           const pxBuffer = 5;
           const sw = mapInst.unproject([e.point.x - pxBuffer, e.point.y + pxBuffer]);
           const ne = mapInst.unproject([e.point.x + pxBuffer, e.point.y - pxBuffer]);
@@ -357,7 +342,6 @@ export function MapEditor({
           const x = 5;
           const y = 5;
 
-          // Detect state code and coordinates from the plot geometry
           let stateCode = 'IN';
           let plotLat: number | undefined;
           let plotLng: number | undefined;
@@ -371,12 +355,10 @@ export function MapEditor({
             }
           }
 
-          // Pass coordinates so buildBhuvanLayerName can do precise bbox-based district lookup
           const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode, undefined, plotLat, plotLng);
           const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
           const bhuvanBaseUrl = activeTheme ? getBhuvanWmsUrl(activeTheme) : undefined;
 
-          // Use our local API proxy to bypass CORS
           const wmsUrl = new URL(window.location.origin + '/api/bhuvan');
           if (bhuvanBaseUrl) wmsUrl.searchParams.set('_bhuvanUrl', bhuvanBaseUrl);
           wmsUrl.searchParams.set('service', 'WMS');
@@ -394,25 +376,18 @@ export function MapEditor({
           wmsUrl.searchParams.set('x', Math.floor(x).toString());
           wmsUrl.searchParams.set('y', Math.floor(y).toString());
 
-          // Debug log the exact URL we are proxying
-          console.log('Fetching Bhuvan Feature Info (Proxied):', decodeURIComponent(wmsUrl.toString()));
-
           fetch(wmsUrl.toString())
             .then(res => {
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               return res.text();
             })
             .then(text => {
-              // Bhuvan GetFeatureInfo often returns HTML with internal styles
-              
-              // Validate that it's not a generic error XML
               if (text.includes('ServiceException')) {
                  console.error('Bhuvan Service Exception:', text);
                  actions.setBhuvanData('Error: Invalid query parameters or layer not available here.', false);
                  return;
               }
               
-              // Only set data if there is actual content, Bhuvan sometimes returns empty HTML shells
               if (text.includes('<body></body>') || text.trim() === '' || text.length < 50) {
                  actions.setBhuvanData('No specific thematic data found exactly at this point.', false);
               } else {
@@ -435,18 +410,16 @@ export function MapEditor({
           const firstMapPoint: LngLatLike = { lng: firstPoint[0], lat: firstPoint[1] };
           const pixelDist = map.current?.project(clickPoint).dist(map.current.project(firstMapPoint));
 
-          if (pixelDist && pixelDist < 15) { // 15px tolerance
+          if (pixelDist && pixelDist < 15) { 
             closePolygon();
             return;
           }
         }
         actions.addDrawingPoint(coords);
       } else {
-        // Only allow object selection when the Select tool is active
         const { drawingState: currentDrawingState, plots } = getStoreState();
         if (currentDrawingState.objectType !== 'Select') return;
 
-        // Logic for selecting objects on the map
         const allMapLayers = mapInst.getStyle().layers.map(l => l.id);
         const clickableLayers = plots.flatMap(p =>
           [
@@ -466,7 +439,6 @@ export function MapEditor({
         });
 
         if (features && features.length > 0) {
-          // Prioritize buildings over plots
           const prioritizedTypes = [
             'building-floor-fill-',
             'green-area-',
@@ -489,7 +461,6 @@ export function MapEditor({
           if (!layerId) return;
 
           if (layerId.startsWith('building-floor-fill-')) {
-            // Building IDs contain dashes, so match against known IDs
             for (const plot of plots) {
               const matchedBuilding = plot.buildings.find(b => layerId.endsWith(`-${b.id}`));
               if (matchedBuilding) {
@@ -516,7 +487,6 @@ export function MapEditor({
             actions.selectObject(utilityAreaId, 'UtilityArea');
           }
         } else {
-          // Clicked on empty space (or non-clickable layer)
           actions.selectObject(null, null);
         }
       }
@@ -532,7 +502,6 @@ export function MapEditor({
       map.current.getCanvas().style.cursor = 'crosshair';
       if (drawingPoints.length > 0) {
         if (drawingState.objectType === 'Road' && drawingPoints.length >= 1) {
-          // Interactive Road Preview: All points so far + mouse position
           const mousePoint: [number, number] = [e.lngLat.lng, e.lngLat.lat];
           const previewPoints = [...drawingPoints, mousePoint];
           const line = turf.lineString(previewPoints);
@@ -558,7 +527,6 @@ export function MapEditor({
       const isSelectMode = currentDrawState.objectType === 'Select';
 
       if (isSelectMode) {
-        // In Select mode: show pointer on hoverable objects, default otherwise
         const allMapLayers = map.current.getStyle().layers.map(l => l.id);
         const hoverableLayers = plots.flatMap(p =>
           [
@@ -578,7 +546,6 @@ export function MapEditor({
           map.current.getCanvas().style.cursor = 'default';
         }
       } else {
-        // Not in Select mode: default grab cursor
         map.current.getCanvas().style.cursor = 'grab';
       }
     }
@@ -691,7 +658,7 @@ export function MapEditor({
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
       style: 'mapbox://styles/mapbox/standard',
-      center: [-74.006, 40.7128], // Default to NYC
+      center: [-74.006, 40.7128], 
       zoom: 15,
       pitch: 60,
       antialias: true,
@@ -704,7 +671,6 @@ export function MapEditor({
       mapInstance.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right');
 
       // GENERATE & ADD TEXTURES
-      // Always remove + re-add so changes to texture-generator take effect immediately.
       const buildingTypes = ['Residential', 'Commercial', 'Retail', 'Office', 'Institutional', 'Public', 'Mixed Use', 'Industrial', 'Hospitality'];
 
       buildingTypes.forEach(type => {
@@ -717,23 +683,18 @@ export function MapEditor({
         }
       });
 
-
       // Terrain & Atmosphere Configuration
-      mapInstance.setMaxPitch(85); // Allow looking up easier in mountains
+      mapInstance.setMaxPitch(85); 
 
-      // Add terrain source (used by the toggle button)
       mapInstance.addSource('mapbox-dem', {
         'type': 'raster-dem',
         'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
         'tileSize': 512,
         'maxzoom': 14
       });
-      // NOTE: Do NOT call setTerrain here. Even exaggeration:0 activates Mapbox's
-      // terrain pipeline which distorts fill-extrusion base heights per-vertex,
-      // causing visible width inconsistencies on slabs at oblique camera angles.
-      // Terrain is only activated when the user explicitly toggles it on.
 
-      // Add Sky Layer for better horizon context in 3D
+
+      // Sky Layer
       mapInstance.addLayer({
         'id': 'sky',
         'type': 'sky',
@@ -754,7 +715,6 @@ export function MapEditor({
         ctx.strokeStyle = '#3b82f6'; // blue-500
         ctx.lineWidth = 3;
         ctx.beginPath();
-        // Draw an arrow pointing UP (0 degrees)
         ctx.moveTo(16, 4);
         ctx.lineTo(16, 28);
         ctx.moveTo(16, 4);
@@ -765,14 +725,13 @@ export function MapEditor({
         mapInstance.addImage('wind-arrow', ctx.getImageData(0, 0, arrowSize, arrowSize));
       }
 
-      // Enable 3D buildings in Mapbox Standard Style
       try {
         mapInstance.setConfigProperty('basemap', 'show3dObjects', true);
       } catch (e) {
         console.warn("Could not set show3dObjects config", e);
       }
 
-      // Add Satellite layer (hidden by default)
+      // Add Satellite layer
       mapInstance.addSource('mapbox-satellite', {
         type: 'raster',
         url: 'mapbox://mapbox.satellite',
@@ -790,7 +749,7 @@ export function MapEditor({
       setIsMapLoaded(true);
     });
 
-    // Listen for style data changes to ensure we render when style is ready
+
     mapInstance.on('styledata', () => {
       if (mapInstance.isStyleLoaded()) {
         setStyleLoaded(true);
@@ -822,15 +781,12 @@ export function MapEditor({
   }, []);
 
 
-
   // Auto-navigate to project location or first plot on load
   useEffect(() => {
     if (!map.current || !isMapLoaded) return;
 
-    // Check if we've already navigated in this component instance
     if (hasNavigatedRef.current) return;
 
-    // Priority 1: Use first plot's centroid if available
     if (plots.length > 0) {
       const firstPlot = plots[0];
       if (firstPlot?.geometry?.geometry) {
@@ -846,16 +802,12 @@ export function MapEditor({
             duration: 1500
           });
 
-          // Trigger map update after navigation completes
           map.current.once('moveend', () => {
             if (map.current) {
               hasNavigatedRef.current = true;
               console.log('âœ… Marked as navigated (session)');
-
-              // Trigger single repaint
               map.current.triggerRepaint();
 
-              // Auto-select immediately
               actions.selectObject(firstPlot.id, 'Plot');
               console.log('ðŸŽ¯ Auto-selected plot for visibility');
             }
@@ -1008,10 +960,8 @@ export function MapEditor({
     return () => { map.current?.off('idle', detectRoads); };
   }, [isMapLoaded, actions]);
 
-  // District name hint for accurate Bhuvan layer resolution when bboxes overlap
   const [districtNameHint, setDistrictNameHint] = useState<string | undefined>();
 
-  // Reverse geocode plot coordinates to get true district name
   useEffect(() => {
     const { plots: storePlots } = getStoreState();
     let plotLat: number | undefined;
@@ -1039,9 +989,6 @@ export function MapEditor({
         if (data.features && data.features.length > 0) {
           const hints: string[] = [];
           
-          // Mapbox sometimes assigns old district boundaries (e.g. Vasant Kunj -> South Delhi).
-          // Bhuvan uses the updated 11 districts (Vasant Kunj -> South West). 
-          // Extract ALL location names Mapbox provides and send them to the matching engine.
           data.features.forEach((f: any) => {
             if (f.text && !hints.includes(f.text)) {
               hints.push(f.text);
@@ -1084,16 +1031,12 @@ export function MapEditor({
         }
       }
 
-      // Pass coordinates so buildBhuvanLayerName can do precise bbox-based district lookup, with the geocoded hint
       const layerName = buildBhuvanLayerName(activeBhuvanLayer, stateCode, districtNameHint, plotLat, plotLng);
       const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
 
-      // ── Availability guard: skip loading if the layer has no coverage ──
-      // This prevents "Could not decode image" errors when WMS returns an error XML/image.
       const isDistrictTheme = activeTheme?.usesDistrict;
       let isAvailable = true;
       if (isDistrictTheme) {
-        // For AMRUT: check bhuvan-index.json (vec3 not in extents)
         if (activeBhuvanLayer === 'ulu_4k_amrut') {
           isAvailable = !!getBestBhuvanDistrict('amrut', stateCode);
         } else if (activeBhuvanLayer === 'ulu_10k_nuis') {
@@ -1102,12 +1045,10 @@ export function MapEditor({
           isAvailable = isLayerAvailableInIndex(layerName);
         }
       } else {
-        // Standard 50K layers: rely on extents
         isAvailable = isLayerAvailableInIndex(layerName);
       }
 
       if (!isAvailable) {
-        // Layer not available for this region — clean up silently and stop
         return;
       }
 

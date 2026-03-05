@@ -379,7 +379,6 @@ function MetricsTab() {
                                                     : isInst ? Math.round(floorArea / 6) : Math.round(floorArea / 10);
 
                                                 // ═══ METHOD B: NBC Formula (building-core-calc.ts) ═══
-                                                // We now use the exact core architectural calculator we created
                                                 
                                                 let useType: 'Residential' | 'Commercial' | 'Institutional' = 'Residential';
                                                 if (use === 'Commercial') useType = 'Commercial';
@@ -396,7 +395,7 @@ function MetricsTab() {
 
                                                 // ═══ METHOD C: Flat % (development-calc.ts) ═══
                                                 const bGfa = Math.round(floorArea * floors);
-                                                const coreFactor = 0.15; // from DEFAULT_FEASIBILITY_PARAMS
+                                                const coreFactor = 0.15;
                                                 const circFactor = 0.12;
                                                 const pctCoreArea = Math.round(bGfa * coreFactor);
                                                 const pctCircArea = Math.round(bGfa * circFactor);

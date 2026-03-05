@@ -1,11 +1,5 @@
 import { Plot, FeasibilityParams, DevelopmentStats, UnitTypology } from './types';
 
-// ============================================================
-// CORE & CIRCULATION COMBINED STANDARDS (% of GFA)
-// ============================================================
-// Industry-standard benchmarks for core + circulation as a
-// percentage of total gross floor area, by development type.
-// ============================================================
 export const CORE_CIRCULATION_STANDARDS: Record<string, { min: number; max: number; default: number }> = {
     'Residential':   { min: 0.15, max: 0.25, default: 0.20 },
     'Commercial':    { min: 0.25, max: 0.35, default: 0.30 },
@@ -66,19 +60,15 @@ export function calculateDevelopmentStats(
     const maxBuiltUpArea = plot.area * effectiveFAR;
 
     // 2. Classify Areas & Deductions
-    // Use type-aware core+circulation factor from industry standards
     const intendedUse = (plot as any).intendedUse || 'Residential';
     const combinedFactor = getCoreCirculationFactor(intendedUse);
     
-    // Split combined factor into core vs. circulation for detailed breakdown
-    // Core is typically ~55% of the combined, circulation ~45%
     const coreFactor = params.coreFactor || (combinedFactor * 0.55);
     const circulationFactor = params.circulationFactor || (combinedFactor * 0.45);
 
     const coreArea = maxBuiltUpArea * coreFactor;
     const circulationArea = maxBuiltUpArea * circulationFactor;
 
-    // Services Area: ~2% for dedicated service rooms
     const serviceFactor = 0.02;
     const servicesArea = maxBuiltUpArea * serviceFactor;
 

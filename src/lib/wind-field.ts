@@ -12,12 +12,10 @@ class SimplexNoise {
         for (let i = 0; i < 256; i++) {
             this.perm[i] = i;
         }
-        // Shuffle based on seed
         for (let i = 255; i > 0; i--) {
             const j = Math.floor((seed * (i + 1)) % (i + 1));
             [this.perm[i], this.perm[j]] = [this.perm[j], this.perm[i]];
         }
-        // Duplicate for wrapping
         for (let i = 0; i < 256; i++) {
             this.perm[256 + i] = this.perm[i];
         }
@@ -59,16 +57,16 @@ class SimplexNoise {
 }
 
 export interface WindVector {
-    vx: number;  // X component of velocity
-    vy: number;  // Y component of velocity
-    speed: number; // Magnitude
+    vx: number;
+    vy: number;
+    speed: number;
 }
 
 export interface WindFieldOptions {
-    windDirection: number; // Degrees (0 = North, 90 = East)
-    baseSpeed: number;     // Base wind speed in m/s
-    turbulenceScale: number; // Scale of turbulence (0-1)
-    wakeLength: number;    // Wake length multiplier (building height * this)
+    windDirection: number;
+    baseSpeed: number;
+    turbulenceScale: number;
+    wakeLength: number;
 }
 
 /**
@@ -83,7 +81,7 @@ export class WindField {
     constructor(buildings: Building[], options: Partial<WindFieldOptions> = {}) {
         this.buildings = buildings;
         this.options = {
-            windDirection: options.windDirection ?? 45, // Default NE
+            windDirection: options.windDirection ?? 45,
             baseSpeed: options.baseSpeed ?? 3.5,
             turbulenceScale: options.turbulenceScale ?? 0.3,
             wakeLength: options.wakeLength ?? 5.0
@@ -98,7 +96,6 @@ export class WindField {
      * Pre-calculate wake zones behind buildings
      */
     private calculateWakeZones(): void {
-        // Wind blows FROM windDirection, so the flow (and wake) is opposite
         const flowRad = (this.options.windDirection + 180) * (Math.PI / 180);
         const windVecX = Math.sin(flowRad);
         const windVecY = Math.cos(flowRad);
@@ -108,33 +105,25 @@ export class WindField {
             const centroid = turf.centroid(building.geometry);
             const [cx, cy] = centroid.geometry.coordinates;
 
-            // Wake extends downwind from building
             const wakeLength = height * this.options.wakeLength;
 
-            // Convert to approximate meters
             const metersPerDegLat = 111320;
             const metersPerDegLng = 111320 * Math.cos(cy * Math.PI / 180);
 
             const wakeLengthLng = (wakeLength * windVecX) / metersPerDegLng;
             const wakeLengthLat = (wakeLength * windVecY) / metersPerDegLat;
 
-            // Sample wake zone at multiple points
             const wakeSamples = 10;
             for (let i = 1; i <= wakeSamples; i++) {
                 const t = i / wakeSamples;
                 const wakeX = cx + wakeLengthLng * t;
                 const wakeY = cy + wakeLengthLat * t;
-
-                // Wake strength decreases with distance
-                const strength = Math.exp(-2 * t); // Exponential decay
-
-                // Wake creates turbulence (perpendicular component)
+                const strength = Math.exp(-2 * t);
                 const turbVecX = -windVecY * 0.3 * strength;
                 const turbVecY = windVecX * 0.3 * strength;
 
                 const cellKey = `${Math.floor(wakeX * 10000)},${Math.floor(wakeY * 10000)}`;
 
-                // Accumulate wake effects
                 const existing = this.wakeCells.get(cellKey);
                 if (existing) {
                     existing.vx += turbVecX;

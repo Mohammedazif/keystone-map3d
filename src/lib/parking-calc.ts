@@ -18,19 +18,18 @@ export function calculateParkingCapacity(
 
 /**
  * Get parking space size from regulation or use default
- * @param plot - Plot with regulation data
- * @returns Parking space size in m²
+ * @param plot 
+ * @returns 
  */
 export function getParkingSpaceSize(plot?: Plot): number {
-    // Check if regulation has parking space size requirement
     const regulationSize = (plot?.regulation as any)?.parking?.spaceSize;
-    return regulationSize || 12.5; // Default: 2.5m × 5m = 12.5 m²
+    return regulationSize || 12.5; 
 }
 
 /**
  * Calculate total parking spaces across all parking areas and building floors
- * @param plots - Array of plots
- * @returns Total number of parking spaces
+ * @param plots 
+ * @returns 
  */
 export function calculateTotalParkingSpaces(plots: Plot[]): {
     total: number;
@@ -47,11 +46,9 @@ export function calculateTotalParkingSpaces(plots: Plot[]): {
     for (const plot of plots) {
         // Surface Parking Areas
         plot.parkingAreas.forEach(pa => {
-            const efficiency = pa.efficiency || 0.75; // Default 30sqm/car -> ~350sqm per 10 cars? No, usually 75% efficiency
-            // precise capacity override or calculate
+            const efficiency = pa.efficiency || 0.75; 
             let capacity = pa.capacity;
             if (!capacity) {
-                // Approximate: Area * Efficiency / 25sqm per car
                 capacity = Math.floor((pa.area * efficiency) / 25);
             }
 

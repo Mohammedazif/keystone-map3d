@@ -1,5 +1,5 @@
 /**
- * Building Core Calculator based exactly on calculation_logic.md
+ * Building Core Calculator
  * Computes exact lift sizes, staircases, corridors, and shafts based on population/floors.
  */
 
@@ -46,7 +46,6 @@ export function calculateBuildingCoreAndCirculation(inputs: BuildingCoreInputs):
   const { footprintArea, numFloors, avgUnitArea, intendedUse } = inputs;
   
   // 1. Initial rough estimate of units/occupants per floor
-  // Assume a default 75% efficiency to get a starting unit count (to drive stair/lift math)
   const initialNetArea = footprintArea * 0.75;
   const initialUnitsPerFloor = Math.floor(initialNetArea / avgUnitArea);
   

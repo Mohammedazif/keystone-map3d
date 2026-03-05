@@ -126,7 +126,6 @@ function runCostSimulation({ costParam, gfa, iterations = 5000 }: CostSimInput) 
         };
         const lowCost = r.min * gfa * 1.05;
         const highCost = r.max * gfa * 1.05;
-        // Keep only the delta from base for this component
         const basePart = r.mode * gfa * 1.05;
         return {
             label: labelMap[key] || key,
@@ -212,7 +211,6 @@ function runTimeSimulation({ timeParam, floors, iterations = 5000 }: TimeSimInpu
         const overlapMonths = finMonths * tp.services_overlap_factor;
 
         const cleanTotal = exc + fnd + strMonths + finMonths - overlapMonths + tp.contingency_buffer_months;
-        // Apply random delay factor (vary ±30% around avg)
         const delayMult = triSample(avgDelayFactor * 0.85, avgDelayFactor, avgDelayFactor * 1.15);
         const total = cleanTotal * delayMult;
 
@@ -324,8 +322,6 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
         hvac_per_tr: uc?.hvac_per_tr ?? defaults.hvac_per_tr,
     };
 
-    // Helper function to check if a utility should be included.
-    // If utilitiesPresent is undefined (e.g., potential project without plot), include everything by default.
     const hasUtility = (matches: string[]) => {
         if (!input.utilitiesPresent) return true;
         return matches.some(m => input.utilitiesPresent!.some(u => u === m));
@@ -349,9 +345,6 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
 
     // Transformer: estimate 20W/sqm → kVA ≈ GFA * 20 / 1000 / 0.8 PF
     const kva = input.electricalKVA ?? (input.totalGFA * 20 / 1000 / 0.8);
-    // NOTE: 'Electrical' type = Electrical Shaft (internal wiring distribution).
-    // Transformer + HT and DG Set are EXTERNAL infrastructure and should only appear
-    // if explicitly generated as 'Transformer Yard', 'Substation', or 'DG Set' utility types/names.
     if (hasUtility(['Transformer', 'Substation', 'Transformer Yard'])) {
         items.push({ label: 'Transformer + HT', amount: kva * u.transformer_per_kva, unit: `${kva.toFixed(0)} kVA` });
     }
@@ -598,16 +591,12 @@ export function generateDeliveryPhases(
         phaseBuckets[i % effectivePhases].push(b);
     });
 
-    // Calculate stagger offset: Phase N starts when Phase N-1's substructure completes
-    // This is standard practice — you begin excavation on Phase 2 once Phase 1 is above ground
     let phaseStartOffset = 0;
 
     const phases: DeliveryPhase[] = phaseBuckets
         .filter(bucket => bucket.length > 0)
         .map((bucket, idx) => {
-            // Find the longest building in this phase (critical path within phase)
             const longestDuration = Math.max(...bucket.map(b => b.timeline.total));
-            // Phase-internal: all buildings start at phaseStartOffset, end at latest finish
             const phaseEnd = phaseStartOffset + longestDuration;
 
             const phaseBuildings: DeliveryPhaseBuilding[] = bucket.map(b => ({
@@ -631,10 +620,8 @@ export function generateDeliveryPhases(
                 buildings: phaseBuildings,
             };
 
-            // Stagger: next phase starts after this phase's substructure completes
-            // (typically excavation + foundation of the longest building)
             const longestSubstructure = Math.max(...bucket.map(b => b.timeline.substructure));
-            phaseStartOffset += Math.max(longestSubstructure, longestDuration * 0.3); // At least 30% overlap
+            phaseStartOffset += Math.max(longestSubstructure, longestDuration * 0.3); 
 
             return phase;
         });
@@ -649,13 +636,13 @@ export interface RunSimulationInput {
     timeParam: TimeEstimationParameter;
     gfa: number;
     floors: number;
-    numPhases?: number; // default 3
-    numDeliveryPhases?: number; // default 3, 0 = all buildings as individual phases
+    numPhases?: number; 
+    numDeliveryPhases?: number; 
     numLifts?: number;
     hvacTR?: number;
     solarKW?: number;
     electricalKVA?: number;
-    iterations?: number; // default 5000
+    iterations?: number; 
     utilitiesPresent?: string[];
     perBuildingBreakdown?: BuildingBreakdownInput[];
 }

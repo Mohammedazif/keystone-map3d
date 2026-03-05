@@ -17,7 +17,6 @@ function rayIntersectsPolygon(
     bearingDeg: number,
     plotGeometry: Feature<Polygon>
 ): [number, number] | null {
-    // Cast a ray far enough to guarantee intersection
     const destination = turf.destination(center, 10, bearingDeg, { units: 'kilometers' });
     const ray = turf.lineString([center, destination.geometry.coordinates as [number, number]]);
 
@@ -26,7 +25,6 @@ function rayIntersectsPolygon(
 
     if (!intersections || intersections.features.length === 0) return null;
 
-    // Return the closest intersection to the center
     let closest: [number, number] | null = null;
     let minDist = Infinity;
 
@@ -60,15 +58,10 @@ export function generateVastuGates(
     const gates: EntryPoint[] = [];
 
     VASTU_GATE_BEARINGS.forEach(({ label, bearing, zones }) => {
-        // Determine which cardinal direction this gate faces
-        const cardinal = zones[0]; // 'N', 'E', 'S', 'W'
-
-        // Skip if no road access on this side (but still add if no road info available)
+        const cardinal = zones[0];
         if (roadAccessSides.length > 0 && !roadAccessSides.includes(cardinal)) {
             return;
         }
-
-        // Find intersection with plot boundary
         const position = rayIntersectsPolygon(center, bearing, plotGeometry);
         if (!position) return;
 

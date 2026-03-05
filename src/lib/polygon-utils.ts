@@ -4,9 +4,9 @@ import { Feature, Polygon, BBox } from 'geojson';
 
 /**
  * Splits a polygon into a number of smaller polygons, with gaps between them.
- * @param polygon The parent polygon to split.
- * @param count The number of chunks to create.
- * @returns An array of smaller polygon features.
+ * @param polygon 
+ * @param count 
+ * @returns 
  */
 export function splitPolygon(polygon: Feature<Polygon>, count: number): Feature<Polygon>[] {
     if (count <= 1) return [polygon];
@@ -19,7 +19,7 @@ export function splitPolygon(polygon: Feature<Polygon>, count: number): Feature<
     const chunks: Feature<Polygon>[] = [];
     const isHorizontalSplit = width > height;
     const step = isHorizontalSplit ? width / count : height / count;
-    const gap = 2; // Gap in meters between buildings
+    const gap = 2; 
 
     for (let i = 0; i < count; i++) {
         let chunkBbox: BBox;
@@ -34,12 +34,10 @@ export function splitPolygon(polygon: Feature<Polygon>, count: number): Feature<
             const intersection = turf.intersect(chunkPolygon, polygon);
 
             if (intersection && intersection.geometry.type === 'Polygon') {
-                // Shrink the resulting polygon to create gaps
                 const buffered = turf.buffer(intersection, -gap, { units: 'meters' });
                 if (buffered) {
                     chunks.push(buffered as Feature<Polygon>);
                 } else {
-                    // if buffering fails (e.g. polygon is too thin), use the original intersection
                     chunks.push(intersection as Feature<Polygon>);
                 }
 
@@ -65,6 +63,5 @@ export function splitPolygon(polygon: Feature<Polygon>, count: number): Feature<
     if (chunks.length > 0) {
         return chunks;
     }
-    // Fallback if intersection fails, just return the original polygon
     return [polygon];
 }

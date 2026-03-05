@@ -15,17 +15,16 @@ function hexToRgba(hex: string, alpha: number): string {
  */
 export function generateBuildingTexture(type: BuildingTextureType, baseColor: string, opacity: number = 1.0, isSelected: boolean = false): ImageData | null {
     const canvas = document.createElement('canvas');
-    const size = 128; // Power of two required by WebGL
+    const size = 128;
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
 
-    // Config per type: [columns, mullionWidth, glassTintAlpha, centerDivider]
     let cols = 4;
     let mullionWidth = 2;
     let glassTintAlpha = 0.4;
-    let centerDividerWidth = 0; // 0 = no center divider
+    let centerDividerWidth = 0;
 
     switch (type) {
         case 'Residential':
@@ -35,10 +34,10 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
             cols = 6; mullionWidth = 1; glassTintAlpha = 0.45; centerDividerWidth = 0;
             break;
         case 'Retail':
-            cols = 3; mullionWidth = 4; glassTintAlpha = 0.50; centerDividerWidth = 0; // Large storefront style
+            cols = 3; mullionWidth = 4; glassTintAlpha = 0.50; centerDividerWidth = 0;
             break;
         case 'Office':
-            cols = 8; mullionWidth = 1; glassTintAlpha = 0.45; centerDividerWidth = 2; // Denser mullions
+            cols = 8; mullionWidth = 1; glassTintAlpha = 0.45; centerDividerWidth = 2;
             break;
         case 'Hospitality':
             cols = 3; mullionWidth = 3; glassTintAlpha = 0.38; centerDividerWidth = 6;
@@ -57,30 +56,24 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
             cols = 4; mullionWidth = 2; glassTintAlpha = 0.40; centerDividerWidth = 0;
     }
 
-    // Multiply structural alphas by the master opacity parameter
     const finalGlassAlpha = glassTintAlpha * opacity;
     const finalMullionAlpha = 0.55 * opacity;
     const finalCenterAlpha = 0.30 * opacity;
 
-    // Base building color, tinted with opacity
     if (baseColor.startsWith('#')) {
         ctx.fillStyle = hexToRgba(baseColor, opacity);
     } else {
-        // Fallback if named color passed or rgba string
         ctx.globalAlpha = opacity;
         ctx.fillStyle = baseColor;
     }
     
     ctx.fillRect(0, 0, size, size);
     
-    // Reset global opacity back just in case
     ctx.globalAlpha = 1.0;
 
-    // Glass tint overlay
     ctx.fillStyle = `rgba(200, 240, 255, ${finalGlassAlpha})`;
     ctx.fillRect(0, 0, size, size);
 
-    // Vertical mullion lines
     const colW = size / cols;
     ctx.fillStyle = `rgba(255, 255, 255, ${finalMullionAlpha})`;
     for (let c = 0; c <= cols; c++) {
@@ -88,16 +81,13 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
         ctx.fillRect(x - Math.floor(mullionWidth / 2), 0, mullionWidth, size);
     }
 
-    // Optional center accent divider (thicker, slightly different opacity)
     if (centerDividerWidth > 0) {
         ctx.fillStyle = `rgba(200, 200, 200, ${finalCenterAlpha})`;
         ctx.fillRect(size / 2 - Math.floor(centerDividerWidth / 2), 0, centerDividerWidth, size);
     }
-
-    // Selection border
     if (isSelected) {
         ctx.strokeStyle = '#00fbff';
-        ctx.lineWidth = 12; // Thicker border on a 128px canvas for visibility from zoom
+        ctx.lineWidth = 12;
         ctx.strokeRect(0, 0, size, size);
     }
 

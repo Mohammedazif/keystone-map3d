@@ -1,19 +1,19 @@
 import { WindField, WindVector } from './wind-field';
 
 export interface Particle {
-    x: number;        // Longitude
-    y: number;        // Latitude
-    age: number;      // Current age in frames
-    maxAge: number;   // Maximum age before recycling
-    trail: { x: number, y: number }[]; // Trail points
-    speed: number;    // Current speed
+    x: number;
+    y: number;
+    age: number;
+    maxAge: number;
+    trail: { x: number, y: number }[];
+    speed: number;
 }
 
 export interface ParticleSystemOptions {
     particleCount: number;
     trailLength: number;
     maxAge: number;
-    spawnRate: number; // Particles per second
+    spawnRate: number;
     bounds: {
         minLng: number;
         maxLng: number;
@@ -108,16 +108,13 @@ export class WindParticleSystem {
         for (let i = this.particles.length - 1; i >= 0; i--) {
             const p = this.particles[i];
 
-            // Get wind vector at current position
             const wind = this.windField.getVectorAt(p.x, p.y);
 
-            // Convert wind velocity to coordinate delta
-            // Approximate: 1 m/s ≈ 0.00001 degrees per frame at 60fps
             const metersPerDegLat = 111320;
             const metersPerDegLng = 111320 * Math.cos(p.y * Math.PI / 180);
 
-            const speedFactor = deltaTime / 16.67; // Normalize to 60fps
-            const visualSpeedMultiplier = 0.3; // Slow down for better visualization
+            const speedFactor = deltaTime / 16.67;
+            const visualSpeedMultiplier = 0.3;
 
             const dx = (wind.vx * visualSpeedMultiplier * speedFactor) / metersPerDegLng;
             const dy = (wind.vy * visualSpeedMultiplier * speedFactor) / metersPerDegLat;

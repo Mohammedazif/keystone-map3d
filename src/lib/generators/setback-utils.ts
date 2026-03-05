@@ -33,60 +33,28 @@ export function applyVariableSetbacks(
         roadAccessSides
     } = params;
 
-    // 0. Defaults:
-    // If no specific setbacks are provided, use uniform setback (defaulting to 6m if even that is missing, though caller handles defaults)
     const effectiveUniform = setback ?? 0;
 
-    // If we don't have specific variable setbacks OR don't know where the road is, use Uniform.
     if (
         (frontSetback === undefined && rearSetback === undefined && sideSetback === undefined) ||
         !roadAccessSides ||
         roadAccessSides.length === 0
     ) {
-        // Use Uniform Setback
-        if (effectiveUniform === 0) return poly; // No setback needed
+        if (effectiveUniform === 0) return poly;
         // @ts-ignore
         return turf.buffer(poly, -effectiveUniform, { units: 'meters' });
     }
 
-    // 1. Prepare Values
     const valFront = frontSetback ?? effectiveUniform;
     const valRear = rearSetback ?? effectiveUniform;
-    const valSide = sideSetback ?? effectiveUniform; // Default side to uniform if not specified
+    const valSide = sideSetback ?? effectiveUniform;
 
-    // 2. Explode Polygon to Edges causes issues with concave shapes if we just offset edges.
-    // Better approach: Buffer by specific amounts for specific edges?
-    // Turf doesn't support variable buffer easily.
-
-    // Robust Approach:
-    // Create 4 "Half-Plane" rectangles representing the setbacks from the Bounding Box limits,
-    // AND Subtract them from the original polygon.
-
-    // Wait, BBox approach assumes the plot is roughly rectangular and aligned-ish.
-    // If the plot is 45deg rotated, BBox cutting is bad.
-
-    // Better Robust Approach:
-    // 1. Offset the whole polygon by `valSide` (Minimum setback).
-    // 2. If Front/Rear are larger than Side, we need to cut *more* from those specific sides.
-    //    How to identify those sides on an arbitrary polygon?
-    //    We use the BBox of the *original* plot to identifying "Northern", "Southern", etc. limits.
-
-    // Let's try:
-    // 1. Uniform buffer by `valSide` (assuming side is the smallest).
-    // 2. Identify "Extra Setback" needed for Front (valFront - valSide) and Rear (valRear - valSide).
-    // 3. Create "Cutters" for these extra setbacks based on BBox.
-
-    const bbox = turf.bbox(poly); // [minX, minY, maxX, maxY]
+    const bbox = turf.bbox(poly);
     const [minX, minY, maxX, maxY] = bbox;
     const width = maxX - minX;
     const height = maxY - minY;
 
-    // Safety check for tiny plots
     if (width < 1 || height < 1) return null;
-
-    // Apply Base Setback (Smallest of the set? Or just Side?)
-    // Usually Side is smallest (e.g. 3m), Front is 6m, Rear is 4m.
-    // So buffer by -Side first.
     // @ts-ignore
     let shrunkPoly = turf.buffer(poly, -valSide, { units: 'meters' });
 
@@ -102,13 +70,9 @@ export function applyVariableSetbacks(
 
     const cutters: Feature<Polygon>[] = [];
 
-    // Helper to create cutter
-    // margin: amount to cut into the box
-    // edge: 'N', 'S', 'E', 'W'
     const createCutter = (edge: string, margin: number) => {
         if (margin <= 0) return;
-        // Make the cutter huge to cover irregular boundaries
-        const huge = 1000; // meters extension out
+        const huge = 1000;
 
         /*
           BBox:
@@ -121,10 +85,9 @@ export function applyVariableSetbacks(
 
         switch (edge) {
             case 'N': // Top Edge
-                // Box from maxY down to maxY - margin
                 cPoly = turf.bboxPolygon([
                     minX - huge,
-                    maxY - (margin / 111111), // approx degrees. better to use meter offset
+                    maxY - (margin / 111111),
                     maxX + huge,
                     maxY + huge
                 ]);
@@ -139,7 +102,7 @@ export function applyVariableSetbacks(
                 break;
             case 'E': // Right Edge
                 cPoly = turf.bboxPolygon([
-                    maxX - (margin / 111111), // approx meters to deg. Longitude varies... use simple approximation for now or proper turf.destination
+                    maxX - (margin / 111111),
                     minY - huge,
                     maxX + huge,
                     maxY + huge
@@ -155,16 +118,12 @@ export function applyVariableSetbacks(
                 break;
         }
 
-        // Re-do with proper meter offset using turf.destination for accuracy
         if (edge === 'N') {
-            // Top Cutter: A box covering everything "Above" the setback line
-            // Limit line is: maxY translated South by margin.
-            // We want to remove everything North of that line.
             const nw = turf.point([minX, maxY]);
             const cutLine = turf.destination(nw, margin, 180, { units: 'meters' });
             const cutY = cutLine.geometry.coordinates[1];
 
-            cPoly = turf.bboxPolygon([minX - 0.1, cutY, maxX + 0.1, maxY + 0.1]); // Add buffer
+            cPoly = turf.bboxPolygon([minX - 0.1, cutY, maxX + 0.1, maxY + 0.1]);
         }
         else if (edge === 'S') {
             const sw = turf.point([minX, minY]);
@@ -193,16 +152,11 @@ export function applyVariableSetbacks(
 
     // Apply Front Setbacks
     roadAccessSides.forEach(side => {
-        // Map 'N', 'S', 'E', 'W' or 'North', 'South'...
         const s = side.charAt(0).toUpperCase();
         createCutter(s, extraFront);
     });
 
     // Apply Rear Setbacks (Opposite to Front)
-    // If multiple fronts (e.g. Corner Plot NE), Rear is SW? 
-    // Logic: If N is Front, S is Rear. If E is Front, W is Rear.
-    // If N and E are Front (Corner), S and W are Rear (or Sides? Corner plot logic implies Rear is opposite to "Main" front)
-    // For simplicity: Mark opposites of ALL fronts as Rear.
     const rearSides = new Set<string>();
     roadAccessSides.forEach(side => {
         const s = side.charAt(0).toUpperCase();
@@ -212,7 +166,6 @@ export function applyVariableSetbacks(
         if (s === 'W') rearSides.add('E');
     });
 
-    // Remove conflicts (if a side is both Front and Rear, it's Front)
     roadAccessSides.forEach(side => {
         const s = side.charAt(0).toUpperCase();
         rearSides.delete(s);
@@ -222,11 +175,6 @@ export function applyVariableSetbacks(
         createCutter(s, extraRear);
     });
 
-    // Note: Side setbacks are already handled by the initial uniform buffer (valSide).
-    // If Side > Front (unlikely), our "Extra" calc would be negative/zero, so it works (shrunk by side is enough).
-    // If Side < Front, we cut extra.
-
-    // Execute Cuts
     for (const cutter of cutters) {
         try {
             // @ts-ignore

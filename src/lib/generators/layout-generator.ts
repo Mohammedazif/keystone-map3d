@@ -5,24 +5,24 @@ import { Building, Core, Unit, UnitTypology, UtilityArea, UtilityType, EntryPoin
 import { generateVastuGates } from '../vastu-gate-generator';
 
 interface LayoutParams {
-    minUnitSize?: number; // sqm, e.g. 50
-    avgUnitSize?: number; // sqm, e.g. 100
-    corridorWidth?: number; // meters, e.g. 2
-    subtype?: string; // e.g. 'lshaped', 'ushaped', 'tshaped', 'hshaped'
-    roadAccessSides?: string[]; // ['N', 'E']
+    minUnitSize?: number; 
+    avgUnitSize?: number; 
+    corridorWidth?: number; 
+    subtype?: string; 
+    roadAccessSides?: string[]; 
     vastuCompliant?: boolean;
-    unitMix?: UnitTypology[]; // Admin panel unit mix configuration
-    alignmentRotation?: number; // The angle to rotate the building to align with axes (0deg) for internal layout generation
-    intendedUse?: BuildingIntendedUse | string; // Mixed Use Support
+    unitMix?: UnitTypology[]; 
+    alignmentRotation?: number; 
+    intendedUse?: BuildingIntendedUse | string; 
     numFloors?: number;
     floorHeight?: number;
-    shuffleUnits?: boolean; // Randomize unit order on each floor
-    exactTypologyAllocation?: boolean; // Use exact Method B typology sizes instead of fitted geometry
-    buildingId?: string; // Used to detect podium vs tower for utility placement
-    selectedUtilities?: string[]; // List of enabled utilities
+    shuffleUnits?: boolean; 
+    exactTypologyAllocation?: boolean; 
+    buildingId?: string; 
+    selectedUtilities?: string[]; 
 }
 
-// Helper: Get cardinal direction of a bearing (0-360)
+// Get cardinal direction of a bearing (0-360)
 function getCardinalDirection(bearing: number): string {
     const b = (bearing + 360) % 360;
     if (b >= 315 || b < 45) return 'N';
@@ -32,7 +32,7 @@ function getCardinalDirection(bearing: number): string {
     return 'N';
 }
 
-// Helper: Get base color for unit type
+// Get base color for unit type
 function getColorForUnitType(unitName: string): string {
     const name = unitName.toLowerCase();
     if (name.includes('studio')) return '#ADD8E6'; // Light Blue
@@ -46,7 +46,7 @@ function getColorForUnitType(unitName: string): string {
     return '#414141';
 }
 
-// Helper: Darken a hex color by 10%
+// Darken a hex color by 10%
 function darkenColor(hex: string): string {
     const num = parseInt(hex.replace('#', ''), 16);
     const r = Math.max(0, ((num >> 16) & 0xFF) - 25);
@@ -56,7 +56,7 @@ function darkenColor(hex: string): string {
 }
 
 /**
- * Helper: Create a rotated rectangle polygon.
+ * Create a rotated rectangle polygon.
  * @param center Centroid of the rectangle
  * @param widthWidth in meters
  * @param height Height in meters
@@ -66,12 +66,6 @@ function createRotatedRect(center: Feature<Point>, width: number, height: number
     const wHalf = width / 2;
     const hHalf = height / 2;
 
-    // Create a 0-degree oriented rectangle around origin [0,0] then translate/rotate
-    // Actually simpler to just use turf.destination to find corners
-
-    // Corners relative to center at 0 bearing:
-    // NW: [-w/2, +h/2], NE: [+w/2, +h/2], SE: [+w/2, -h/2], SW: [-w/2, -h/2]
-
     const corners = [
         { dist: Math.sqrt(wHalf ** 2 + hHalf ** 2), angle: bearing + Math.atan2(-wHalf, hHalf) * 180 / Math.PI }, // NW
         { dist: Math.sqrt(wHalf ** 2 + hHalf ** 2), angle: bearing + Math.atan2(wHalf, hHalf) * 180 / Math.PI },  // NE
@@ -80,14 +74,13 @@ function createRotatedRect(center: Feature<Point>, width: number, height: number
     ];
 
     const ring = corners.map(c => turf.destination(center, c.dist, c.angle, { units: 'meters' }).geometry.coordinates);
-    ring.push(ring[0]); // Close polygon
+    ring.push(ring[0]);
 
     return turf.polygon([ring as any]);
 }
 
 /**
- * Helper: Determine the dominant orientation (bearing) of a plot.
- * Usually based on the longest edge.
+ * Determine the dominant orientation (bearing) of a plot.
  */
 export function getPlotOrientation(plotPoly: Feature<Polygon>): number {
     try {
@@ -120,17 +113,11 @@ export function generateBuildingLayout(
     console.log('[Layout Generator] Generating layout with params:', params);
 
     // --- ROTATION WRAPPER START ---
-    // If an alignment rotation is provided, we temporarily rotate the building to 0deg (aligned),
-    // generate the layout in aligned space (where bounding boxes work nicely),
-    // and then rotate everything back to the original orientation.
-
     let workingPoly = buildingPoly;
     const rotationAngle = params.alignmentRotation || 0;
     const center = turf.centroid(buildingPoly);
 
     if (rotationAngle !== 0) {
-        // Rotate "Back" to Aligned Space
-        // @ts-ignore
         workingPoly = turf.transformRotate(buildingPoly, -rotationAngle, { pivot: center });
     }
     // --- ROTATION WRAPPER END ---
@@ -258,21 +245,10 @@ export function generateBuildingLayout(
     const calculatedCoreAreaPerFloor = liftArea + stairArea + lobbyArea + corridorArea + shaftArea + fireLobbyArea;
     const coreAreaPerNode = calculatedCoreAreaPerFloor / numPhysicalCores;
     
-    // 8. CORE & CIRCULATION COMBINED EFFICIENCY TARGETS (INDUSTRY STANDARDS)
-    // These are % of GFA for core + circulation combined (lifts, stairs, lobbies, corridors, shafts)
-    // ┌───────────────────────┬───────────────────────────┐
-    // │ Development Type      │ Core & Circulation (% GFA)│
-    // ├───────────────────────┼───────────────────────────┤
-    // │ Residential           │ 15 – 25%                  │
-    // │ Commercial (Office)   │ 25 – 35%                  │
-    // │ Commercial (Retail)   │ 35 – 50%                  │
-    // │ Hospitality (Hotels)  │ 25 – 40%                  │
-    // │ Institutional         │ 30 – 40%                  │
-    // │ Mixed-Use             │ 25 – 35%                  │
-    // └───────────────────────┴───────────────────────────┘
+
     const coreRatio = calculatedCoreAreaPerFloor / floorArea;
     
-    let healthyMin = 0.25, healthyMax = 0.35; // Default: Mixed-Use
+    let healthyMin = 0.25, healthyMax = 0.35;
     if (intendedUse === 'Residential') { healthyMin = 0.15; healthyMax = 0.25; }
     else if (intendedUse === 'Retail') { healthyMin = 0.35; healthyMax = 0.50; }
     else if (intendedUse === 'Commercial' || intendedUse === 'Office' || intendedUse === 'Industrial') { healthyMin = 0.25; healthyMax = 0.35; }
@@ -286,7 +262,6 @@ export function generateBuildingLayout(
         console.log(`[Audit] Core ratio ${(coreRatio*100).toFixed(1)}% is within healthy bounds (${healthyMin*100}-${healthyMax*100}%) for ${intendedUse}.`);
     }
     
-    // Fallbacks just in case calculations result in extremely small or massive areas
     const minCoreArea = Math.max(20, floorArea * healthyMin / numPhysicalCores);
     const maxCoreArea = floorArea * (healthyMax + 0.05) / numPhysicalCores;
     
@@ -298,12 +273,10 @@ export function generateBuildingLayout(
         finalCoreArea = maxCoreArea;
     }
 
-    // 1. Generate Core(s) - Typology-Specific Placement
     const bbox = turf.bbox(workingPoly);
     const width = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'meters' });
     const depth = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'meters' });
 
-    // Derive dimensions dynamically from area to act as a central spine/corridor
     const isHorizontal = width > depth;
     const longAxis = isHorizontal ? width : depth;
     const shortAxis = isHorizontal ? depth : width;
@@ -311,12 +284,9 @@ export function generateBuildingLayout(
     let coreW = 0;
     let coreD = 0;
     
-    // For standard slab/point scenarios, we stretch the core to reach peripheral units 
-    // We leave an ~8m buffer on ends to let units wrap around the ends
     let spineLength = Math.max(10, longAxis - 16); 
     let spineThickness = finalCoreArea / spineLength;
 
-    // Constrain thickness between reasonable limits (min 2.5m corridor, max 50% of short axis)
     if (spineThickness < 2.5) {
         spineThickness = 2.5;
         spineLength = finalCoreArea / spineThickness;
@@ -333,19 +303,15 @@ export function generateBuildingLayout(
         coreD = spineLength;
     }
 
-    // Prevent core from entirely overflowing narrow wings
     coreW = Math.min(coreW, width * 0.95);
     coreD = Math.min(coreD, depth * 0.95);
 
     console.log(`[Layout Gen] Computed Core -> Pop: ${popPerFloor.toFixed(0)}, Lifts: ${numLifts}, Stairs: ${numStairs}, Area: ${finalCoreArea.toFixed(1)} sqm, Dims: ${coreW.toFixed(1)}x${coreD.toFixed(1)}`);
 
-    // Helper: Create a core at a specific point
     const createCoreAtPoint = (point: Feature<any>, id: string): Feature<Polygon> | null => {
         const coords = point.geometry.coordinates;
-        // turf.destination calculates true meter distances on the globe avoiding latitude squishing
         const pt = turf.point(coords);
         
-        // Bounding box using proper distance offsets
         const n = turf.destination(pt, coreD / 2 / 1000, 0).geometry.coordinates[1];
         const s = turf.destination(pt, coreD / 2 / 1000, 180).geometry.coordinates[1];
         const e = turf.destination(pt, coreW / 2 / 1000, 90).geometry.coordinates[0];
@@ -353,10 +319,8 @@ export function generateBuildingLayout(
         
         let corePoly = turf.bboxPolygon([w, s, e, n]);
 
-        // Clip to building footprint
-        // @ts-ignore
         const clipped = turf.intersect(corePoly, workingPoly);
-        if (clipped && turf.area(clipped) > 10) { // Minimum 10sqm core
+        if (clipped && turf.area(clipped) > 10) { 
             return clipped as Feature<Polygon>;
         }
         return null;
@@ -365,14 +329,11 @@ export function generateBuildingLayout(
     // Typology-Specific Core Placement
     console.log('[Layout Generator] Generating cores for subtype:', params.subtype);
 
-    // (Using workingPoly instead of buildingPoly)
     if (params.subtype === 'lshaped') {
-        // L-Shape: Core at the inner corner junction
         console.log('[Layout Generator] L-Shape detected - placing core at junction');
         const [minX, minY, maxX, maxY] = bbox;
 
         // For L-shapes, the inner corner is where the two wings meet
-        // Try multiple candidate positions to find the actual junction
         const candidates = [
             turf.point([minX + (maxX - minX) * 0.35, minY + (maxY - minY) * 0.35]), // SW inner
             turf.point([maxX - (maxX - minX) * 0.35, minY + (maxY - minY) * 0.35]), // SE inner
@@ -470,7 +431,6 @@ export function generateBuildingLayout(
 
         // Try left core
         for (const candidate of leftCandidates) {
-            // @ts-ignore
             if (turf.booleanPointInPolygon(candidate, workingPoly)) {
                 const core = createCoreAtPoint(candidate, 'core-h-left');
                 if (core) {
@@ -483,7 +443,6 @@ export function generateBuildingLayout(
 
         // Try right core
         for (const candidate of rightCandidates) {
-            // @ts-ignore
             if (turf.booleanPointInPolygon(candidate, workingPoly)) {
                 const core = createCoreAtPoint(candidate, 'core-h-right');
                 if (core) {
@@ -495,14 +454,11 @@ export function generateBuildingLayout(
         }
 
     } else {
-        // Default: Single core using centroid logic
         console.log('[Layout Generator] Default core placement (subtype:', params.subtype, ')');
         let centerPoint = turf.centroid(workingPoly);
 
-        // @ts-ignore
         if (!turf.booleanContains(workingPoly, centerPoint)) {
             centerPoint = turf.centerOfMass(workingPoly);
-            // @ts-ignore
             if (!turf.booleanContains(workingPoly, centerPoint)) {
                 centerPoint = turf.pointOnFeature(workingPoly);
             }
@@ -512,7 +468,6 @@ export function generateBuildingLayout(
         if (core) cores.push({ id: 'core-default', type: 'Lobby', geometry: core });
     }
 
-    // Fallback: If no cores were placed, use pointOnFeature
     if (cores.length === 0) {
         console.warn('[Layout Generator] No cores placed, using fallback');
         const fallbackPoint = turf.pointOnFeature(workingPoly);
@@ -522,7 +477,6 @@ export function generateBuildingLayout(
 
     console.log('[Layout Generator] Total cores placed:', cores.length);
 
-    // Safety check: If no cores were placed, return empty layout
     if (cores.length === 0) {
         console.warn('[Layout Generator] No cores placed, returning empty layout');
         return { cores: [], units: [], utilities: [], entrances: [] };
@@ -531,9 +485,7 @@ export function generateBuildingLayout(
     let coreGeom = cores[0].geometry;
 
     const shouldInclude = (type: string) => {
-        // If explicitly undefined, we default to true (legacy support). If empty array, respect it (none).
         if (!params.selectedUtilities) return true;
-        // Map Utility Infrastructure names to UtilityType if they differ
         const mapping: Record<string, string> = {
             'Electrical': UtilityType.Electrical,
             'HVAC': UtilityType.HVAC,
@@ -548,13 +500,11 @@ export function generateBuildingLayout(
         });
     };
 
-    // 1.1 Generate Electrical Shaft (Vertical Utility)
-    // Place it at the SE corner of the building (Vastu: Agni/Fire zone)
+    // Electrical Shaft (Vertical Utility)
     if (shouldInclude('Electrical')) {
     try {
         const bBox = turf.bbox(workingPoly);
         
-        // Electrical Shaft Area: ~1.0% to 1.5% of the single floor Gross Area
         const elecTargetArea = Math.max(2, (width * depth) * 0.015);
         
         let elecW: number, elecD: number;
@@ -565,24 +515,19 @@ export function generateBuildingLayout(
         const coreBox = coreGeom ? turf.bbox(coreGeom) : bBox;
 
         if (isHorizontal) {
-            // Core is long East-West. Match core's exact height (D) so it doesn't push the strip boundaries up/down
             elecD = coreD;
             elecW = elecTargetArea / elecD;
-            // Attach to the East edge of the core
             coreEdgeCenter = turf.point([coreBox[2], (coreBox[1] + coreBox[3]) / 2]);
-            shiftDirection = 90; // East
+            shiftDirection = 90;
             offsetDist = elecW / 2;
         } else {
-            // Core is long North-South. Match core's exact width (W)
             elecW = coreW;
             elecD = elecTargetArea / elecW;
-            // Attach to the South edge of the core
             coreEdgeCenter = turf.point([(coreBox[0] + coreBox[2]) / 2, coreBox[1]]);
-            shiftDirection = 180; // South
+            shiftDirection = 180;
             offsetDist = elecD / 2;
         }
         
-        // Offset outward by half the shaft dimension so it attaches flush to the core
         const startPoint = turf.destination(
             coreEdgeCenter, 
             offsetDist / 1000, 
@@ -590,10 +535,9 @@ export function generateBuildingLayout(
             { units: 'kilometers' }
         );
         
-        // Create an exact geometric rectangle perfectly matching the core thickness
         const cPt = startPoint.geometry.coordinates;
-        const elecWDeg = elecW / ((40008000 / 360) * Math.cos(cPt[1] * Math.PI / 180)); // Approx degrees X at this latitude
-        const elecDDeg = elecD / 111111; // Approx degrees Y
+        const elecWDeg = elecW / ((40008000 / 360) * Math.cos(cPt[1] * Math.PI / 180));
+        const elecDDeg = elecD / 111111;
         
         const elecBoxFeature = turf.bboxPolygon([
             cPt[0] - elecWDeg / 2,
@@ -602,8 +546,6 @@ export function generateBuildingLayout(
             cPt[1] + elecDDeg / 2
         ]);
         
-        // Force Intersection inside the building to prevent overhangs
-        // @ts-ignore
         const safeElecPoly = turf.intersect(elecBoxFeature, workingPoly) || elecBoxFeature;
 
         utilities.push({
@@ -616,14 +558,11 @@ export function generateBuildingLayout(
             visible: true
         });
         
-        // Include electrical shaft area in the core geometry so it's counted as core area
         try {
-            // @ts-ignore
             const merged = turf.union(coreGeom, safeElecPoly);
             if (merged && merged.geometry.type === 'Polygon') {
                 coreGeom = merged as Feature<Polygon>;
             } else if (merged && merged.geometry.type === 'MultiPolygon') {
-                // Keep as multipolygon wrapped in first polygon for compatibility
                 coreGeom = merged as any;
             }
         } catch (e) {
@@ -636,30 +575,23 @@ export function generateBuildingLayout(
     }
     }
 
-    // 1.2 Generate HVAC Zone (Rooftop) - Vastu: W/SW side of building
-    // Per Vastu: Air-conditioning chiller plant / Cooling towers → West or South-West
-    // Skip for podium buildings — the tower handles rooftop utilities
+    // HVAC Zone (Rooftop) - Vastu: W/SW side of building
     const isPodiumBuilding = params.buildingId?.includes('-podium');
     if (!isPodiumBuilding && shouldInclude('HVAC')) {
     try {
-        // Rooftop HVAC / Plant Room Area: ~1.5% to 2% of the Total Building GFA (all floors combined)
-        // @ts-ignore - Assuming params has maxFloors based on other context, falling back to 5
         const floorsCount = params.numFloors || 5;
         const totalGFA = (width * depth) * Math.max(1, floorsCount);
-        const hvacTargetArea = Math.max(16, totalGFA * 0.015); // Minimum 16m2 package
+        const hvacTargetArea = Math.max(16, totalGFA * 0.015);
         
         const bBox = turf.bbox(workingPoly);
-        // HVAC occupies the western half of the rooftop (Vastu: West/SW)
-        const hvacW = width * 0.45; // ~45% of building width
-        const hvacD = Math.min(depth * 0.45, hvacTargetArea / (width * 0.45)); // Fit area
-        const hvacActualD = Math.max(3, hvacD); // Minimum 3m depth
+        const hvacW = width * 0.45;
+        const hvacD = Math.min(depth * 0.45, hvacTargetArea / (width * 0.45));
+        const hvacActualD = Math.max(3, hvacD);
         
-        // SW corner point, inset 1m from edges
         const swPoint = turf.point([bBox[0], bBox[1]]);
         const startPoint = turf.transformTranslate(swPoint, 1, 45, { units: 'meters' });
         const startCoords = startPoint.geometry.coordinates;
         
-        // Build HVAC box from SW corner inward (west side)
         const hvacWDeg = hvacW / 111320;
         const hvacDDeg = hvacActualD / 110540;
         const hvacBoxFeature = turf.bboxPolygon([
@@ -667,11 +599,8 @@ export function generateBuildingLayout(
             startCoords[0] + hvacWDeg, startCoords[1] + hvacDDeg
         ]);
         
-        // Force intersection inside the building footprint
-        // @ts-ignore
         let hvacPoly = turf.intersect(hvacBoxFeature, workingPoly);
         if (!hvacPoly || turf.area(hvacPoly) < 4) {
-            // Fallback: use building center west half
             const center = turf.center(workingPoly);
             const hvacSize = Math.sqrt(hvacTargetArea);
             const fallbackCenter = turf.transformTranslate(center, width * 0.15, -90, { units: 'meters' }); // Shift west
@@ -693,22 +622,18 @@ export function generateBuildingLayout(
     } catch (e) {
         console.warn('Failed to place HVAC Zone', e);
     }
-    } // end isPodiumBuilding check for HVAC
+    }
 
-    // 1.3 Generate Rooftop Solar PV - Vastu: South-facing roof for max efficiency
-    // Skip for podium buildings — Solar PV goes on tower rooftop only
+    // Rooftop Solar PV
     if (!isPodiumBuilding && (shouldInclude('Solar PV') || shouldInclude('Rooftop Solar'))) {
     try {
         const bBox = turf.bbox(workingPoly);
         const footprintArea = turf.area(workingPoly);
-        // Use SE half of rooftop (opposite of HVAC which is W/SW)
-        // Solar PV covers ~40% of rooftop on the eastern/SE side
         const solarW = width * 0.45;
         const solarD = depth * 0.45;
         
-        // SE corner point, inset 1m from edges
         const sePoint = turf.point([bBox[2], bBox[1]]);
-        const solarStart = turf.transformTranslate(sePoint, 1, -135, { units: 'meters' }); // inset NW
+        const solarStart = turf.transformTranslate(sePoint, 1, -135, { units: 'meters' });
         const solarCoords = solarStart.geometry.coordinates;
         
         const solarWDeg = solarW / 111320;
@@ -718,15 +643,12 @@ export function generateBuildingLayout(
             solarCoords[0], solarCoords[1] + solarDDeg
         ]);
         
-        // @ts-ignore
         let solarPoly = turf.intersect(solarBoxFeature, workingPoly);
         if (!solarPoly || turf.area(solarPoly) < 4) {
-            // Fallback: use building center east half
             const center = turf.center(workingPoly);
-            const fallbackCenter = turf.transformTranslate(center, width * 0.15, 90, { units: 'meters' }); // Shift east
+            const fallbackCenter = turf.transformTranslate(center, width * 0.15, 90, { units: 'meters' });
             const solarSize = Math.sqrt(solarW * solarD);
             solarPoly = turf.envelope(turf.buffer(fallbackCenter, solarSize / 2, { units: 'meters' }));
-            // @ts-ignore
             solarPoly = turf.intersect(solarPoly, workingPoly) || solarPoly;
         }
 
@@ -744,20 +666,15 @@ export function generateBuildingLayout(
     } catch (e) {
         console.warn('Failed to place Rooftop Solar PV', e);
     }
-    } // end isPodiumBuilding check for Solar PV
 
-    // 1.4 Generate EV Station Zone (Basement context)
-    // EV charging is in basement parking — belongs to podiums and normal buildings.
-    // Skip for towers as they sit on top of the podium/parking shared zone.
+    // EV Charging
     const isTowerBuilding = params.buildingId?.includes('-tower');
     if (!isTowerBuilding && shouldInclude('EV Charging')) {
     try {
         const bBox = turf.bbox(workingPoly);
-        // Place EV stations along the North edge (2m deep zone)
-        const evW = width * 0.8; // Cover most of the width
-        const evD = 2.0; // 2m deep charging zone
+        const evW = width * 0.8;
+        const evD = 2.0;
         
-        // NW corner point, inset 0.5m
         const nwPoint = turf.point([bBox[0], bBox[3]]);
         const evStart = turf.transformTranslate(nwPoint, 0.5, 135, { units: 'meters' });
         const evCoords = evStart.geometry.coordinates;
@@ -769,7 +686,6 @@ export function generateBuildingLayout(
             evCoords[0] + evWDeg, evCoords[1]
         ]);
         
-        // @ts-ignore
         let evPoly = turf.intersect(evBoxFeature, workingPoly);
         if (evPoly && turf.area(evPoly) > 2) {
             utilities.push({
@@ -786,22 +702,17 @@ export function generateBuildingLayout(
     } catch (e) {
         console.warn('Failed to place EV Station polygon', e);
     }
-    } // end isTowerBuilding check for EV
+    }
 
-    // 2. Generate Units based on Unit Mix Configuration
     let obstacles: any = undefined;
 
     if (coreGeom) {
-        // Minimal buffer just to prevent turf topology intersection errors, allowing units to touch cores
         const corridorW = params.corridorWidth || 0.1;
         const coreWithCorridor = turf.buffer(coreGeom, corridorW / 1000, { units: 'kilometers' });
 
-        // Combine Core + Electrical + Corridor for subtraction
-        // (Electrical shaft is already included in coreGeom from line 586)
         obstacles = coreWithCorridor || coreGeom;
     }
 
-    // Use the obstacles to cut the hole on the ALIGNED workingPoly
     let leasablePoly = workingPoly; 
     if (obstacles) {
         try {
@@ -817,7 +728,6 @@ export function generateBuildingLayout(
             }
         }
         if (!leasablePoly) {
-            // Fallback if difference fails -> Difference with just core
             if (coreGeom) {
                 // @ts-ignore
                 leasablePoly = turf.difference(workingPoly, coreGeom);
@@ -826,10 +736,7 @@ export function generateBuildingLayout(
         }
     }
 
-    // Override or Setup defaults based on Intended Use
     let useUnitMix = params.unitMix;
-
-    // If specific non-residential use, override the mix
     if (params.intendedUse === BuildingIntendedUse.Commercial) {
         useUnitMix = [{ name: 'Office', mixRatio: 1, area: 150 }];
     } else if (params.intendedUse === BuildingIntendedUse.Hospitality) {
@@ -837,7 +744,6 @@ export function generateBuildingLayout(
     } else if (params.intendedUse === BuildingIntendedUse.Public || params.intendedUse === BuildingIntendedUse.Industrial) {
         useUnitMix = [{ name: 'Hall', mixRatio: 1, area: 500 }];
     } else if (!useUnitMix || useUnitMix.length === 0) {
-        // Default residential mix if none provided
         useUnitMix = [
             { name: '2BHK', mixRatio: 0.30, area: 140 },
             { name: '3BHK', mixRatio: 0.35, area: 185 },
@@ -845,34 +751,23 @@ export function generateBuildingLayout(
         ];
     }
 
-    // Now we ALWAYS have a useUnitMix array.
     const weightedAvgSize = useUnitMix.reduce((acc, unit) => acc + (unit.area * unit.mixRatio), 0);
-    
-    // Use a FINE grid for accurate area representation.
-    // Divide the smallest unit area by 5 to get ~28sqm cells (~5.3m per side)
-    // This allows 2BHK(140)=5cells, 3BHK(185)=7cells, 4BHK(245)=9cells — much more precise.
     const smallestUnitArea = Math.min(...useUnitMix.map(u => u.area));
     const baseGridUnitSize = Math.max(10, Math.round(smallestUnitArea / 5));
-    
-    // 1. Create a fine-grained grid for precise unit area representation
     const nominalGridSizeM = Math.sqrt(baseGridUnitSize);
-
-    // Calculate discrete number of cells across width and depth
     const cellsX = Math.max(1, Math.round(width / nominalGridSizeM));
     const cellsY = Math.max(1, Math.round(depth / nominalGridSizeM));
     
-    // Derive exact cell dimensions DIRECTLY from bbox degree extent
     const bboxWidthDeg = bbox[2] - bbox[0];
     const bboxHeightDeg = bbox[3] - bbox[1];
     const wDegGrid = bboxWidthDeg / cellsX;
     const hDegGrid = bboxHeightDeg / cellsY;
 
-    // Actual cell area in m² (needed for threshold check)
     const gridW = width / cellsX;
     const gridH = depth / cellsY;
     const actualCellAreaM2 = gridW * gridH;
 
-    // 2. Create an exact mathematical grid of rectangular polygons
+    // Create an exact mathematical grid of rectangular polygons
     let gridFeatures: { poly: Feature<Polygon>, i: number, j: number }[] = [];
     const minXGrid = bbox[0], minYGrid = bbox[1];
     
@@ -890,7 +785,6 @@ export function generateBuildingLayout(
         }
     }
 
-    // 3. Keep only modules that fall inside the leasable area
     let validModules: { poly: Feature<Polygon>, validPoly: Feature<Polygon>, i: number, j: number }[] = [];
     gridFeatures.forEach((cell) => {
         try {
@@ -906,30 +800,16 @@ export function generateBuildingLayout(
     const leasableAreaM2 = validModules.reduce((sum, m) => sum + turf.area(m.validPoly), 0);
     console.log(`[Layout Generator] Tiled Grid: ${totalValidCells} modules, cell≈${actualCellAreaM2.toFixed(1)}m², leasable≈${leasableAreaM2.toFixed(0)}m²`);
 
-    // 4. GEOMETRIC UNIT SUBDIVISION
-    // Instead of grid-based placement (which causes gaps, irregular shapes, and sizing issues),
-    // we directly subdivide the leasable area into clean rectangular units.
-    // 
-    // Algorithm:
-    //   1. Split leasable bbox into two strips at core centerline
-    //   2. Compute unit widths from: unitWidth = targetArea / stripDepth
-    //   3. Build a floor-wide unit deck
-    //   4. Assign units to each strip by creating rectangles at calculated positions
-    //   5. Intersect with leasable poly for clean edges
-    
+    // GEOMETRIC UNIT SUBDIVISION
     const lBbox = turf.bbox(leasablePoly!);
     const [lMinX, lMinY, lMaxX, lMaxY] = lBbox;
     
-    // Core center divides building into two strips   
     const coreCentroidPt = cores.length > 0 
         ? turf.centroid(cores[0].geometry) 
         : turf.centroid(workingPoly);
     const coreCenter = coreCentroidPt.geometry.coordinates;
     
-    // Get the core's actual physical outer edges (bbox) to avoid overlap with core hole in leasablePoly
-    // IMPORTANT: Use the merged coreGeom (which includes the Electrical Shaft) 
-    // Adding a small buffer (corridor width) to account for the corridor around the core
-    const corridorBuffer = params.corridorWidth || 1.5; // meters
+    const corridorBuffer = params.corridorWidth || 1.5;
     const coreForStrips = coreGeom 
         ? turf.buffer(coreGeom, corridorBuffer / 1000, { units: 'kilometers' })
         : null;
@@ -937,13 +817,9 @@ export function generateBuildingLayout(
     
     const isHorizontalBuilding = width > depth;
     
-    // Degree-to-meter scale factors at this location
     const degPerMeterX = (lMaxX - lMinX) / width;
     const degPerMeterY = (lMaxY - lMinY) / depth;
     
-    // Compute two strips
-    // For EXACT TYPOLOGY: use core outer edges so strips don't overlap the core hole (precise area)
-    // For NORMAL mode: use core center (old behavior, units stretch to fill the floor)
     let stripA: { minX: number, maxX: number, minY: number, maxY: number, depth: number, length: number };
     let stripB: { minX: number, maxX: number, minY: number, maxY: number, depth: number, length: number };
     
@@ -985,37 +861,30 @@ export function generateBuildingLayout(
         coreBbox ? `coreBbox=[${coreBbox.map((v: number) => v.toFixed(6)).join(',')}]` : 'no-core-bbox',
         `building=${width.toFixed(1)}×${depth.toFixed(1)}m`);
     
-    // Calculate unit widths for each strip
     const computeUnitWidths = (stripDepth: number) => {
-        if (stripDepth < 1) return useUnitMix.map(u => ({ ...u, unitWidth: u.area })); // degenerate
+        if (stripDepth < 1) return useUnitMix.map(u => ({ ...u, unitWidth: u.area }));
         return useUnitMix.map(u => ({
             ...u,
-            unitWidth: u.area / stripDepth // meters wide along the building length
+            unitWidth: u.area / stripDepth
         }));
     };
     
-    // Build ONE deck for the whole floor
-    // Use the average strip depth for unit width calculation
     const avgStripDepth = (stripA.depth + stripB.depth) / 2;
     const unitWidths = computeUnitWidths(avgStripDepth);
     const avgUnitWidth = unitWidths.reduce((s, u) => s + u.unitWidth * u.mixRatio, 0);
-    const totalLength = stripA.length; // both strips have same length
+    const totalLength = stripA.length;
     
-    // Total units that fit across both strips combined
-    const totalUnitSlots = Math.max(1, Math.floor((totalLength * 2) / avgUnitWidth)); // ×2 for both strips
+    const totalUnitSlots = Math.max(1, Math.floor((totalLength * 2) / avgUnitWidth));
     
-    // Distribute by mix ratio
     const unitCounts = unitWidths.map(u => ({
         ...u,
         count: Math.max(0, Math.round(totalUnitSlots * u.mixRatio))
     }));
     
-    // Ensure at least 1 of each type
     unitCounts.forEach(u => {
         if (u.count === 0 && u.mixRatio > 0) u.count = 1;
     });
     
-    // Trim if total width exceeds available (both strips combined)
     let totalWidthUsed = unitCounts.reduce((s, u) => s + u.count * u.unitWidth, 0);
     unitCounts.sort((a, b) => b.count - a.count);
     while (totalWidthUsed > totalLength * 2 && unitCounts[0].count > 1) {
@@ -1028,18 +897,12 @@ export function generateBuildingLayout(
         `total=${totalWidthUsed.toFixed(0)}m / ${(totalLength*2).toFixed(0)}m`);
     
     // EXACT TYPOLOGY ALLOCATION MODE
-    // When enabled, strictly bound the units by the mathematical physical leasable area left after subtracting the core
     if (params.exactTypologyAllocation && leasableAreaM2 > 0) {
-        // No arbitrary efficiency factor. The leasablePoly is the true physical functional leftover space.
         let targetTotalArea = 0;
         
-        // Initial distribution based on mix ratio. 
-        // Guarantee at least 1 of each requested type to prevent large units (4BHK) from rolling down to 0 
-        // on small floor plates, letting the subsequent trim logic mathematically resolve any true physical overflow.
         unitCounts.forEach(u => {
             if (u.mixRatio > 0) {
                 const rawProportion = leasableAreaM2 * u.mixRatio;
-                // Force at least 1 if requested, otherwise proportional
                 u.count = Math.max(1, Math.round(rawProportion / u.area));
             } else {
                 u.count = 0;
@@ -1047,9 +910,7 @@ export function generateBuildingLayout(
             targetTotalArea += u.count * u.area;
         });
 
-        // If the rounding caused us to exceed the physical bounds, trim units!
         while (targetTotalArea > leasableAreaM2 && targetTotalArea > 0) {
-            // Trim from the largest unit type that has count > 0 to resolve area overage quickly
             const validToTrim = [...unitCounts].filter(u => u.count > 0).sort((a, b) => b.area - a.area);
             if (validToTrim.length > 0) {
                 const targetToTrim = unitCounts.find(u => u.name === validToTrim[0].name)!;
@@ -1060,11 +921,9 @@ export function generateBuildingLayout(
             }
         }
 
-        // Fill remaining physical space if a smaller unit can exactly fit the gap
         let remainingSpace = leasableAreaM2 - targetTotalArea;
         const typesSmallToLarge = [...unitCounts].sort((a, b) => a.area - b.area);
         for (const u of typesSmallToLarge) {
-            // Allows ~5% stretch tolerance to fill gaps cleanly
             while (remainingSpace >= u.area * 0.95) {
                 const originalU = unitCounts.find(x => x.name === u.name)!;
                 originalU.count++;
@@ -1082,7 +941,6 @@ export function generateBuildingLayout(
 
     if (params.exactTypologyAllocation) {
         // ── EXACT TYPOLOGY PATH ──────────────────────────────────────────────────
-        // Build flat list, sorted largest first so big units are always placed first
         const allUnitsToPlace: typeof deckA = [];
         unitCounts.forEach(u => {
             for (let i = 0; i < u.count; i++) {
@@ -1096,8 +954,6 @@ export function generateBuildingLayout(
         });
         allUnitsToPlace.sort((a, b) => b.targetArea - a.targetArea);
 
-        // Interleave by type: alternate each type's units between A and B
-        // so both strips get a proportional mix of all sizes
         const typeGroups: Record<string, typeof allUnitsToPlace> = {};
         for (const u of allUnitsToPlace) {
             if (!typeGroups[u.type]) typeGroups[u.type] = [];
@@ -1147,7 +1003,6 @@ export function generateBuildingLayout(
             }
         }
 
-        // Even split between strips (original behaviour)
         const aSlots = Math.round(unitDeck.length * 0.5);
         deckA = unitDeck.slice(0, aSlots);
         deckB = unitDeck.slice(aSlots);
@@ -1160,41 +1015,32 @@ export function generateBuildingLayout(
     ): number => {
         if (deck.length === 0 || strip.depth < 1 || strip.length < 1) return unitStartIdx;
         
-        // Compute total width needed by this deck
-        // For exact allocation, total width is the sum of exact widths needed on THIS specific strip
         const exactDeckWidth = params.exactTypologyAllocation 
             ? deck.reduce((s, u) => s + (u.targetArea / strip.depth), 0)
             : deck.reduce((s, u) => s + u.unitWidth, 0);
 
-        // Scale factor: stretch/compress to fill the strip exactly (ONLY if not exact sizes)
         const scaleFactor = params.exactTypologyAllocation ? 1 : (strip.length / exactDeckWidth);
         
-        let currentPos = 0; // meters from start of strip
+        let currentPos = 0; 
         
         for (let d = 0; d < deck.length; d++) {
             const assignment = deck[d];
-            // EXACT AREA FIX: calculate width specifically for THIS strip's depth to hit exact targetArea
             const exactWidthForThisStrip = params.exactTypologyAllocation ? (assignment.targetArea / strip.depth) : assignment.unitWidth;
-            const scaledWidth = exactWidthForThisStrip * scaleFactor; // adjusted to fill strip perfectly, unless exactTypologyAllocation
+            const scaledWidth = exactWidthForThisStrip * scaleFactor;
             
             if (params.exactTypologyAllocation && currentPos + scaledWidth > strip.length * 1.05) {
-                // If we are in exact typology mode, do not place units that spill off the strip by more than 5%.
-                // Instead of breaking the whole strip, SKIP this unit and try the next (smaller) ones.
                 console.log(`[Layout Generator] Exact Typology: Skipped unit ${assignment.type} due to strip length constraints. Trying smaller units in remaining space.`);
                 continue;
             }
 
-            // Since we might skip units, the "last unit" logic needs to just take exactly what it needs
-            // or stretch to the end IF it's the terminal unit and close enough
             let nextPos = currentPos + scaledWidth;
             if (d === deck.length - 1 && (!params.exactTypologyAllocation || (currentPos + scaledWidth > strip.length * 0.95))) {
-                nextPos = strip.length; // Snap to end if it's the final unit and fits within tolerance
+                nextPos = strip.length;
             }
             if (params.exactTypologyAllocation) {
-                 nextPos = Math.min(nextPos, strip.length); // Never legally exceed the strip
+                 nextPos = Math.min(nextPos, strip.length); 
             }
             
-            // Create rectangle in geographic coordinates
             let unitRect: Feature<Polygon>;
             if (isHorizontalBuilding) {
                 const x1 = strip.minX + currentPos * degPerMeterX;
@@ -1206,7 +1052,6 @@ export function generateBuildingLayout(
                 unitRect = turf.bboxPolygon([strip.minX, y1, strip.maxX, y2]);
             }
             
-            // Intersect with leasable poly for clean edges
             let finalGeom: Feature<Polygon> | null = null;
             try {
                 // @ts-ignore
@@ -1215,14 +1060,12 @@ export function generateBuildingLayout(
                     if (clipped.geometry.type === 'Polygon') {
                         finalGeom = clipped as Feature<Polygon>;
                     } else if (clipped.geometry.type === 'MultiPolygon') {
-                        // Take the largest part
                         const parts = (clipped.geometry.coordinates as any[]).map((c: any) => turf.polygon(c));
                         parts.sort((a: any, b: any) => turf.area(b) - turf.area(a));
                         finalGeom = parts[0] as Feature<Polygon>;
                     }
                 }
             } catch (e) {
-                // If intersection fails, use the raw rectangle
                 finalGeom = unitRect;
             }
             
@@ -1239,15 +1082,7 @@ export function generateBuildingLayout(
             currentPos = nextPos;
         }
 
-        // ----------------------------------------------------
-        // NO GAP FILLING FOR EXACT TYPOLOGY
-        // ----------------------------------------------------
-        // Because unitCounts is now strictly bound by the mathematical leasable area 
-        // earlier in the algorithm, we do not want to dynamically construct extra 
-        // units that mathematically exceed the available bounds. 
-        // Any physical gaps left at the end of a strip are realistic structural voids.
-        
-        return unitStartIdx + deck.length + (params.exactTypologyAllocation ? 999 : 0); // Next index offset safely (rough estimate to avoid clashes)
+        return unitStartIdx + deck.length + (params.exactTypologyAllocation ? 999 : 0); 
     };
     
     const nextIdx = createStripUnits(stripA, deckA, 0);
@@ -1256,53 +1091,41 @@ export function generateBuildingLayout(
     console.log(`[Layout Generator] Final: ${units.length} units placed.`, 
         units.map(u => `${u.type}(${u.targetArea}sqm)`).join(', '));
 
-    // 3. Generate Entrances (NEW)
     try {
-        // Find best edge for entrance based on Vastu/Roads
         const buildingCenter = turf.centroid(workingPoly);
-        // Explode polygon to gets points (edges are between points)
-        // @ts-ignore
         const vertices = turf.explode(workingPoly).features;
 
         let bestCandidatePoint: any = null;
         let bestCandidateScore = -1;
 
-        // Iterate edges (pairs of vertices)
         for (let i = 0; i < vertices.length - 1; i++) {
             const p1 = vertices[i];
             const p2 = vertices[i + 1];
             const edgeMid = turf.midpoint(p1, p2);
 
-            // Get direction from building center to edge mid
             const bearing = turf.bearing(buildingCenter, edgeMid);
             const direction = getCardinalDirection(bearing);
 
             let score = 0;
 
             if (params.vastuCompliant) {
-                // Vastu Priorities: NE (Best), E, N
-                // NE implies bearing ~45
                 const b = (bearing + 360) % 360;
-                if (b > 20 && b < 70) score = 100; // NE
+                if (b > 20 && b < 70) score = 100;
                 else if (direction === 'E') score = 80;
                 else if (direction === 'N') score = 70;
                 else if (direction === 'S') score = 10;
                 else if (direction === 'W') score = 20;
-                else score = 30; // Others (SE, NW, SW)
+                else score = 30;
             }
             else if (params.roadAccessSides && params.roadAccessSides.length > 0) {
-                // Determine score based on road access
                 if (params.roadAccessSides.includes(direction)) score = 100;
                 else score = 10;
             }
             else {
-                // Default fallback (South entry is standard/safe default?)
-                // Actually, just pick any valid edge that's long enough
                 if (direction === 'S') score = 60;
                 else score = 50;
             }
 
-            // Penalize very short edges (corners/notches)
             const dist = turf.distance(p1, p2, { units: 'meters' });
             if (dist < 4) score -= 50;
 
@@ -1326,7 +1149,6 @@ export function generateBuildingLayout(
     }
 
     // --- MASTER ROTATION BLOCK ---
-    // Rotate everything back to the actual building orientation!
     if (rotationAngle !== 0) {
         cores.forEach(c => {
             if (c.geometry) {
@@ -1357,8 +1179,6 @@ export function generateBuildingLayout(
         });
         console.log(`[Layout Gen] Master rotated all components back by ${rotationAngle}deg`);
     }
-
-    // 4. Efficiency Validation
     const totalArea = turf.area(buildingPoly);
     let totalUnitArea = 0;
     units.forEach(u => { if (u.geometry) totalUnitArea += turf.area(u.geometry); });
@@ -1370,7 +1190,6 @@ export function generateBuildingLayout(
 
 /**
  * Determines Utility Size and Placement based on Vastu or User Logic
- * NOW: Uses deterministic, calculation-based sizing and placement
  */
 interface UtilityDef {
     type: UtilityType;
@@ -1382,8 +1201,7 @@ interface UtilityDef {
 }
 
 /**
- * Calculate corner reservation zones for utilities (to be avoided by buildings)
- * This should be called BEFORE building generation when Vastu is enabled
+ * Calculate corner reservation zones for utilities 
  */
 export function calculateUtilityReservationZones(
     plotPoly: Feature<Polygon>,
@@ -1398,8 +1216,6 @@ export function calculateUtilityReservationZones(
     const maxX = bbox[2];
     const maxY = bbox[3];
 
-    // Reserve approximately 35m x 35m in each required corner (Increased to 35m to ensure gap)
-    // This is a rough estimate - actual utilities will be placed within these zones
     const reserveSize = 35; // meters
     const wPerDeg = 111320;
     const hPerDeg = 110540;
@@ -1439,42 +1255,35 @@ export function calculateUtilityReservationZones(
 
 export function generateSiteUtilities(
     plotPoly: Feature<Polygon>,
-    buildings: any[], // Array of building features containing units
+    buildings: any[],
     vastuCompliant: boolean = false,
-    obstacles: Feature<Polygon>[] = [], // Roads, Parking, etc.
+    obstacles: Feature<Polygon>[] = [],
     selectedUtilities?: string[],
-    peripheralParkingZone?: Feature<Polygon | MultiPolygon> | null // Container for utilities (5m parking ring)
+    peripheralParkingZone?: Feature<Polygon | MultiPolygon> | null
 ): { utilities: any[], buildings: any[] } {
     const utilities: any[] = [];
-    // When parking zone is provided, use it as the placement container
     const containerPoly = (peripheralParkingZone || plotPoly) as Feature<Polygon>;
     const minX = turf.bbox(containerPoly)[0];
     const minY = turf.bbox(containerPoly)[1];
     const maxX = turf.bbox(containerPoly)[2];
     const maxY = turf.bbox(containerPoly)[3];
 
-    // --- 1. CALCULATE DEMAND ---
+    // --- CALCULATE DEMAND ---
 
-    // Estimate population
     let totalUnits = 0;
     buildings.forEach(b => {
-        // Case 1: GeoJSON Feature with units in properties (old algo path)
         if (b.properties && b.properties.units && Array.isArray(b.properties.units)) {
             totalUnits += b.properties.units.length;
-        // Case 2: Plain Building object with units directly on it (store path)
         } else if (b.units && Array.isArray(b.units)) {
             totalUnits += b.units.length;
         } else {
-            // Fallback: Estimate based on area if units not populated yet
             try {
-                // Handle various input shapes (Feature or Geometry)
                 let area = 0;
                 if (b.type === 'Feature' || b.type === 'Polygon' || b.type === 'MultiPolygon') {
                     area = turf.area(b);
                 } else if (b.geometry) {
                     area = turf.area(b.geometry);
                 } else if (b.area) {
-                    // Plain Building object area field
                     area = b.area;
                 }
 
@@ -1490,14 +1299,14 @@ export function generateSiteUtilities(
 
     if (totalUnits === 0) totalUnits = 50; // Safety baseline
 
-    // Assumptions — aligned with building-calc.tsx (NBC/IS Standards)
-    const avgPersonsPerUnit = 3.5; // building-calc.tsx uses avgOccupancy = 3.5
+    // Assumptions
+    const avgPersonsPerUnit = 4;
     const population = Math.round(totalUnits * avgPersonsPerUnit);
     const waterDemandPerPerson = 135; // LPCD (IS 1172)
     const sewageDemandPerPerson = 120; // LPCD
     const totalWaterDemand = population * waterDemandPerPerson; // Liters/Day
 
-    // --- 2. SIZING UTILITIES (formulas from building-calc.tsx) ---
+    // --- SIZING UTILITIES ---
 
     // STP (Sewage Treatment Plant) — building-calc: stpCapacity * 8 m²/KLD
     const stpCapacityKLD = (population * sewageDemandPerPerson * 1.2) / 1000;
@@ -1583,7 +1392,7 @@ export function generateSiteUtilities(
     console.log(`EV Points -> ${evPoints}`);
     console.groupEnd();
 
-    // --- 3. GROUPING & PLACEMENT ZONES ---
+    // --- GROUPING & PLACEMENT ZONES ---
 
     const groupNE: UtilityDef[] = [];
     const groupSE: UtilityDef[] = [];
@@ -1616,22 +1425,18 @@ export function generateSiteUtilities(
     // Separate Fire Tank (Underground) often in non-obtrusive area
     if (shouldInclude(UtilityType.Fire)) groupSW.push({ type: UtilityType.Fire, name: 'Fire Tank (UG)', area: fireTankArea, color: '#EF9A9A', height: 2.5, level: -1 });
 
-    // --- 3. PLACEMENT ALGORITHM ---
+    // --- PLACEMENT ALGORITHM ---
 
     const placeGroupInCorner = (group: UtilityDef[], corner: 'NE' | 'SE' | 'SW' | 'NW'): UtilityDef[] => {
         const failedItems: UtilityDef[] = [];
         if (group.length === 0) return [];
 
-        // Constants for placement
-        const margin = 1.5; // Reduced from 3m for compact layout
-        // Use a smaller gap in the parking ring to pack them tighter
+        const margin = 1.5;
         const gap = peripheralParkingZone ? 0.1 : 1.0;
         const wPerDeg = 111320;
         const hPerDeg = 110540;
-
-        // Determine Corner Coordinates (BBox)
         let cornerX = 0, cornerY = 0;
-        let growX = 0, growY = 0; // Direction for packing: 1 or -1
+        let growX = 0, growY = 0;
 
         if (corner === 'NE') { cornerX = maxX; cornerY = maxY; growX = -1; growY = -1; }
         if (corner === 'SE') { cornerX = maxX; cornerY = minY; growX = -1; growY = 1; }
@@ -1640,20 +1445,14 @@ export function generateSiteUtilities(
 
         console.log(`[Utility Debug] Placing in ${corner}: bbox=[${minX}, ${minY}, ${maxX}, ${maxY}], corner=[${cornerX}, ${cornerY}]`);
 
-        // Find Valid Start Point (March inward from corner towards centroid)
-        // Use containerPoly for the march — when placing in a ring, we must find
-        // a point inside the ring, NOT inside the interior hole.
         const marchTarget = turf.centroid(containerPoly);
         let currentPoint = turf.point([cornerX, cornerY]);
 
-        // Safety Break
         let steps = 0;
-        const maxSteps = 1000; // 1000 meters max search inward (Increased for large plots)
+        const maxSteps = 1000;
 
-        // March Inward Loop — check against containerPoly (ring when parking zone)
         // @ts-ignore
         while (!turf.booleanPointInPolygon(currentPoint, containerPoly) && steps < maxSteps) {
-            // Move 1 meter towards centroid
             const bearing = turf.bearing(currentPoint, marchTarget);
             currentPoint = turf.destination(currentPoint, 1, bearing, { units: 'meters' });
             steps++;
@@ -1661,30 +1460,20 @@ export function generateSiteUtilities(
 
         if (steps >= maxSteps) {
             console.warn(`[Utility Debug] Could not find valid start point for corner ${corner}`);
-            return group; // Skip this group if no valid point found
+            return group;
         }
 
-        // Apply Margin inward (smaller for ring since it's only 5m wide)
         const effectiveMargin = peripheralParkingZone ? 0.5 : margin;
         const bearing = turf.bearing(currentPoint, marchTarget);
         currentPoint = turf.destination(currentPoint, effectiveMargin, bearing, { units: 'meters' });
 
         let [cursorX, cursorY] = currentPoint.geometry.coordinates;
 
-        // Packing Strategy:
-        // Attempt to place items in a row along X (Width).
-        // If row is full or blocked, move to next row (Y).
-
-        // Grid Search Strategy: Scans nearest valid spots to the corner
-        // 0 to 50m range in both X and Y directions
-
         group.forEach(util => {
             let placed = false;
             let bestDist = Infinity;
             let bestPoly: Feature<Polygon> | null = null;
 
-            // Cap utility side at 3.5m when placing inside the 5m peripheral parking strip
-            // (gives 1.5m clearance to prevent intersecting with adjacent road buffers)
             const maxSide = peripheralParkingZone ? 3.5 : Infinity;
             const side = Math.min(Math.sqrt(util.area), maxSide);
             const uW = side;
@@ -1692,11 +1481,9 @@ export function generateSiteUtilities(
             const uWDeg = uW / wPerDeg;
             const uHDeg = uH / hPerDeg;
 
-            // For the narrow parking ring, use smaller steps and more iterations
             const searchSteps = peripheralParkingZone ? 120 : 40;
             const stepM = peripheralParkingZone ? 0.5 : 3;
 
-            // Precalculate and sort grid steps by distance from origin to spiral outward
             const gridPoints: {i: number, j: number, localX: number, localY: number, dist: number}[] = [];
             for (let i = 0; i < searchSteps; i++) {
                 for (let j = 0; j < searchSteps; j++) {
@@ -1715,8 +1502,6 @@ export function generateSiteUtilities(
                 const localX = pt.localX;
                 const localY = pt.localY;
                     
-                    // Rotate the local offsets by plotOrientation so the grid search 
-                    // stays parallel to the plot edges (fixes narrow ring bounds)
                     const rad = -plotOrientation * Math.PI / 180;
                     const rotX = localX * Math.cos(rad) - localY * Math.sin(rad);
                     const rotY = localX * Math.sin(rad) + localY * Math.cos(rad);
@@ -1724,36 +1509,27 @@ export function generateSiteUtilities(
                     const offsetX = rotX / wPerDeg;
                     const offsetY = rotY / hPerDeg;
 
-                    // Define Candidate Poly (Top-Left anchor relative to scan)
-                    // Original logic: x1 is Start, x2 is Start + Width
-                    // We need to ensure we shift FROM the cursor
-
                     const originX = cursorX + offsetX;
                     const originY = cursorY + offsetY;
 
-                    // Generate dynamic shapes based on utility type or random seed
-                    // Use a seeded random based on utility name and type to keep it deterministic per layout
                     const uSeedStr = util.name + util.type + pt.i + pt.j;
                     let uSeed = 0;
                     for (let c = 0; c < uSeedStr.length; c++) uSeed += uSeedStr.charCodeAt(c);
                     
-                    const shapeTypeInt = uSeed % 4; // 0=Rect, 1=Circle, 2=Hexagon, 3=Octagon
+                    const shapeTypeInt = uSeed % 4;
                     let poly: Feature<Polygon>;
                     
                     if (shapeTypeInt === 0) {
                         poly = createRotatedRect(turf.point([originX, originY]), uW, uH, plotOrientation);
                     } else {
-                        // For circles, hexagons, octagons, we use turf.circle with different step counts
-                        // uW is the max bounding box side, so radius is uW/2
                         const radius = uW / 2;
                         const steps = shapeTypeInt === 1 ? 32 : (shapeTypeInt === 2 ? 6 : 8);
                         poly = turf.circle(turf.point([originX, originY]), radius, { units: 'meters', steps: steps });
                     }
 
-                    // 1. BOUNDARY CHECK — use containerPoly (=parking zone when available)
+                    // 1. BOUNDARY CHECK
                     let inside = false;
                     try {
-                        // For the narrow parking ring, skip buffer entirely to maximize placement chances
                         if (peripheralParkingZone) {
                             // @ts-ignore
                             inside = turf.booleanContains(containerPoly, poly);
@@ -1770,19 +1546,17 @@ export function generateSiteUtilities(
                     // 2. PRE-CALCULATE BUFFERED POLY (Ensure Gap)
                     let bufferedPoly;
                     try {
-                        // Use smaller gap (0.2m) when in parking ring to avoid hitting the adjacent road
                         const gapDistance = peripheralParkingZone ? 0.2 : 1.0;
                         // @ts-ignore
                         bufferedPoly = turf.buffer(poly, gapDistance, { units: 'meters' });
                     } catch (e) { bufferedPoly = poly; }
                     const checkPoly = bufferedPoly || poly;
 
-                    // 3. OBSTACLE CHECK (Roads, Parking, etc) - Use BUFFERED to ensure gap
+                    // 3. OBSTACLE CHECK
                     let obstacleOverlap = false;
                     for (const obst of obstacles) {
                         try {
                             if (obst && obst.geometry) {
-                                // Check against buffered/gapped geometry
                                 // @ts-ignore
                                 if (turf.booleanIntersects(checkPoly, obst.geometry)) { obstacleOverlap = true; break; }
                             }
@@ -1791,42 +1565,31 @@ export function generateSiteUtilities(
 
                     if (obstacleOverlap) continue;
 
-                    // 4. EXISTING BUILDING CHECK - Use BUFFERED
+                    // 4. EXISTING BUILDING CHECK
                     let buildingOverlap = false;
                     for (const b of buildings) {
                         try {
                             if (b && b.geometry && b.visible !== false) {
-                                // Check against buffered/gapped geometry
                                 // @ts-ignore
                                 if (turf.booleanIntersects(checkPoly, b.geometry)) { buildingOverlap = true; break; }
                             }
                         } catch (e) { }
                     }
 
-                    // FORCE RESOLVE: If overlapping building at PRIORITY CORNER spot
-                    // Removed the artificial `isHighPriority` (i<=10 && j<=10) cap. The grid search iterates from (0,0) outwards,
-                    // so the first time `inside === true` and `buildingOverlap === true` happens, it is mathematically the closest
-                    // valid spot to the corner that fits inside the plot bounding geometry. We should always attempt resolution here.
+                    // FORCE RESOLVE: If overlapping building at PRIORITY spot
                     if (buildingOverlap) {
-                        // Identify colliders
                         const colliding = buildings.filter(b => b.visible !== false && turf.booleanIntersects(checkPoly, b.geometry));
 
                         for (const b of colliding) {
                             if (!b.geometry) continue;
 
-                            // Helper: Validate if a geometry works (Fits in plot, clears utility, no building clashes)
                             const isValidCandidate = (geo: any) => {
                                 try {
-                                    // 1. Must be inside Plot - REMOVED: Since we rely on Resize (Scale) in place, 
-                                    // we assume original building was valid. strict check against 'plotPoly' (which might be innerSetback) 
-                                    // would incorrectly flag buildings in the setback as invalid.
-                                    // if (!turf.booleanContains(plotPoly, geo)) return false;
-
-                                    // 2. Must NOT overlap the Utility (+Gap) we are trying to place
+                                    // 1. Must NOT overlap the Utility (+Gap) we are trying to place
                                     // @ts-ignore
                                     if (turf.booleanIntersects(geo, checkPoly)) return false;
 
-                                    // 3. Must NOT overlap OTHER buildings
+                                    // 2. Must NOT overlap OTHER buildings
                                     for (const other of buildings) {
                                         if (other.id === b.id || other.visible === false) continue;
                                         // @ts-ignore
@@ -1838,7 +1601,7 @@ export function generateSiteUtilities(
 
                             let resolved = false;
 
-                            // STRATEGY 1: RESIZE (Shrink)
+                            // RESIZE (Shrink)
                             try {
                                 const bbox = turf.bbox(b);
                                 // @ts-ignore
@@ -1863,52 +1626,35 @@ export function generateSiteUtilities(
 
                             if (resolved) continue;
 
-                            // STRATEGY 2: REMOVE (Last Resort - Move Removed to prevent overlaps)
                             b.visible = false;
                             console.log(`[Utility Force] Removing building ${b.id} (Resize failed)`);
                         }
-                        // Assume resolved
                         buildingOverlap = false;
                     }
 
                     if (buildingOverlap) continue;
 
-                    // 4. UTILITY CHECK - Strict (with gap)
                     let utilityOverlap = false;
                     let bufferedCandidate;
                     try {
-                        // Check against buffered candidate to ensure gap
-                        // @ts-ignore
                         bufferedCandidate = turf.buffer(poly, gap, { units: 'meters' });
                     } catch (e) { bufferedCandidate = poly; }
 
                     for (const u of utilities) {
                         try {
-                            // Check direct overlap (Critical)
-                            // @ts-ignore
                             if (turf.booleanIntersects(poly, u.geometry)) { utilityOverlap = true; break; }
-
-                            // Check gap overlap
-                            // @ts-ignore
                             if (bufferedCandidate && turf.booleanIntersects(bufferedCandidate, u.geometry)) { utilityOverlap = true; break; }
                         } catch (e) { }
                     }
                     if (utilityOverlap) continue;
 
-                    // VALID SPOT FOUND
-                    // Logic: We want the one closest to the corner (i=0, j=0)
-                    // Since we iterate i,j from 0..Max, the first one we find is roughly the best "corner-most"
-                    // However, diagonal (1,1) might be better than (0,5).
-                    // Let's settle for first valid for now (greedy), or minimize i+j.
-
-                    // Greedy approach:
                     utilities.push({
                         id: `util-${util.type.toLowerCase()}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
                         name: util.name,
                         type: util.type,
                         geometry: poly as Feature<Polygon>,
-                        area: turf.area(poly), // Actual physical area on map
-                        targetArea: util.area, // Theoretical target area from formula
+                        area: turf.area(poly),
+                        targetArea: util.area,
                         centroid: turf.centroid(poly),
                         visible: util.level !== undefined && util.level < 0 ? false : true,
                         color: util.color,
@@ -1919,10 +1665,6 @@ export function generateSiteUtilities(
                     console.log(`[Utility Debug] ✓ Placed ${util.name} in ${corner} (Grid ${pt.i},${pt.j})`);
                     placed = true;
 
-                    // Update cursor for next utility in group? 
-                    // No, for next utility we should check collisions with THIS utility, so we can restart scan.
-                    // But we don't want to stack them exactly on top of the search path.
-                    // The 'utilityOverlap' check handles this. We just continue loop.
                     break;
             }
 
@@ -1934,16 +1676,12 @@ export function generateSiteUtilities(
         return failedItems;
     };
 
-    // Execute Placement
     if (vastuCompliant) {
-        // VASTU MODE: Place groups in their designated corners
         const failedNE = placeGroupInCorner(groupNE, 'NE');
         const failedSE = placeGroupInCorner(groupSE, 'SE');
         const failedNW = placeGroupInCorner(groupNW, 'NW');
         const failedSW = placeGroupInCorner(groupSW, 'SW');
 
-        // --- FAILOVER LOGIC (Strict Vastu Compliance) ---
-        // STP / WTP / OWC: Best = NW, Good = SE. Avoid = NE.
         const retrySE: UtilityDef[] = [];
         failedNW.forEach(u => {
             if (['STP', 'WTP', 'OWC'].some(t => u.type.includes(t) || u.name.includes(t))) {
@@ -1955,8 +1693,6 @@ export function generateSiteUtilities(
             placeGroupInCorner(retrySE, 'SE');
         }
     } else {
-        // NON-VASTU MODE: Pool all utilities and place them sequentially
-        // Try each corner in order; any utility can go in any corner
         const allUtils = [...groupNE, ...groupSE, ...groupNW, ...groupSW];
         const corners: ('NE' | 'SE' | 'SW' | 'NW')[] = ['NE', 'SE', 'SW', 'NW'];
         let remaining = allUtils;
@@ -2000,7 +1736,6 @@ export function generateSiteGates(
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
 
-    // Get the plot boundary ring for finding the closest point on boundary
     let coords: number[][] = [];
     try {
         const geom = plotPoly.type === 'Feature' ? plotPoly.geometry : plotPoly;
@@ -2016,7 +1751,6 @@ export function generateSiteGates(
 
     if (coords.length < 4) return [];
 
-    // Helper: find the point on the plot boundary closest to a target point
     const findClosestBoundaryPoint = (targetLng: number, targetLat: number): [number, number] => {
         const targetPt = turf.point([targetLng, targetLat]);
         const plotLine = turf.polygonToLine(plotPoly);
@@ -2024,20 +1758,16 @@ export function generateSiteGates(
         return snapped.geometry.coordinates as [number, number];
     };
 
-    // Helper: Check if a point collides with any existing building (with buffer)
     const isColliding = (point: [number, number]): boolean => {
         const pt = turf.point(point);
-        // Add 5m buffer around gate point for safety
         const buffer = turf.buffer(pt, 5, { units: 'meters' });
 
         return existingBuildings.some(b => {
-            // Use building geometry for collision check
             // @ts-ignore
             return turf.booleanOverlap(buffer, b.geometry) || turf.booleanContains(b.geometry, pt) || turf.booleanPointInPolygon(pt, b.geometry);
         });
     };
 
-    // Helper: Find a valid non-colliding position near target point
     const findValidPosition = (targetLng: number, targetLat: number): [number, number] | null => {
         let bestPos = findClosestBoundaryPoint(targetLng, targetLat);
 
@@ -2045,11 +1775,10 @@ export function generateSiteGates(
 
         if (!isColliding(bestPos)) return bestPos;
 
-        // If colliding, search along boundary in both directions
         const plotLine = turf.polygonToLine(plotPoly);
         const lineLength = turf.length(plotLine as any, { units: 'meters' });
-        const step = 5; // Search every 5 meters
-        const maxSearch = 50; // Search up to 50m in each direction
+        const step = 5;
+        const maxSearch = 50;
 
         const startPt = turf.point(bestPos);
         // @ts-ignore
@@ -2085,21 +1814,17 @@ export function generateSiteGates(
 
     if (vastuCompliant) {
         console.log(`[Gate Generator] Vastu mode enabled. Sides: ${sides.join(', ')}`);
-        // Use the dedicated Vastu Gate Generator for precise ray-casting
         const center: [number, number] = [cx, cy];
         const newGates = generateVastuGates(plotPoly as Feature<Polygon>, center, sides);
 
-        // Add collision checking for the generated gates
         newGates.forEach(g => {
-            // Check if the generated position collides with buildings
-            // If so, try to find a valid position nearby
             let pos = g.position;
             if (isColliding(pos)) {
                 const validPos = findValidPosition(pos[0], pos[1]);
                 if (validPos) {
                     pos = validPos;
                 } else {
-                    return; // Skip if no valid position found
+                    return;
                 }
             }
 

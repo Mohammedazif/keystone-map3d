@@ -25,20 +25,15 @@ export interface BhuvanLayerInfo {
   id: string;
   categoryId?: string;
   categoryName?: string;
-  /** UI display group: 'ulu' = Urban Land Use, 'lulc' = Land Use Land Cover, 'other' */
   uiGroup?: 'ulu' | 'lulc' | 'other';
   fixedLayerName?: string;
   name: string;
   description: string;
   themeCode: string;
   yearCode: string;
-  /** Which Bhuvan host to use: 'vec1' | 'vec2' | 'vec3'. Default: 'vec2' */
   wmsHost?: string;
-  /** Custom WMS path on the host. Default: '/bhuvan/wms' */
   wmsPath?: string;
-  /** If true, this layer needs district-level naming (limited availability) */
   usesDistrict?: boolean;
-  /** Technical Geoserver/WMS workspace name (e.g. 'sisdp_phase2'). If missing, uses categoryId or id. */
   wmsWorkspace?: string;
   legend: { label: string; color: string }[];
 }
@@ -47,9 +42,6 @@ export interface BhuvanLayerInfo {
 export const BHUVAN_DEFAULT_WMS_HOST = 'vec2';
 export const BHUVAN_DEFAULT_WMS_PATH = '/bhuvan/wms';
 
-/**
- * Builds the full Bhuvan WMS base URL for a given theme.
- */
 export function getBhuvanWmsUrl(theme: BhuvanLayerInfo): string {
   const host = theme.wmsHost || BHUVAN_DEFAULT_WMS_HOST;
   const path = theme.wmsPath || BHUVAN_DEFAULT_WMS_PATH;
@@ -401,18 +393,11 @@ export function getIndianStateCode(lat: number, lng: number): string {
   return 'IN';
 }
 
-// ── Static district coverage index (scraped from Bhuvan WMS GetCapabilities) ──
-// Keys: 'amrut' | 'nuis' | 'sisdp'
-// Values: { [stateCode]: string[] }  (array of available district/city names)
 const BHUVAN_DISTRICT_INDEX = bhuvanIndex as Record<string, Record<string, string[]>>;
 
-// Keys: full WMS layer name (e.g. 'sisdpv2:DL_New_Delhi_lulc_v2')
-// Values: [minLng, minLat, maxLng, maxLat]
 export const BHUVAN_EXTENTS = bhuvanExtents as unknown as Record<string, [number, number, number, number]>;
 
 // ── Known Locality Overrides ──
-// Mapbox uses outdated administrative boundaries (e.g., 9 Delhi districts instead of 11).
-// This dictionary catches specific neighborhoods and forces their correct modern district name.
 const KNOWN_LOCALITY_OVERRIDES: Record<string, string> = {
   'vasant kunj': 'South West',
   'dwarka': 'South West',
@@ -431,9 +416,6 @@ const KNOWN_LOCALITY_OVERRIDES: Record<string, string> = {
   // Add more Indian locality overrides here as needed
 };
 
-/**
- * Normalizes an array of hints and injects any known overrides.
- */
 function expandHintsWithOverrides(hintsStr: string): string[] {
   const hints = hintsStr.split('|').map(h => h.trim()).filter(h => h.length > 0);
   const expanded = [...hints];
@@ -442,19 +424,13 @@ function expandHintsWithOverrides(hintsStr: string): string[] {
     const lower = hint.toLowerCase();
     for (const [locality, overrideDist] of Object.entries(KNOWN_LOCALITY_OVERRIDES)) {
       if (lower.includes(locality) && !expanded.includes(overrideDist)) {
-        expanded.unshift(overrideDist); // Put override at the front to prioritize it
+        expanded.unshift(overrideDist); 
       }
     }
   }
   return expanded;
 }
 
-/**
- * Finds the best matching Bhuvan WMS layer name for district-level themes
- * by checking which bounding box contains the given lat/lng coordinate.
- *
- * Returns the layer name LOCAL part (no workspace prefix), or undefined.
- */
 export function findBhuvanLayerByCoord(
   themeId: string,
   stateCode: string,
@@ -462,7 +438,6 @@ export function findBhuvanLayerByCoord(
   lng: number,
   districtNameHint?: string
 ): string | undefined {
-  // Build suffix pattern based on theme
   let suffix = '';
   if (themeId === 'lulc_10k_sisdp') suffix = '_lulc_v2';
   else if (themeId === 'ulu_4k_amrut') suffix = '_amrutph1_4k';
@@ -473,18 +448,12 @@ export function findBhuvanLayerByCoord(
   else if (themeId === 'geomorphology') suffix = '_GM50K';
   else if (themeId === 'lineament') suffix = '_LN50K';
   
-  // For SIS-DP Phase 2, the pattern is usually: sisdp_phase2:SISDP_P2_LULC_10K_X_Y_{stateCode}_{district}
-  // There is no static suffix at the end, the varying part IS at the end. We handle this differently.
-  
   if (!suffix && themeId !== 'lulc_10k_sisdp2') return undefined;
 
-  // Find all WMS layer names for this state + theme, then check which bbox contains the point
   let candidates: [string, [number, number, number, number]][] = [];
   
   if (themeId === 'lulc_10k_sisdp2') {
-    // Look for layers that start with the state prefix but have extra text (district)
     const baseName = `SISDP_P2_LULC_10K_2016_2019_${stateCode}_`;
-    // also support variations in year (some are 20116)
     candidates = Object.entries(BHUVAN_EXTENTS).filter(([name]) => 
       name.includes(`_${stateCode}_`) && name.includes('SISDP_P2_LULC') && !name.endsWith(`_${stateCode}`)
     );
@@ -494,23 +463,16 @@ export function findBhuvanLayerByCoord(
     );
   }
 
-  // 1. Find bounding boxes that contain the point. If multiple overlap (common near borders),
-  //    use a "centrality" score: how deeply inside the bbox the point sits.
-  //    Score is min(normalized-X-depth, normalized-Y-depth) where 0 = at edge, 0.5 = center.
-  //    The bbox where the point is most centrally placed (furthest from edges) wins.
-  //    This fixes the Delhi South vs South_West case where center-distance gives wrong results.
   const containing = candidates
     .filter(([, box]) => lng >= box[0] && lat >= box[1] && lng <= box[2] && lat <= box[3])
     .sort(([, a], [, b]) => {
-      // Normalized position within bbox: 0 = at min edge, 1 = at max edge, 0.5 = center
       const normAx = (a[2] - a[0]) > 0 ? (lng - a[0]) / (a[2] - a[0]) : 0.5;
       const normAy = (a[3] - a[1]) > 0 ? (lat - a[1]) / (a[3] - a[1]) : 0.5;
       const normBx = (b[2] - b[0]) > 0 ? (lng - b[0]) / (b[2] - b[0]) : 0.5;
       const normBy = (b[3] - b[1]) > 0 ? (lat - b[1]) / (b[3] - b[1]) : 0.5;
-      // Centrality = how far from the nearest edge (0 = at edge, 0.5 = perfectly centered)
       const centralA = Math.min(normAx, 1 - normAx, normAy, 1 - normAy);
       const centralB = Math.min(normBx, 1 - normBx, normBy, 1 - normBy);
-      return centralB - centralA; // Higher centrality first (descending)
+      return centralB - centralA; 
     });
 
   const getDistrictPart = (layerName: string) => {
@@ -531,12 +493,10 @@ export function findBhuvanLayerByCoord(
   if (containing.length > 0) {
     let bestMatch = containing[0];
 
-    // Override centrality if Mapbox gives us explicit district names that match
     if (districtNameHint && containing.length > 1) {
       const hints = expandHintsWithOverrides(districtNameHint);
       
       for (const hint of hints) {
-        // Strip common administrative suffixes before normalizing
         const cleanHint = hint.toLowerCase()
           .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
           .replace(/[^a-z0-9]/g, '');
@@ -544,35 +504,30 @@ export function findBhuvanLayerByCoord(
         const exactMatches = containing.filter(([name]) => {
            const distPart = getDistrictPart(name);
            if (!distPart) return false;
-           // Also strip suffixes from candidate just in case
            const distNorm = distPart.toLowerCase()
              .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
              .replace(/[^a-z0-9]/g, '');
              
-           // Use length check and includes to ensure robust matching
            return (distNorm.length > 2 && cleanHint.length > 2) && 
                   (distNorm === cleanHint || distNorm.includes(cleanHint) || cleanHint.includes(distNorm));
         }).sort(([nameA], [nameB]) => {
-          // 1. Prioritize Exact Match
           const distPartA = getDistrictPart(nameA) || '';
           const distPartB = getDistrictPart(nameB) || '';
           const normA = distPartA.toLowerCase().replace(/\b(delhi|district|city|urban|rural|town)\b/g, '').replace(/[^a-z0-9]/g, '');
           const normB = distPartB.toLowerCase().replace(/\b(delhi|district|city|urban|rural|town)\b/g, '').replace(/[^a-z0-9]/g, '');
           if (normA === cleanHint && normB !== cleanHint) return -1;
           if (normB === cleanHint && normA !== cleanHint) return 1;
-          // 2. Prioritize Longest Substring Match (e.g., South_West beats South)
           return normB.length - normA.length;
         });
         if (exactMatches.length > 0) {
           bestMatch = exactMatches[0];
-          break; // Stop checking subsequent hints
+          break;
         }
       }
     }
 
     return getDistrictPart(bestMatch[0]);
   }
-  // 2. If no exact bbox match, return the nearest district centroid
   if (candidates.length > 0) {
     const nearest = candidates.sort(([, a], [, b]) => {
       const centerALng = (a[0] + a[2]) / 2;
@@ -625,26 +580,15 @@ export function findBhuvanLayerByCoord(
   return undefined;
 }
 
-/**
- * Checks if a specific full layer name exists in our scraped extents index.
- */
 export function isLayerAvailableInIndex(layerName: string): boolean {
-  // Check exact
   if (BHUVAN_EXTENTS[layerName]) return true;
-  // Check with common workspace prefixes if missing
   const prefixes = ['wasteland:', 'lulc:', 'ld:', 'sisdpv2:', 'geomorphology:', 'lineament:', 'amrut_ph1:', 'sisdp_phase2:'];
   for (const p of prefixes) {
     if (BHUVAN_EXTENTS[p + layerName]) return true;
   }
   return false;
 }
-
-/**
- * Given a geocoded district/city name from Mapbox, find the best matching
- * district string in the Bhuvan WMS coverage index for the given theme and state.
- *
- * Uses case-insensitive fuzzy prefix matching.
- */
+// District name matching
 export function getBestBhuvanDistrict(
   themeType: 'amrut' | 'nuis' | 'sisdp',
   stateCode: string,
@@ -653,11 +597,10 @@ export function getBestBhuvanDistrict(
   const stateData = BHUVAN_DISTRICT_INDEX[themeType]?.[stateCode];
   if (!stateData || stateData.length === 0) return undefined;
 
-  if (!geocodedDistrict) return stateData[0]; // fallback: first available
+  if (!geocodedDistrict) return stateData[0];
 
   const hints = expandHintsWithOverrides(geocodedDistrict);
 
-  // 1. Exact match
   for (const hint of hints) {
     const cleanHint = hint.toLowerCase()
       .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
@@ -677,7 +620,6 @@ export function getBestBhuvanDistrict(
     }
   }
 
-  // 2. Prefix match fallback
   for (const hint of hints) {
     const cleanHint = hint.toLowerCase()
       .replace(/\b(delhi|district|city|urban|rural|town)\b/g, '')
@@ -697,18 +639,10 @@ export function getBestBhuvanDistrict(
     }
   }
 
-  // 3. Fallback: return first available for that state
   return stateData[0];
 }
 
-/**
- * Builds the WMS layer name for a given theme, state code, and optional coordinates.
- *
- * Different themes use different naming conventions on Bhuvan:
- *  - Standard 50K layers:          workspace:STATE_THEME_YEAR
- *  - SIS-DP Phase 2 (10K):         sisdp_phase2:SISDP_P2_LULC_10K_2016_2019_STATE
- *  - AMRUT (4K), SIS-DP, NUIS:     city/district-level: auto-detected from coordinates
- */
+// Layer name builder
 export function buildBhuvanLayerName(
   themeId: string,
   stateCode: string,
@@ -723,16 +657,10 @@ export function buildBhuvanLayerName(
 
   const workspace = theme.wmsWorkspace || theme.categoryId || theme.id;
 
-  // ── SIS-DP Phase 2: workspace:themeCode_STATE (and sometimes district level) ──
   if (theme.id === 'lulc_10k_sisdp2') {
-    // For SIS-DP Phase 2, some states (like MP) have district-level layers instead of 1 big state layer.
-    // Try to find the district using coordinates first.
     if (lat !== undefined && lng !== undefined) {
       const sisdp2District = findBhuvanLayerByCoord('lulc_10k_sisdp2', stateCode, lat, lng, districtNameHint);
-      // NOTE: sisdp2 layers in bhuvan sometimes have typo "20116_2019", we should just return the whole matched name
-      // To be safe, let's look up the EXACT layer name from findBhuvanLayerByCoord using a special return or rebuilding it
       if (sisdp2District) {
-        // Find the exact key from the extents that matched this district
         const exactLayer = Object.keys(BHUVAN_EXTENTS).find(name => 
           name.includes(`_${stateCode}_${sisdp2District}`) && name.includes('SISDP_P2_LULC')
         );
@@ -743,17 +671,13 @@ export function buildBhuvanLayerName(
     return `${workspace}:${theme.themeCode}_${stateCode}`;
   }
 
-  // ── District-based layers: use coordinate lookup first, then fallback ──
   if (theme.usesDistrict) {
     if (theme.id === 'ulu_4k_amrut') {
-      // AMRUT layers are on vec3 which is not in bhuvan-extents.json.
-      // Always use bhuvan-index.json (getBestBhuvanDistrict) to find the city.
       const city = getBestBhuvanDistrict('amrut', stateCode, districtNameHint);
       return city
         ? `${workspace}:${stateCode}_${city}_amrutph1_4k`
         : `${workspace}:${stateCode}_amrutph1_4k`;
     }
-    // SIS-DP: NO workspace prefix — using virtual service endpoint /bhuvan/sisdpv2/wms
     if (theme.id === 'lulc_10k_sisdp') {
       const district = (lat !== undefined && lng !== undefined)
         ? findBhuvanLayerByCoord('lulc_10k_sisdp', stateCode, lat, lng, districtNameHint)
@@ -762,7 +686,6 @@ export function buildBhuvanLayerName(
         ? `${stateCode}_${district}_lulc_v2`
         : `${stateCode}_lulc_v2`;
     }
-    // NUIS: no workspace prefix
     if (theme.id === 'ulu_10k_nuis') {
       const districtCode = (lat !== undefined && lng !== undefined)
         ? findBhuvanLayerByCoord('ulu_10k_nuis', stateCode, lat, lng, districtNameHint)
@@ -773,6 +696,5 @@ export function buildBhuvanLayerName(
     }
   }
 
-  // ── Standard pattern: workspace:STATE_THEME_YEAR ──
   return `${workspace}:${stateCode}_${theme.themeCode}_${theme.yearCode}`;
 }

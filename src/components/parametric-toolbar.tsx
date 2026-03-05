@@ -94,11 +94,8 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
     const [selectedTypologies, setSelectedTypologies] = useState<BuildingTypology[]>(['point']);
     const [selectedParking, setSelectedParking] = useState<ParkingTypology[]>(['ug', 'surface']);
-    // ...
-    // ... in return JSX ...
     const projectData = useProjectData();
     const isVastuEnabled = projectData?.vastuCompliant;
-
     const [targetGFA, setTargetGFA] = useState(0);
     const [targetFAR, setTargetFAR] = useState(3.0);
     const [floorRange, setFloorRange] = useState([5, 12]);
@@ -106,25 +103,21 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [footprintRange, setFootprintRange] = useState([400, 1000]);
     const [scrRange, setScrRange] = useState<[number, number]>([2.0, 4.0]);
     const [parkingRatio, setParkingRatio] = useState(0.30);
-    const [buildingWidthRange, setBuildingWidthRange] = useState<[number, number]>([20, 25]); // Default: 20-25m
-    const [buildingLengthRange, setBuildingLengthRange] = useState<[number, number]>([25, 55]); // Default: 25-55m
-    const [buildingCount, setBuildingCount] = useState(2); // For commercial/industrial: 1-4 large buildings
+    const [buildingWidthRange, setBuildingWidthRange] = useState<[number, number]>([20, 25]);
+    const [buildingLengthRange, setBuildingLengthRange] = useState<[number, number]>([25, 55]);
+    const [buildingCount, setBuildingCount] = useState(2);
     const [gridOrientation, setGridOrientation] = useState(0);
     const [avgUnitSize, setAvgUnitSize] = useState(85);
     const [commercialPercent, setCommercialPercent] = useState(0);
-    const [setback, setSetback] = useState(5); // Setback distance in meters
+    const [setback, setSetback] = useState(5);
     const [frontSetback, setFrontSetback] = useState<number | undefined>(undefined);
     const [rearSetback, setRearSetback] = useState<number | undefined>(undefined);
     const [sideSetback, setSideSetback] = useState<number | undefined>(undefined);
-    const [siteCoverage, setSiteCoverage] = useState(0.6); // 60% default utilization
-    const [useFloorLimit, setUseFloorLimit] = useState(true); // When false, auto-calculate floors to maximize GFA
-    const [infillSetback, setInfillSetback] = useState(6); // Setback for inline/infill buildings in meters
-    const [infillMode, setInfillMode] = useState<'ring' | 'grid' | 'hybrid'>('hybrid'); // Infill strategy
+    const [siteCoverage, setSiteCoverage] = useState(0.6);
+    const [useFloorLimit, setUseFloorLimit] = useState(true);
+    const [infillSetback, setInfillSetback] = useState(6);
+    const [infillMode, setInfillMode] = useState<'ring' | 'grid' | 'hybrid'>('hybrid');
 
-    // Generation Mode: Parametric Only
-    // const [generationMode, setGenerationMode] = useState<'ai' | 'algo'>('algo');
-
-    // New Generative Params
     const [floorHeight, setFloorHeight] = useState(3.5);
     const [landUse, setLandUse] = useState<LandUseType>('residential');
     const [programMix, setProgramMix] = useState({
@@ -151,7 +144,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [regulationMaxFAR, setRegulationMaxFAR] = useState(4.0);
     const [regulationMaxCoverage, setRegulationMaxCoverage] = useState(1.0);
 
-    // Compliance Overrides (optional - will use regulation defaults if not set)
+    // Compliance Override
     const [maxFootprintOverride, setMaxFootprintOverride] = useState<number | undefined>(undefined);
     const [minFootprintOverride, setMinFootprintOverride] = useState<number>(100);
 
@@ -198,17 +191,14 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         }
     }, [selectedTypologies, landUse]);
 
-    // Sync setback with Selected Plot (Must be after selectedPlot is defined)
     useEffect(() => {
         if (selectedPlot?.setback) {
             setSetback(selectedPlot.setback);
         }
     }, [selectedPlot?.setback]);
 
-    // Initialize setback from plot when plot first loads
     useEffect(() => {
         if (selectedPlot) {
-            // Try to get setback from regulation first, then plot.setback, then default
             const regSetback = selectedPlot.regulation?.geometry?.setback?.value
                 || selectedPlot.regulation?.geometry?.min_setback?.value
                 || selectedPlot.regulation?.geometry?.front_setback?.value;
@@ -224,7 +214,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
             setSetback(initialSetback);
         }
-    }, [selectedPlot?.id]); // Only run when plot changes
+    }, [selectedPlot?.id]);
 
     // Apply regulations when plot changes
     useEffect(() => {
@@ -244,34 +234,27 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                 const mf = Number(maxFloorsValue);
                 if (!isNaN(mf) && mf > 0) {
                     setRegulationMaxFloors(mf);
-                    // Initialize floor range to compliant state
                     setFloorRange([Math.max(1, Math.min(5, mf)), mf]);
-                    // Also update height range if floors are specified
                     setMaxAllowedHeight(mf * 3.5);
                 }
             } else if (maxHeightValue) {
                 const maxHeight = Number(maxHeightValue);
                 if (!isNaN(maxHeight)) {
                     setMaxAllowedHeight(maxHeight);
-                    // Clamp height range
                     setHeightRange(prev => [prev[0], Math.min(prev[1], maxHeight)]);
-
-                    // Approximate floors (assuming ~3.5m regular floor)
                     const mf = Math.floor(maxHeight / 3.5);
                     setRegulationMaxFloors(mf);
-                    // Initialize floor range to compliant state
                     setFloorRange([Math.max(1, Math.min(5, mf)), mf]);
                 }
             }
 
-
-            // Setback - Try multiple possible field names
+            // Setback
             const setbackValue = geomRegs['setback']?.value
                 || geomRegs['min_setback']?.value
                 || geomRegs['front_setback']?.value
                 || geomRegs['building_setback']?.value;
 
-            // FAR - Try multiple possible field names
+            // FAR
             const farValue = geomRegs['floor_area_ratio']?.value
                 || geomRegs['max_far']?.value
                 || geomRegs['fsi']?.value;
@@ -298,14 +281,13 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                 const far = Number(farValue);
                 if (!isNaN(far) && far > 0) {
                     setRegulationMaxFAR(far);
-                    // Update targetFAR to user override IF it exists, otherwise use regulation default
                     setTargetFAR(selectedPlot.userFAR ?? far);
                 }
             } else if (selectedPlot.userFAR) {
                 setTargetFAR(selectedPlot.userFAR);
             }
 
-            // Coverage - Try multiple possible field names
+            // Coverage
             const coverageValue = geomRegs['max_ground_coverage']?.value
                 || geomRegs['ground_coverage']?.value
                 || geomRegs['coverage']?.value;
@@ -313,17 +295,14 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             if (coverageValue !== undefined) {
                 const cv = Number(coverageValue);
                 if (!isNaN(cv) && cv > 0) {
-                    // Convert % to decimal
                     const decimalCoverage = cv / 100;
                     setRegulationMaxCoverage(decimalCoverage);
-                    // Use regulation as DEFAULT for new plots
                     setSiteCoverage(decimalCoverage);
                 }
             }
         }
-    }, [selectedPlot?.id, selectedPlot?.regulation]); // Re-run if plot or regulations change
+    }, [selectedPlot?.id, selectedPlot?.regulation]);
 
-    // Sync GFA when FAR or Plot Area changes
     useEffect(() => {
         if (selectedPlot?.area) {
             const gfa = Math.round(selectedPlot.area * targetFAR);
@@ -331,24 +310,20 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         }
     }, [targetFAR, selectedPlot?.area]);
 
-    // Auto-detect land use from regulation type
     useEffect(() => {
         if (selectedPlot?.selectedRegulationType) {
             const regType = selectedPlot.selectedRegulationType.toLowerCase();
-
-            // Check in order of specificity
             if (regType.includes('mixed')) {
                 setLandUse('mixed');
             } else if (regType.includes('commercial') || regType.includes('shopping') || regType.includes('retail') || regType.includes('office')) {
                 setLandUse('commercial');
             } else if (regType.includes('industrial') || regType.includes('warehouse') || regType.includes('storage') || regType.includes('manufacturing')) {
-                setLandUse('commercial'); // Industrial uses commercial typology in the current system
+                setLandUse('commercial');
             } else if (regType.includes('institutional') || regType.includes('public') || regType.includes('civic') || regType.includes('government')) {
                 setLandUse('institutional');
             } else if (regType.includes('residential') || regType.includes('housing') || regType.includes('plotted')) {
                 setLandUse('residential');
             }
-            // If no match, keep current landUse
         }
     }, [selectedPlot?.selectedRegulationType]);
 
@@ -357,23 +332,18 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             return;
         }
 
-        // Use the GFA from state (which is synced or manually edited)
-        // Check if GFA matches FAR, if not, maybe user edited GFA? 
-        // For now, assume state.targetGFA is the truth.
-
-        // Store current parameters and trigger generation
         const params: any = {
             typologies: selectedTypologies,
-            targetGFA: targetGFA, // Use state value
+            targetGFA: targetGFA,
             targetFAR,
-            minFloors: useFloorLimit ? floorRange[0] : 1, // Start from 1 if auto-maximizing
-            maxFloors: floorRange[1], // Always pass maxFloors as ceiling
-            autoMaxGFA: !useFloorLimit, // Enable GFA maximization mode when floor limit is unchecked
-            infillSetback: !useFloorLimit ? infillSetback : undefined, // Setback for inline buildings
-            infillMode: !useFloorLimit ? infillMode : undefined, // Infill placement strategy
+            minFloors: useFloorLimit ? floorRange[0] : 1,
+            maxFloors: floorRange[1],
+            autoMaxGFA: !useFloorLimit,
+            infillSetback: !useFloorLimit ? infillSetback : undefined,
+            infillMode: !useFloorLimit ? infillMode : undefined,
             minHeight: heightRange[0],
             maxHeight: heightRange[1],
-            parkingType: selectedParking[0], // Legacy support
+            parkingType: selectedParking[0],
             parkingTypes: selectedParking,
             parkingRatio,
             // minFootprint: minFootprintOverride,
@@ -383,18 +353,17 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             gridOrientation,
             avgUnitSize,
             commercialPercent,
-            // New Params
             minBuildingWidth: buildingWidthRange[0],
             maxBuildingWidth: buildingWidthRange[1],
             minBuildingLength: buildingLengthRange[0],
             maxBuildingLength: buildingLengthRange[1],
-            width: buildingWidthRange[1], // Fallback for legacy generators using 'width'
-            minLength: buildingLengthRange[0], // Fallback
-            buildingCount, // For large-footprint commercial/industrial generator
+            width: buildingWidthRange[1],
+            minLength: buildingLengthRange[0],
+            buildingCount,
             floorHeight,
             landUse,
-            programMix, // Single instance
-            allocationMode, // Pass allocation mode
+            programMix,
+            allocationMode,
             selectedUtilities,
             setback,
             frontSetback,
@@ -416,13 +385,6 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             exactTypologyAllocation
         };
 
-        // Increment seed offset for NEXT generation (Simulation of "Refresh")
-        // But we want THIS generation to use the NEW offset?
-        // Or do we use the CURRENT offset and increment for NEXT?
-        // Let's use current, but trigger update for next.
-        // Actually, if we just set state, it won't update 'params' immediately in this closure.
-
-        // Calculate new offset here, use it, then set state.
         const newOffset = seedOffset + 3;
         setSeedOffset(newOffset);
         params.seedOffset = newOffset;
@@ -433,7 +395,6 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             paramsSideSetback: params.sideSetback
         });
 
-        // Trigger scenario generation (this will open the modal)
         actions.generateScenarios(selectedPlot.id, params);
     };
 
@@ -488,19 +449,17 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                                     next = [...prev, type];
                                                                 }
 
-                                                                // Smart Defaults for Dimensions
-                                                                // If switching TO a specific single typology, adjust defaults
                                                                 if (next.length === 1) {
                                                                     const t = next[0];
                                                                     if (t === 'point') {
-                                                                        setBuildingWidthRange([20, 25]); // Range within limits
-                                                                        setBuildingLengthRange([25, 30]); // Squarish, above min length
+                                                                        setBuildingWidthRange([20, 25]);
+                                                                        setBuildingLengthRange([25, 30]);
                                                                     } else if (t === 'slab') {
-                                                                        setBuildingWidthRange([20, 22]); // Narrowest allowed (20m)
-                                                                        setBuildingLengthRange([40, 55]); // Long
+                                                                        setBuildingWidthRange([20, 22]);
+                                                                        setBuildingLengthRange([40, 55]);
                                                                     } else if (['lshaped', 'ushaped', 'tshaped', 'hshaped'].includes(t)) {
-                                                                        setBuildingWidthRange([20, 25]); // Wing depth
-                                                                        setBuildingLengthRange([40, 55]); // Overall extent
+                                                                        setBuildingWidthRange([20, 25]);
+                                                                        setBuildingLengthRange([40, 55]);
                                                                     }
                                                                 }
                                                                 return next;
@@ -926,14 +885,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                                 setSelectedParking(['none']);
                                                             } else {
                                                                 setSelectedParking(prev => {
-                                                                    // If previously 'none', start fresh with this type
                                                                     if (prev.includes('none')) return [type];
-                                                                    // Toggle off
                                                                     if (prev.includes(type)) {
                                                                         const next = prev.filter(t => t !== type);
                                                                         return next.length ? next : ['none'];
                                                                     }
-                                                                    // Toggle on
                                                                     return [...prev, type];
                                                                 });
                                                             }

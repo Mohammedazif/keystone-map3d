@@ -21,44 +21,79 @@ export function useGreenStandardChecks(
 
         if (!project) return checks;
 
-        // --- 1. GEOMETRY-BASED CHECKS (Real-time) ---
         const totalPlotArea = project.totalPlotArea ?? project.plots.reduce((sum, p) => sum + (p.area || 0), 0);
+        let totalBuiltUpArea = 0;
+        let groundCoverageArea = 0;
+        let providedParking = 0;
+        let hasRWH = false, hasSolar = false, hasSTP = false, hasOWC = false, hasEV = false, hasFire = false, hasDG = false, hasHVAC = false;
+        
+        project.plots.forEach(plot => {
+            plot.buildings.forEach(b => {
+                if (b.visible !== false) {
+                    groundCoverageArea += b.area;
+                    let fsiFloors = b.floors.filter(f => f.type !== 'Parking').length;
+                    if (fsiFloors === 0) fsiFloors = b.numFloors;
+                    totalBuiltUpArea += (b.area * fsiFloors);
+                }
+                b.floors.forEach(f => {
+                    if (f.type === 'Parking') providedParking += f.parkingCapacity || Math.floor(b.area / 30);
+                    if (f.evStations && f.evStations > 0) hasEV = true;
+                });
+            });
+
+            plot.parkingAreas.forEach(pa => {
+                providedParking += pa.capacity || Math.floor(pa.area / 30);
+            });
+
+            (plot.utilityAreas || []).forEach(u => {
+                const t = (u.type || '').toLowerCase();
+                const n = (u.name || '').toLowerCase();
+                if (t === 'rainwater harvesting' || t.includes('rainwater') || n.includes('rainwater')) hasRWH = true;
+                if (t === 'solar pv' || t.includes('solar') || n.includes('solar')) hasSolar = true;
+                if (t === 'stp' || t === 'wtp' || t.includes('treatment') || t.includes('sewage')) hasSTP = true;
+                if (t === 'owc' || t === 'solid waste' || n.includes('waste') || n.includes('compost')) hasOWC = true;
+                if (t === 'ev station' || n.includes('ev ') || n.includes('electric vehicle')) hasEV = true;
+                if (t === 'fire' || n.includes('fire')) hasFire = true;
+                if (t === 'dg set' || n.includes('generator')) hasDG = true;
+                if (t === 'hvac' || n.includes('hvac') || n.includes('cooling')) hasHVAC = true;
+            });
+        });
+
+        // 1. Site & Land Use (Always achieved if we have plots/buildings)
+        const hasBuildings = project.plots.some(p => p.buildings.length > 0);
+        checks['site_planning'] = { status: hasBuildings ? 'achieved' : 'pending', score: hasBuildings ? 1 : 0 };
+        checks['land_use_planning'] = { status: project.intendedUse ? 'achieved' : 'pending', score: project.intendedUse ? 1 : 0 };
 
         if (totalPlotArea > 0) {
             // A. Green Cover Check
             const totalGreenArea = project.plots.reduce((sum, p) =>
                 sum + (p.greenAreas?.reduce((gSum, g) => gSum + (g.area || 0), 0) || 0), 0);
-
             const greenPercentage = (totalGreenArea / totalPlotArea) * 100;
-
-            // Logic: Typically > 15-20% for points
-            if (greenPercentage >= 15) {
-                checks['green_cover'] = {
-                    status: 'achieved',
-                    score: 4,
-                    metrics: { achieved: greenPercentage, target: 15, unit: '%' }
-                };
-            } else {
-                checks['green_cover'] = {
-                    status: 'pending',
-                    score: 0,
-                    metrics: { achieved: greenPercentage, target: 15, unit: '%' }
-                };
-            }
+            checks['green_cover'] = {
+                status: greenPercentage >= 15 ? 'achieved' : 'pending',
+                score: greenPercentage >= 15 ? 4 : 0,
+                metrics: { achieved: greenPercentage, target: 15, unit: '%' }
+            };
 
             // B. Open Space Check
-            const totalFootprint = project.plots.reduce((sum, p) =>
-                sum + (p.buildings?.reduce((bSum, b) => bSum + (b.area || 0), 0) || 0), 0);
+            const openSpacePercentage = ((totalPlotArea - groundCoverageArea) / totalPlotArea) * 100;
+            checks['open_space'] = {
+                status: openSpacePercentage >= 25 ? 'achieved' : 'pending',
+                score: openSpacePercentage >= 25 ? 3 : 0,
+                metrics: { achieved: openSpacePercentage, target: 25, unit: '%' }
+            };
 
-            const openSpacePercentage = ((totalPlotArea - totalFootprint) / totalPlotArea) * 100;
-
-            if (openSpacePercentage >= 25) {
-                checks['open_space'] = {
-                    status: 'achieved',
-                    score: 3,
-                    metrics: { achieved: openSpacePercentage, target: 25, unit: '%' }
-                };
-            }
+            // C. FAR & Coverage Compliance
+            const achievedFAR = totalBuiltUpArea / totalPlotArea;
+            const coveragePct = groundCoverageArea / totalPlotArea * 100;
+            // Assuming default limits if no exact reg is found
+            checks['far_compliance'] = { status: achievedFAR <= 2.5 ? 'achieved' : 'failed', score: achievedFAR <= 2.5 ? 2 : 0 };
+            checks['ground_coverage'] = { status: coveragePct <= 45 ? 'achieved' : 'failed', score: coveragePct <= 45 ? 2 : 0 };
+            
+            // D. Parking
+            const totalUnits = Math.floor(totalBuiltUpArea / 100);
+            const reqParking = totalUnits * 1;
+            checks['parking_compliance'] = { status: providedParking >= reqParking ? 'achieved' : 'pending', score: providedParking >= reqParking ? 2 : 0 };
         }
 
         // --- 2. SIMULATION-BASED CHECKS ---
@@ -66,49 +101,37 @@ export function useGreenStandardChecks(
             const windAnalysis = simulationResults.wind || { compliantArea: 0 };
             const sunAnalysis = simulationResults.sun || { compliantArea: 0 };
 
-            // Natural Ventilation Check
             if (windAnalysis.compliantArea > 75) {
-                checks['ventilation'] = {
-                    status: 'achieved',
-                    score: 2,
-                    metrics: { achieved: windAnalysis.compliantArea, target: 75, unit: '%' }
-                };
-            } else if (windAnalysis.compliantArea > 0) {
-                checks['ventilation'] = {
-                    status: 'failed',
-                    score: 0,
-                    metrics: { achieved: windAnalysis.compliantArea, target: 75, unit: '%' }
-                };
+                checks['ventilation'] = { status: 'achieved', score: 2, metrics: { achieved: windAnalysis.compliantArea, target: 75, unit: '%' } };
+            } else {
+                checks['ventilation'] = { status: 'failed', score: 0, metrics: { achieved: windAnalysis.compliantArea, target: 75, unit: '%' } };
             }
 
-            // Daylighting Check
             if (sunAnalysis.compliantArea > 50) {
-                checks['daylighting'] = {
-                    status: 'achieved',
-                    score: 3,
-                    metrics: { achieved: sunAnalysis.compliantArea, target: 50, unit: '%' }
-                };
-            } else if (sunAnalysis.compliantArea > 0) {
-                checks['daylighting'] = {
-                    status: 'failed',
-                    score: 0,
-                    metrics: { achieved: sunAnalysis.compliantArea, target: 50, unit: '%' }
-                };
+                checks['daylighting'] = { status: 'achieved', score: 3, metrics: { achieved: sunAnalysis.compliantArea, target: 50, unit: '%' } };
+            } else {
+                checks['daylighting'] = { status: 'failed', score: 0, metrics: { achieved: sunAnalysis.compliantArea, target: 50, unit: '%' } };
             }
         }
 
-        // --- 3. LOCATION & AMENITY CHECKS ---
+        // --- 3. UTILITIES ---
+        checks['rainwater_harvesting'] = { status: hasRWH ? 'achieved' : 'pending', score: hasRWH ? 3 : 0 };
+        checks['solar_energy'] = { status: hasSolar ? 'achieved' : 'pending', score: hasSolar ? 5 : 0 };
+        checks['water_recycling'] = { status: hasSTP ? 'achieved' : 'pending', score: hasSTP ? 4 : 0 };
+        checks['waste_management'] = { status: hasOWC ? 'achieved' : 'pending', score: hasOWC ? 3 : 0 };
+        checks['ev_charging'] = { status: hasEV ? 'achieved' : 'pending', score: hasEV ? 2 : 0 };
+        checks['fire_safety'] = { status: hasFire ? 'achieved' : 'pending', score: hasFire ? 1 : 0 };
+        checks['energy_efficiency'] = { status: hasHVAC && hasDG ? 'achieved' : (hasHVAC || hasDG ? 'pending' : 'pending'), score: hasHVAC && hasDG ? 4 : 0 };
+
+        // --- 4. LOCATION & AMENITY CHECKS ---
         if (project.locationData?.amenities) {
             const amenities = project.locationData.amenities;
 
-            // Transit Access (Bus/Train within 800m)
             const transit = amenities.some((a: any) => a.category === 'transit' && a.distance <= 800);
             if (transit) {
                 checks['transit_access'] = { status: 'achieved', score: 3 };
             }
 
-            // Community Connectivity (at least 3 unique service types within 1000m)
-            // Service types: school, hospital, park, shopping, restaurant
             const serviceTypes = new Set(
                 amenities
                     .filter((a: any) => ['school', 'hospital', 'park', 'shopping', 'restaurant'].includes(a.category) && a.distance <= 1000)

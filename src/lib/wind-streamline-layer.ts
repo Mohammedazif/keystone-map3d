@@ -29,29 +29,16 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
         this.id = id;
     }
 
-    /**
-     * Initialize the layer
-     */
     onAdd(map: mapboxgl.Map, gl: WebGLRenderingContext): void {
         this.map = map;
         this.gl = gl;
-
-        // Create canvas element for drawing particles
         this.canvas = document.createElement('canvas');
         this.ctx = this.canvas.getContext('2d', { alpha: true })!;
-
-        // Initialize WebGL resources
         this.initWebGL(gl);
-
-        // Start animation loop
         this.startAnimation();
     }
 
-    /**
-     * Initialize WebGL shaders and buffers
-     */
     private initWebGL(gl: WebGLRenderingContext): void {
-        // Vertex shader - simple passthrough
         const vertexShaderSource = `
             attribute vec2 a_position;
             attribute vec2 a_texCoord;
@@ -63,7 +50,6 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             }
         `;
 
-        // Fragment shader - sample texture
         const fragmentShaderSource = `
             precision mediump float;
             uniform sampler2D u_texture;
@@ -74,13 +60,10 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             }
         `;
 
-        // Compile shaders
         const vertexShader = this.createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
         const fragmentShader = this.createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
 
         if (!vertexShader || !fragmentShader) return;
-
-        // Create program
         this.program = gl.createProgram()!;
         gl.attachShader(this.program, vertexShader);
         gl.attachShader(this.program, fragmentShader);
@@ -91,10 +74,7 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             return;
         }
 
-        // Create texture
         this.texture = gl.createTexture()!;
-
-        // Create position buffer (fullscreen quad)
         this.positionBuffer = gl.createBuffer()!;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
         const positions = new Float32Array([
@@ -106,9 +86,6 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
         gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
     }
 
-    /**
-     * Create and compile shader
-     */
     private createShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
         const shader = gl.createShader(type)!;
         gl.shaderSource(shader, source);
@@ -123,15 +100,10 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
         return shader;
     }
 
-    /**
-     * Initialize wind field and particle system
-     */
     initialize(buildings: Building[], windDirection: number = 45): void {
         if (!this.map) return;
 
         console.log('[WIND STREAMLINES] Initializing with', buildings.length, 'buildings');
-
-        // Create wind field
         this.windField = new WindField(buildings, {
             windDirection,
             baseSpeed: 3.5,
@@ -139,11 +111,9 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             wakeLength: 5.0
         });
 
-        // Get map bounds
         const bounds = this.map.getBounds();
         if (!bounds) return;
 
-        // Create particle system
         this.particleSystem = new WindParticleSystem(this.windField, {
             particleCount: 800,
             trailLength: 25,
@@ -160,9 +130,6 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
         console.log('[WIND STREAMLINES] Initialized successfully');
     }
 
-    /**
-     * Start animation loop
-     */
     private startAnimation(): void {
         const animate = (timestamp: number) => {
             if (!this.map || !this.particleSystem) {
@@ -173,10 +140,7 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             const deltaTime = this.lastFrameTime ? timestamp - this.lastFrameTime : 16.67;
             this.lastFrameTime = timestamp;
 
-            // Update particles
             this.particleSystem.update(deltaTime);
-
-            // Trigger map repaint
             this.map.triggerRepaint();
 
             this.animationFrameId = requestAnimationFrame(animate);
@@ -185,27 +149,20 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
         this.animationFrameId = requestAnimationFrame(animate);
     }
 
-    /**
-     * Render the layer
-     */
     render(gl: WebGLRenderingContext, matrix: number[]): void {
         if (!this.map || !this.canvas || !this.ctx || !this.particleSystem || !this.program || !this.texture) return;
 
         const mapCanvas = this.map.getCanvas();
 
-        // Resize canvas to match map
         if (this.canvas.width !== mapCanvas.width || this.canvas.height !== mapCanvas.height) {
             this.canvas.width = mapCanvas.width;
             this.canvas.height = mapCanvas.height;
         }
 
-        // Clear canvas
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Get particles
         const particles = this.particleSystem.getParticles();
 
-        // Render each particle trail to canvas
         for (const particle of particles) {
             this.renderParticleTrail(particle);
         }
@@ -286,18 +243,14 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             }
         }
 
-        // Opacity fades along trail
-        const trailOpacity = baseOpacity * 1.0; // Increased from 0.8
+        const trailOpacity = baseOpacity * 1.0;
         this.ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${trailOpacity})`;
-        this.ctx.lineWidth = 3.5; // Increased from 2
+        this.ctx.lineWidth = 3.5;
         this.ctx.lineCap = 'round';
         this.ctx.lineJoin = 'round';
         this.ctx.stroke();
     }
 
-    /**
-     * Update bounds when map moves
-     */
     updateBounds(): void {
         if (!this.map || !this.particleSystem) return;
 
@@ -312,18 +265,12 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
         });
     }
 
-    /**
-     * Update wind direction
-     */
     updateWindDirection(direction: number): void {
         if (this.windField) {
             this.windField.updateDirection(direction);
         }
     }
 
-    /**
-     * Cleanup
-     */
     onRemove(): void {
         if (this.animationFrameId) {
             cancelAnimationFrame(this.animationFrameId);
@@ -332,7 +279,6 @@ export class WindStreamlineLayer implements mapboxgl.CustomLayerInterface {
             this.particleSystem.clear();
         }
 
-        // Cleanup WebGL resources
         if (this.gl && this.texture) {
             this.gl.deleteTexture(this.texture);
         }

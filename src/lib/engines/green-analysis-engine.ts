@@ -30,10 +30,7 @@ export function calculateGreenAnalysis(
     let totalScore = 0;
 
     // 1. Orientation Analysis (Passive Solar)
-    // Goal: Maximize North/South facade area (in Northern Hemisphere) to reduce heat gain (East/West).
-    // Simple heuristic: Check bounding box aspect ratio and orientation.
-    // Or check the main axis of the building.
-
+    // Goal: Maximize North/South facade area to reduce heat gain (East/West).
     let orientationScore = 0;
     let orientationFeedback = "";
 
@@ -45,12 +42,6 @@ export function calculateGreenAnalysis(
         const bbox = turf.bbox(mainBldg.geometry);
         const width = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]]);
         const height = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]]);
-
-        // This assumes bbox is axis aligned to N/S/E/W in Geocoords, which is roughly true for 'bbox'.
-        // But actual building might be rotated.
-        // Better: Use `turf.bboxPolygon` and check overlap? No.
-        // Let's rely on the fact that if Width (E-W) > Height (N-S), we have more North/South facade.
-        // Ideally, Long Axis should be East-West, so facades face North/South.
 
         const aspectRatio = width / height;
 

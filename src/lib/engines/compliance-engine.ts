@@ -73,13 +73,6 @@ export class ComplianceEngine {
             ? maxFloorsExplicit
             : maxFloorsByHeight;
 
-        // 3. Calculate Target Floors to utilize Max GFA
-        // Ideal: Build as much GFA as possible within footprint
-        // Floors = GFA / Footprint
-        // We use maxFootprint as the "ideal" footprint to see min floors needed
-        // But deeper logic: If footprint is smaller, we need MORE floors.
-        // Let's return the theoretical max floors needed if we max out footprint.
-        // Actually, let's return the LIMITS. Generator chooses actual shape.
 
         return {
             maxFootprint,

@@ -13,10 +13,6 @@ interface BhuvanPanelProps {
   embedded?: boolean;
 }
 
-/**
- * Maps theme IDs to the bhuvan-index.json key used by getBestBhuvanDistrict.
- * Returns undefined if the theme doesn't use bhuvan-index for district lookup.
- */
 function getIndexType(themeId: string): 'amrut' | 'nuis' | 'sisdp' | undefined {
   if (themeId === 'ulu_4k_amrut') return 'amrut';
   if (themeId === 'ulu_10k_nuis') return 'nuis';
@@ -39,13 +35,10 @@ function checkAvailability(
     return { status: 'unknown', message: 'Set a plot location to check availability.' };
   }
 
-  // ── District-level themes (AMRUT, NUIS, SIS-DP): check bhuvan-index.json first ──
-  // These may not all be in bhuvan-extents.json (e.g. AMRUT is on vec3 which wasn't scraped).
   const indexType = getIndexType(themeId);
   if (indexType) {
     const district = getBestBhuvanDistrict(indexType, stateCode, districtNameHint);
     if (district) {
-      // State has entries in the district index → available
       return { status: 'available', message: null };
     }
     return {
@@ -54,10 +47,8 @@ function checkAvailability(
     };
   }
 
-  // ── Non-district themes: check bhuvan-extents.json ──
   const suffix = theme.themeCode;
 
-  // 0. Check if ANY layer exists for this state and theme in the extents
   const hasStateCoverage = Object.keys(BHUVAN_EXTENTS).some(name =>
     (name.includes(`_${stateCode}_`) || name.includes(`${stateCode}_`) || name.endsWith(`_${stateCode}`)) && 
     (name.includes(suffix) || name.includes(theme.id))
@@ -70,7 +61,6 @@ function checkAvailability(
     };
   }
 
-  // 1. General availability check using buildBhuvanLayerName
   const layerName = buildBhuvanLayerName(themeId, stateCode, districtNameHint, lat, lng);
   if (isLayerAvailableInIndex(layerName)) return { status: 'available', message: null };
 
@@ -190,7 +180,6 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
               const categoryName = primaryTheme.categoryName || primaryTheme.name;
               const isCategoryActive = groupThemes.some(t => t.id === activeBhuvanLayer);
               
-              // Find first available variant if not active
               const firstAvailable = groupThemes.find(t => checkAvailability(t.id, stateCode, plotLat, plotLng, districtNameHint).status === 'available');
               const displayTheme = groupThemes.find(t => t.id === activeBhuvanLayer) || firstAvailable || primaryTheme;
               
@@ -234,7 +223,6 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                   {/* Expansion: Sub-themes / Variants */}
                   {isCategoryActive && (
                     <div className="bg-muted/30 rounded-md border border-border p-3 space-y-3 animate-in fade-in slide-in-from-top-2">
-                      {/* Availability Error Banner if the SELECTED variant is unavailable (e.g. manually picked someone else) */}
                       {error && (
                         <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/20">
                           <AlertTriangle className="h-3 w-3 text-amber-400 shrink-0 mt-0.5" />
@@ -273,7 +261,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                         </div>
                       )}
 
-                      {/* Controls Area (moved inside expanded section for focus) */}
+                      {/* Controls Area */}
                       <div className="grid grid-cols-1 gap-3 pt-1">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
@@ -345,5 +333,4 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
   );
 }
 
-// Internal helper for category check
-const isActiveCategory = false; // Just to satisfy types in the component during first write, actually checked inline
+const isActiveCategory = false;
