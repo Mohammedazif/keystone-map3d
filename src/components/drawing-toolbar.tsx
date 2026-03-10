@@ -72,7 +72,7 @@ export function DrawingToolbar() {
     const isPlotSelected = selectedObjectId?.type === 'Plot';
 
 
-    const isFeasibilityPanelOpen = useBuildingStore(state => state.uiState.isFeasibilityPanelOpen);
+    const isFeasibilityPanelOpen = useBuildingStore(state => !!state.selectedObjectId && state.uiState.isFeasibilityPanelOpen);
     const kpiBottom = isFeasibilityPanelOpen ? 'calc(45vh + 8px)' : '58px';
 
     return (

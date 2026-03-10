@@ -64,7 +64,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const plots = useBuildingStore(s => s.plots);
   const uiState = useBuildingStore(s => s.uiState);
 
-  const kpiOpen = uiState.isFeasibilityPanelOpen ?? true;
+  const kpiOpen = !!selectedObjectId && (uiState.isFeasibilityPanelOpen ?? true);
   const kpiBottom = kpiOpen ? 'calc(45vh + 8px)' : '58px';
 
   const project = projects.find(p => p.id === projectId);
@@ -154,8 +154,9 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
       variant="secondary"
       size="icon"
       onClick={() => window.dispatchEvent(new CustomEvent('locateUser'))}
-      className={cn("absolute bottom-4 right-4 z-10 rounded-full h-12 w-12 shadow-lg transition-all duration-300 print:hidden",
-        uiState.isFeasibilityPanelOpen ? "scrollbar-hide translate-y-20 opacity-0 pointer-events-none" : "translate-y-0 opacity-100")}
+      className={cn("absolute right-4 z-10 rounded-full h-12 w-12 shadow-lg transition-all duration-300 print:hidden",
+        uiState.isFeasibilityPanelOpen ? "scrollbar-hide translate-y-20 opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+        selectedObjectId ? "bottom-[70px]" : "bottom-4")}
     >
       <MapPin className="h-6 w-6" />
     </Button>

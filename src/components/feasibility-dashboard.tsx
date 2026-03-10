@@ -1864,12 +1864,14 @@ export function FeasibilityDashboard() {
                         <Badge variant="secondary" className="text-xs font-normal">KPIs & Regulations</Badge>
                     </div>
                     <div className="flex items-center gap-1">
-                        <Button variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={handleExportData}>
+                        {/* <Button variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={handleExportData}>
                             Download Data
-                        </Button>
-                        <Button variant="default" size="sm" className="h-8 px-2 text-xs print:hidden" onClick={() => window.print()}>
-                            Export Report (PDF)
-                        </Button>
+                        </Button> */}
+                        {isOpen && (
+                            <Button variant="default" size="sm" className="h-8 px-2 text-xs print:hidden" onClick={() => window.print()}>
+                                Export Report (PDF)
+                            </Button>
+                        )}
                         {isOpen && (
                             <Button variant="ghost" size="sm" className="h-8 w-8 p-0 hover:bg-muted" onClick={() => setIsFullscreen(!isFullscreen)}>
                                 {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
