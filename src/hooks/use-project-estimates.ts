@@ -63,15 +63,33 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
     const projectDepsStr = useMemo(() => {
         if (!project || !metrics) return '';
         
-        // Only trigger recalculation when building shapes/counts change, or total areas change
+        // Trigger recalculation when building or utility geometry/data changes.
         const allBuildings = project.plots?.flatMap(p => p.buildings || []) || [];
-        const buildingData = allBuildings.map(b => `${b.id}-${b.area}-${b.numFloors}-${b.height}`).join('|');
+        const buildingData = allBuildings.map(b => {
+            const utilityTypes = (b.utilities || []).join(',');
+            const internalUtilities = (b.internalUtilities || [])
+                .map(u => `${u.id}-${u.type}-${u.area}`)
+                .join(',');
+            return `${b.id}-${b.area}-${b.numFloors}-${b.height}-${b.intendedUse}-${utilityTypes}-${internalUtilities}`;
+        }).join('|');
+        const plotUtilityData = (project.plots || [])
+            .map(p => (p.utilityAreas || []).map(u => `${u.id}-${u.type}-${u.area}`).join(','))
+            .join('|');
         const metricsData = `${metrics.totalBuiltUpArea}-${metrics.totalPlotArea}`;
         
-        return `${project.id}-${buildingData}-${metricsData}`;
+        return `${project.id}-${buildingData}-${plotUtilityData}-${metricsData}`;
     }, [
         project?.id,
-        project?.plots?.map(p => p.buildings?.map(b => `${b.id}-${b.area}-${b.numFloors}-${b.height}`).join(',')).join('|'),
+        project?.plots?.map(p => [
+            p.buildings?.map(b => {
+                const utilityTypes = (b.utilities || []).join(',');
+                const internalUtilities = (b.internalUtilities || [])
+                    .map(u => `${u.id}-${u.type}-${u.area}`)
+                    .join(',');
+                return `${b.id}-${b.area}-${b.numFloors}-${b.height}-${b.intendedUse}-${utilityTypes}-${internalUtilities}`;
+            }).join(','),
+            p.utilityAreas?.map(u => `${u.id}-${u.type}-${u.area}`).join(','),
+        ].join('|')).join('||'),
         metrics?.totalBuiltUpArea,
         metrics?.totalPlotArea
     ]);
@@ -150,28 +168,50 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                 const bTimeParam = getTimeParam(bType, b.height);
                 
                 // Estimate GFA for this building
-                // If it has floors, use floor area * floors. If not, use footprint * floors.
-                // Creating a rough GFA estimate:
-                const floors = b.numFloors || Math.ceil(b.height / (b.typicalFloorHeight || 3));
+                // Count above-ground floors + basement floors
+                const aboveGroundFloors = b.numFloors || Math.ceil(b.height / (b.typicalFloorHeight || 3));
+                const basementFloors = b.floors ? b.floors.filter(f => f.level !== undefined && f.level < 0).length : 0;
+                const totalFloors = aboveGroundFloors + basementFloors;
+                
                 const footprint = b.area;
-                const bGFA = footprint * floors;
+                const bGFA = footprint * totalFloors;
+
+                // Height-based cost multiplier
+                // Taller buildings require stronger structure/MEP systems
+                let heightMultiplier = 1.0;
+                if (b.height > 45) {
+                    // High-Rise: +15% for additional structural/MEP complexity
+                    heightMultiplier = 1.15;
+                } else if (b.height > 15) {
+                    // Mid-Rise: +5% for moderate complexity
+                    heightMultiplier = 1.05;
+                }
+                // Low-Rise (<15m): standard cost
 
                 processedGFA += bGFA;
 
-                // Break down cost for this building
+                // Break down cost for this building with height multiplier
                 const bEarthwork = bGFA * bCostParam.earthwork_cost_per_sqm;
-                const bStructure = bGFA * bCostParam.structure_cost_per_sqm;
+                const bStructure = bGFA * bCostParam.structure_cost_per_sqm * heightMultiplier;
                 const bFinishing = bGFA * bCostParam.finishing_cost_per_sqm;
-                const bServices = bGFA * bCostParam.services_cost_per_sqm;
+                const bServices = bGFA * bCostParam.services_cost_per_sqm * heightMultiplier;
                 
-                const bCost = bEarthwork + bStructure + bFinishing + bServices;
+                // Basement cost adjustment (additional earthwork & waterproofing)
+                // Each basement level adds ~15% to earthwork cost (deeper excavation, more waterproofing)
+                let basementCostMultiplier = 1.0;
+                if (basementFloors > 0) {
+                    basementCostMultiplier = 1 + (basementFloors * 0.15); // +15% per basement level
+                }
+                const adjustedEarthwork = bEarthwork * basementCostMultiplier;
+                
+                const bCost = adjustedEarthwork + bStructure + bFinishing + bServices;
                 const bRev = bGFA * bCostParam.sellable_ratio * bCostParam.market_rate_per_sqm;
                 
                 totalCost += bCost;
                 totalRev += bRev;
                 
                 // Aggregate components
-                totalEarthwork += bEarthwork;
+                totalEarthwork += adjustedEarthwork;
                 totalStructure += bStructure;
                 totalFinishing += bFinishing;
                 totalServices += bServices;
@@ -185,9 +225,11 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                     const podium = buildings.find(p => p.id === podiumId);
                     if (podium) {
                         const pTimeParam = getTimeParam(podium.intendedUse || buildingType, podium.height);
-                        const pFloors = podium.numFloors || Math.ceil(podium.height / (podium.typicalFloorHeight || 3));
+                        const pAboveGroundFloors = podium.numFloors || Math.ceil(podium.height / (podium.typicalFloorHeight || 3));
+                        const pBasementFloors = podium.floors ? podium.floors.filter(f => f.level !== undefined && f.level < 0).length : 0;
+                        const pTotalFloors = pAboveGroundFloors + pBasementFloors;
                         // Tower starts after podium excavation, foundation, and structure
-                        startOffset = pTimeParam.excavation_timeline_months + pTimeParam.foundation_timeline_months + ((pFloors * pTimeParam.structure_per_floor_days) / 30);
+                        startOffset = pTimeParam.excavation_timeline_months + pTimeParam.foundation_timeline_months + ((pTotalFloors * pTimeParam.structure_per_floor_days) / 30);
                     }
                 }
 
@@ -195,8 +237,8 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                 const excMonths = isTower ? 0 : bTimeParam.excavation_timeline_months;
                 const fndMonths = isTower ? 0 : bTimeParam.foundation_timeline_months;
 
-                const structureDays = floors * bTimeParam.structure_per_floor_days;
-                const finishingDays = floors * bTimeParam.finishing_per_floor_days;
+                const structureDays = totalFloors * bTimeParam.structure_per_floor_days;
+                const finishingDays = totalFloors * bTimeParam.finishing_per_floor_days;
                 const overlapMonths = (finishingDays / 30) * bTimeParam.services_overlap_factor;
 
                 const totalDays = 
@@ -239,7 +281,7 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
                         ratePerSqm: bCostParam.total_cost_per_sqm
                     },
                     gfa: bGFA,
-                    floors: floors,
+                    floors: totalFloors,
                 });
             });
         } else {
@@ -374,6 +416,16 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
             }
         } catch (e) {
             console.warn('Simulation failed:', e);
+        }
+
+        // ─── ALLOCATE UTILITY COSTS PER BUILDING ───────────────────────
+        if (simulation && perBuildingBreakdown.length > 0) {
+            const totalBuildingGFA = perBuildingBreakdown.reduce((s: number, b: any) => s + (b.gfa || 0), 0);
+            perBuildingBreakdown.forEach((b: any) => {
+                b.utilityCost = totalBuildingGFA > 0
+                    ? simulation!.total_utility_cost * ((b.gfa || 0) / totalBuildingGFA)
+                    : 0;
+            });
         }
 
         // ─── AREA-BASED STANDARD TIME ──────────────────────────────────

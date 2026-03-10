@@ -984,7 +984,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         parkingWidth: hasSurfaceParking ? 5 : 0,
                         roadWidth: hasPeripheralRoad ? 6 : 0
                     });
-                    console.log(`[Debug] Post-utility buildable area: ${turf.area(peripheralResult.buildableArea).toFixed(2)}m²`);
+                    if (peripheralResult.buildableArea) {
+                        console.log(`[Debug] Post-utility buildable area: ${turf.area(peripheralResult.buildableArea).toFixed(2)}m²`);
+                    } else {
+                        console.log('[Debug] Post-utility buildable area is null (plot too small)');
+                    }
                 } else {
                     peripheralResult = {
                         buildableArea: setbackBoundary,
@@ -5813,7 +5817,15 @@ const useProjectData = () => {
     const depsStr = useMemo(() => {
         const project = projects.find(p => p.id === activeProjectId);
         if (!project) return 'no-project';
-        const plotsStr = plots.map(p => `${p.id}-${p.area}-${p.buildings.map(b => `${b.id}-${b.area}-${b.numFloors}`).join('_')}`).join('|');
+        const plotsStr = plots.map(p => {
+            const buildingsStr = p.buildings.map(b => {
+                const bUtils = (b.utilities || []).join(',');
+                const bInternal = (b.internalUtilities || []).map((u: any) => `${u.id}-${u.type}-${u.area}`).join(',');
+                return `${b.id}-${b.area}-${b.numFloors}-${bUtils}-${bInternal}`;
+            }).join('_');
+            const utilityStr = (p.utilityAreas || []).map(u => `${u.id}-${u.type}-${u.area}`).join('_');
+            return `${p.id}-${p.area}-${buildingsStr}-${utilityStr}`;
+        }).join('|');
         const simStr = project.simulationResults ? JSON.stringify(project.simulationResults) : 'none';
         return `${project.id}-${project.totalPlotArea}-${plotsStr}-${selectedPlot?.id}-${project.lastModified || ''}-${simStr}`;
     }, [projects, activeProjectId, plots, selectedPlot]);

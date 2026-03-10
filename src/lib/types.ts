@@ -823,13 +823,19 @@ export interface ProjectEstimates {
     buildingName: string;
     timeline: {
         total: number;
+        startOffset?: number;
+        substructure?: number;
         structure: number;
         finishing: number;
+        contingency?: number;
     };
     cost: {
         total: number;
         ratePerSqm: number;
     };
+    gfa?: number;
+    floors?: number;
+    utilityCost?: number;
   }[];
 
   // Monte Carlo simulation results

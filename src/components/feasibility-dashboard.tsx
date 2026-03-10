@@ -24,6 +24,7 @@ import {
     SimBoxPlot, SimScatterCostTime, CriticalPathProbabilityChart
 } from './simulation-charts';
 import { generateDeliveryPhases } from '@/lib/cost-time-simulation';
+import { ProjectEstimates } from '@/lib/types';
 
 function MetricsTab() {
     const activeProject = useProjectData();
@@ -901,6 +902,7 @@ interface SimulatorTabProps {
 function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
     if (isLoading) return <div className="p-6 text-center text-sm text-muted-foreground animate-pulse">Running cost simulation...</div>;
     if (!estimates) return <div className="p-6 text-center text-sm text-muted-foreground">Configure Admin Parameters to run cost simulation</div>;
+    if (!estimates.simulation) return <div className="p-6 text-center text-sm text-muted-foreground">Building simulation data... Please wait or generate building to calculate cost simulation</div>;
 
     const sim = estimates.simulation;
     const bd = estimates.cost_breakdown;
@@ -911,30 +913,35 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
 
     const fmtCr = (v: number) => `₹${(v / 10000000).toFixed(1)} Cr`;
 
+    // Calculate revenue and profit ranges based on cost ranges
+    // Revenue is typically fixed; profit varies inversely with cost
+    const profit_p10 = totalRev - sim.cost_p90; // Lowest profit (highest cost)
+    const profit_p90 = totalRev - sim.cost_p10; // Highest profit (lowest cost)
+    
+    // Calculate ROI ranges: ROI = (Profit / Cost) × 100
+    // roi_p10: pessimistic (lowest profit, highest cost)
+    // roi_p90: optimistic (highest profit, lowest cost)
+    const roi_p10 = sim.cost_p90 > 0 ? (profit_p10 / sim.cost_p90) * 100 : 0;
+    const roi_p90 = sim.cost_p10 > 0 ? (profit_p90 / sim.cost_p10) * 100 : 0;
+
     return (
         <div className="space-y-4 pb-4">
 
             {/* Summary Hero — Range-based */}
             <div className="grid grid-cols-3 gap-2">
                 <div className="p-2.5 rounded-lg border bg-slate-500/10 border-slate-500/20 text-center">
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Cost (P50)</div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Project Cost (P10–P90)</div>
                     <div className="text-base font-bold">
-                        {/* {sim ? fmtCr(sim.cost_p50) : `${(totalCost / 10000000).toFixed(1)} Cr`} */}
                         {fmtCr(sim.cost_p10)} – {fmtCr(sim.cost_p90)}
                     </div>
-                    {/* {sim && (
-                        <div className="text-[8px] text-muted-foreground">
-                            {fmtCr(sim.cost_p10)} – {fmtCr(sim.cost_p90)}
-                        </div>
-                    )} */}
                 </div>
                 <div className="p-2.5 rounded-lg border bg-emerald-500/10 border-emerald-500/20 text-center">
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Revenue</div>
-                    <div className="text-base font-bold text-emerald-400">{(totalRev / 10000000).toFixed(1)} Cr</div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Profit (P10–P90)</div>
+                    <div className="text-base font-bold text-emerald-400">{fmtCr(profit_p10)} – {fmtCr(profit_p90)}</div>
                 </div>
                 <div className={cn("p-2.5 rounded-lg border text-center", profit > 0 ? "bg-blue-500/10 border-blue-500/20" : "bg-red-500/10 border-red-500/20")}>
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">ROI</div>
-                    <div className={cn("text-base font-bold", profit > 0 ? "text-blue-400" : "text-red-400")}>{roi.toFixed(1)}%</div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">ROI (P10–P90)</div>
+                    <div className={cn("text-base font-bold", profit > 0 ? "text-blue-400" : "text-red-400")}>{roi_p10.toFixed(1)}% – {roi_p90.toFixed(1)}%</div>
                 </div>
             </div>
 
@@ -1002,7 +1009,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                                     />
                                 ))}
                             </div>
-                            <div className="grid grid-cols-2 gap-1">
+                            <div className="grid grid-cols-2 gap-1 mb-2">
                                 {costCategories.map(c => (
                                     <div key={c.label} className="flex items-center gap-1.5 text-[10px]">
                                         <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: c.color }} />
@@ -1010,6 +1017,12 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                                         <span className="ml-auto font-medium">{(c.value / 10000000).toFixed(2)} Cr</span>
                                     </div>
                                 ))}
+                            </div>
+                            {/* Total Construction Cost */}
+                            <div className="flex items-center gap-1.5 text-[10px] p-2 rounded bg-secondary/30 border border-border/20">
+                                <div className="w-2.5 h-2.5 rounded-sm shrink-0 bg-slate-400" />
+                                <span className="font-semibold text-foreground">Construction Total</span>
+                                <span className="ml-auto font-bold text-blue-400">{(totalParts / 10000000).toFixed(2)} Cr</span>
                             </div>
                         </>
                     );
@@ -1038,6 +1051,27 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
             {/* Utility Costs */}
             {sim && sim.utility_costs.length > 0 && (
                 <UtilityCostsTable items={sim.utility_costs} total={sim.total_utility_cost} />
+            )}
+
+            {/* Total Project Cost */}
+            {sim && (
+                <div className="rounded-lg border p-3 bg-gradient-to-r from-slate-700/20 to-slate-600/20 border-slate-500/30">
+                    <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-2">Total Project Cost</div>
+                    <div className="grid grid-cols-3 gap-2">
+                        <div className="p-2 rounded bg-slate-600/20 border border-slate-500/20 text-center">
+                            <div className="text-[9px] text-muted-foreground">P10 (Optimistic)</div>
+                            <div className="text-sm font-bold text-slate-300">{fmtCr(sim.cost_p10)}</div>
+                        </div>
+                        <div className="p-2 rounded bg-slate-600/20 border border-slate-500/20 text-center">
+                            <div className="text-[9px] text-muted-foreground">P50 (Expected)</div>
+                            <div className="text-sm font-bold text-slate-300">{fmtCr(sim.cost_p50)}</div>
+                        </div>
+                        <div className="p-2 rounded bg-slate-600/20 border border-slate-500/20 text-center">
+                            <div className="text-[9px] text-muted-foreground">P90 (Pessimistic)</div>
+                            <div className="text-sm font-bold text-slate-300">{fmtCr(sim.cost_p90)}</div>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Per-Building Table */}
@@ -1075,6 +1109,7 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
 
     if (isLoading) return <div className="p-6 text-center text-sm text-muted-foreground animate-pulse">Running time simulation...</div>;
     if (!estimates) return <div className="p-6 text-center text-sm text-muted-foreground">Configure Admin Parameters to run time simulation</div>;
+    if (!estimates.simulation) return <div className="p-6 text-center text-sm text-muted-foreground">Building simulation data... Please wait or generate building to calculate time simulation</div>;
 
     const sim = estimates.simulation;
     const phases = estimates.timeline?.phases;
@@ -1096,14 +1131,15 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
             {/* Summary — Range-based */}
             <div className="grid grid-cols-2 gap-2">
                 <div className="p-2.5 rounded-lg border bg-blue-500/10 border-blue-500/20 text-center">
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Duration (P50)</div>
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Duration (P10–P90)</div>
                     <div className="text-xl font-bold text-blue-400">
-                        {/* {sim ? sim.time_p50.toFixed(1) : totalMonths.toFixed(1)} */}
-                        {sim ? `${sim.time_p10.toFixed(1)} m – ${sim.time_p90.toFixed(1)} months` : 'months (Critical Path)'}
-                    </div>
-                    {/* <div className="text-[9px] text-muted-foreground">
                         {sim ? `${sim.time_p10.toFixed(1)} – ${sim.time_p90.toFixed(1)} months` : 'months (Critical Path)'}
-                    </div> */}
+                    </div>
+                    {sim && (
+                        <div className="text-[9px] text-muted-foreground mt-0.5">
+                            Median: {sim.time_p50.toFixed(1)} months
+                        </div>
+                    )}
                 </div>
                 <div className="p-2.5 rounded-lg border bg-purple-500/10 border-purple-500/20 text-center flex flex-col items-center justify-center">
                     <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Efficiency</div>
@@ -1245,6 +1281,153 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
     );
 }
 
+// ─── MULTI-BUILDING BUDGET TAB ────────────────────────────────────────────────
+interface MultiBuildingTabProps {
+    estimates: ProjectEstimates;
+    isLoading: boolean;
+}
+
+function MultiBuildingBudgetTab({ estimates, isLoading }: MultiBuildingTabProps) {
+    if (isLoading) return <div className="p-6 text-center text-sm text-muted-foreground animate-pulse">Running cost simulation...</div>;
+    if (!estimates) return <div className="p-6 text-center text-sm text-muted-foreground">No estimates available</div>;
+    if (!estimates.breakdown || estimates.breakdown.length === 0) return <div className="p-6 text-center text-sm text-muted-foreground">No buildings to display</div>;
+
+    const fmtCr = (v: number) => `₹${(v / 10000000).toFixed(1)} Cr`;
+    const buildings = estimates.breakdown;
+    const totalCost = estimates.total_construction_cost;
+    const totalRev = estimates.total_revenue;
+    const totalUtilities = estimates.simulation?.total_utility_cost || 0;
+    const sim = estimates.simulation;
+
+    // Calculate budget metrics
+    const largestBuilding = buildings.reduce((max: any, b: any) => b.cost.total > max.cost.total ? b : max);
+    const costVariance = Math.max(...buildings.map((b: any) => b.cost.total)) - Math.min(...buildings.map((b: any) => b.cost.total));
+    const avgCostPerBuilding = totalCost / buildings.length;
+    const infrastructureShare = totalUtilities > 0 ? ((totalUtilities / (totalCost + totalUtilities)) * 100) : 0;
+
+    return (
+        <div className="space-y-4 pb-4">
+            {/* Summary Overview */}
+            <div className="grid grid-cols-3 gap-2">
+                <div className="p-2.5 rounded-lg border bg-slate-500/10 border-slate-500/20 text-center">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Total Buildings</div>
+                    <div className="text-xl font-bold text-slate-300">{buildings.length}</div>
+                </div>
+                <div className="p-2.5 rounded-lg border bg-blue-500/10 border-blue-500/20 text-center">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Project Cost Range</div>
+                    <div className="text-base font-bold text-blue-400">{sim ? `${fmtCr(sim.cost_p10)} - ${fmtCr(sim.cost_p90)}` : `~${fmtCr(totalCost)} (est.)`}</div>
+                </div>
+                <div className="p-2.5 rounded-lg border bg-purple-500/10 border-purple-500/20 text-center">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Utility Cost (est.)</div>
+                    <div className="text-base font-bold text-purple-400">~{fmtCr(totalUtilities)}</div>
+                </div>
+            </div>
+
+            {/* Building-wise Cost Breakdown */}
+            <div className="rounded-lg border p-3 bg-secondary/10 border-border/30">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-3">Building-wise Cost Breakdown</div>
+                
+                {/* Grid Header */}
+                <div className="grid gap-2">
+                    <div className="grid grid-cols-6 gap-2 text-[11px] font-bold text-muted-foreground mb-2">
+                        <div>Building</div>
+                        <div className="text-right">~Cost (₹ Cr)</div>
+                        <div className="text-right">~Utility (₹ Cr)</div>
+                        <div className="text-right">% of Total</div>
+                        <div className="text-right">GFA (sqm)</div>
+                        <div className="text-right">Floors</div>
+                    </div>
+
+                    {/* Building Rows */}
+                    {buildings.map((b: any, i: number) => {
+                        const pct = (b.cost.total / totalCost) * 100;
+                        const costCr = b.cost.total / 10000000;
+                        const utilityCr = (b.utilityCost || 0) / 10000000;
+                        return (
+                            <div key={i} className="grid grid-cols-6 gap-2 text-[10px] p-2 rounded bg-secondary/20 border border-border/20 hover:bg-secondary/30 transition">
+                                <div className="font-semibold truncate">{b.buildingName || `Building ${i + 1}`}</div>
+                                <div className="text-right font-bold text-emerald-400">~{costCr.toFixed(1)}</div>
+                                <div className="text-right font-bold text-amber-400">~{utilityCr.toFixed(2)}</div>
+                                <div className="text-right text-amber-400">{pct.toFixed(1)}%</div>
+                                <div className="text-right text-blue-400">{(b.gfa || 0).toFixed(0)}</div>
+                                <div className="text-right text-purple-400">{b.floors || 0}</div>
+                            </div>
+                        );
+                    })}
+
+                    {/* Total Row */}
+                    <div className="grid grid-cols-6 gap-2 text-[10px] p-2 rounded bg-slate-600/20 border border-slate-500/30 font-bold mt-1">
+                        <div>TOTAL</div>
+                        <div className="text-right text-slate-300">~{fmtCr(totalCost)}</div>
+                        <div className="text-right text-slate-300">~{fmtCr(totalUtilities)}</div>
+                        <div className="text-right text-slate-300">100%</div>
+                        <div className="text-right text-slate-300">{buildings.reduce((s: number, b: any) => s + (b.gfa || 0), 0).toFixed(0)}</div>
+                        <div className="text-right text-slate-300">{buildings.reduce((s: number, b: any) => s + (b.floors || 0), 0)}</div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Cost Distribution Chart (Construction + Utility) */}
+            <div className="rounded-lg border p-3 bg-secondary/10 border-border/30">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-2">Cost Distribution (Incl. Utilities)</div>
+                <div className="space-y-2">
+                    {(() => {
+                        const grandTotal = totalCost + totalUtilities;
+                        return buildings.map((b: any, i: number) => {
+                            const bTotal = b.cost.total + (b.utilityCost || 0);
+                            const pct = grandTotal > 0 ? (bTotal / grandTotal) * 100 : 0;
+                            const colors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899'];
+                            const color = colors[i % colors.length];
+                            return (
+                                <div key={i}>
+                                    <div className="flex justify-between mb-1 text-[10px]">
+                                        <span className="text-muted-foreground truncate">{b.buildingName || `Building ${i + 1}`}</span>
+                                        <span className="font-semibold" style={{ color }}>{pct.toFixed(1)}%</span>
+                                    </div>
+                                    <div className="h-2 bg-secondary/40 rounded-full overflow-hidden">
+                                        <div 
+                                            className="h-full rounded-full transition-all duration-700" 
+                                            style={{ width: `${pct}%`, backgroundColor: color, opacity: 0.7 }}
+                                        />
+                                    </div>
+                                </div>
+                            );
+                        });
+                    })()}
+                </div>
+            </div>
+
+            {/* Utilities Summary */}
+            {totalUtilities > 0 && (
+                <div className="rounded-lg border p-3 bg-amber-500/10 border-amber-500/20">
+                    <div className="text-[10px] uppercase tracking-wider font-semibold text-amber-400 mb-2">Utilities Included</div>
+                    <div className="text-sm font-bold text-amber-300 mb-2">~{fmtCr(totalUtilities)}</div>
+                    {estimates.simulation?.utility_costs && estimates.simulation.utility_costs.length > 0 && (
+                        <div className="space-y-1 text-[9px] text-amber-200">
+                            {estimates.simulation.utility_costs.map((u: any, i: number) => (
+                                <div key={i} className="flex justify-between">
+                                    <span>{u.label} ({u.unit})</span>
+                                    <span className="font-semibold">~{(u.amount / 10000000).toFixed(2)} Cr</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Budget Impact & Overlap Info */}
+            <div className="rounded-lg border p-3 bg-cyan-500/10 border-cyan-500/20">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-400 mb-2">Budget Decision Tips</div>
+                <div className="space-y-1 text-[9px] text-cyan-200">
+                    <div>• Largest building: <span className="font-bold">{largestBuilding.buildingName}</span> (~{(largestBuilding.cost.total / 10000000).toFixed(1)} Cr)</div>
+                    <div>• Average per building: <span className="font-bold">~{(avgCostPerBuilding / 10000000).toFixed(1)} Cr</span></div>
+                    <div>• Cost variance: <span className="font-bold">~{(costVariance / 10000000).toFixed(1)} Cr</span></div>
+                    <div>• Infrastructure share: <span className="font-bold">{infrastructureShare.toFixed(1)}%</span> of total</div>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function FeasibilityTab() {
     const activeProject = useProjectData();
@@ -1366,6 +1549,11 @@ function FeasibilityTab() {
 
     const sim = estimates?.simulation;
 
+    // Calculate ROI ranges based on cost ranges
+    const totalRev = estimates?.total_revenue || 0;
+    const roi_p10 = sim?.cost_p90 ? (((totalRev - sim.cost_p90) / sim.cost_p90) * 100) : 0;
+    const roi_p90 = sim?.cost_p10 ? (((totalRev - sim.cost_p10) / sim.cost_p10) * 100) : 0;
+
     return (
         <div className="space-y-4 pb-4">
             {/* Summary Stats */}
@@ -1419,35 +1607,32 @@ function FeasibilityTab() {
                             <DollarSign className="h-4 w-4 text-emerald-400" />
                             <span className="text-sm font-semibold">Financial Estimates {estimates.isPotential && "(Potential)"}</span>
                             <Badge variant={(estimates.roi_percentage || 0) > 15 ? 'default' : 'secondary'} className="ml-auto text-xs">
-                                ROI: {(estimates.roi_percentage || 0).toFixed(1)}%
+                                {sim
+                                    ? `ROI: ${roi_p10.toFixed(1)}% – ${roi_p90.toFixed(1)}%`
+                                    : `ROI: ~${(estimates.roi_percentage || 0).toFixed(1)}% (est.)`}
                             </Badge>
                         </div>
-                        {/* {estimates.isPotential && (
-                            <div className="text-[10px] text-amber-500 mb-2 flex items-center gap-1 justify-center bg-amber-500/10 p-1 rounded">
-                                <AlertTriangle className="h-3 w-3" /> Based on Max Potential (No Design)
-                            </div>
-                        )} */}
                         <div className="grid grid-cols-2 gap-4 text-center">
                             <div>
-                                <div className="text-[10px] text-muted-foreground uppercase">Construction Cost</div>
+                                <div className="text-[10px] text-muted-foreground uppercase">{sim ? 'Project Cost (P10–P90)' : 'Project Cost (est.)'}</div>
                                 <div className="text-lg font-bold">
                                     {sim
-                                        ? `₹${(sim.cost_p50 / 10000000).toFixed(2)} Cr`
-                                        : `${((estimates.total_construction_cost || 0) / 10000000).toFixed(2)} Cr`}
+                                        ? `₹${(sim.cost_p10 / 10000000).toFixed(1)} – ${(sim.cost_p90 / 10000000).toFixed(1)} Cr`
+                                        : `~₹${((estimates.total_construction_cost || 0) / 10000000).toFixed(2)} Cr`}
                                 </div>
-                                {sim && (
-                                    <div className="text-[9px] text-muted-foreground">
-                                        Range: ₹{(sim.cost_p10 / 10000000).toFixed(1)} – {(sim.cost_p90 / 10000000).toFixed(1)} Cr
-                                    </div>
-                                )}
+                                <div className="text-[9px] text-muted-foreground">
+                                    {sim ? `Median: ₹${(sim.cost_p50 / 10000000).toFixed(2)} Cr` : 'Run simulation for range'}
+                                </div>
                             </div>
                             <div>
-                                <div className="text-[10px] text-muted-foreground uppercase">Potential Revenue</div>
+                                <div className="text-[10px] text-muted-foreground uppercase">{sim ? 'Profit (P10–P90)' : 'Profit (est.)'}</div>
                                 <div className="text-lg font-bold text-emerald-500">
-                                    {((estimates.total_revenue || 0) / 10000000).toFixed(2)} Cr
+                                    {sim
+                                        ? `₹${(((estimates.total_revenue || 0) - sim.cost_p90) / 10000000).toFixed(1)} – ${(((estimates.total_revenue || 0) - sim.cost_p10) / 10000000).toFixed(1)} Cr`
+                                        : `~₹${((estimates.potential_profit || 0) / 10000000).toFixed(2)} Cr`}
                                 </div>
                                 <div className="text-[10px] text-muted-foreground">
-                                    Profit: ~{((estimates.potential_profit || 0) / 10000000).toFixed(2)} Cr
+                                    Revenue (fixed): ₹{((estimates.total_revenue || 0) / 10000000).toFixed(2)} Cr
                                 </div>
                             </div>
                         </div>
@@ -1459,31 +1644,30 @@ function FeasibilityTab() {
                             <span className="text-sm font-semibold">Timeline & Efficiency</span>
                             <Badge variant="outline" className="ml-auto text-xs">
                                 {sim
-                                    ? `${sim.time_p50.toFixed(1)} Months`
-                                    : `${(estimates.timeline?.total_months || 0).toFixed(1)} Months`}
+                                    ? `${sim.time_p10.toFixed(1)} – ${sim.time_p90.toFixed(1)} Months`
+                                    : `~${(estimates.timeline?.total_months || 0).toFixed(1)} Months (est.)`}
                             </Badge>
                         </div>
-                        {sim && (
-                            <div className="text-[9px] text-muted-foreground mb-2 text-center">
-                                Range: {sim.time_p10.toFixed(1)} – {sim.time_p90.toFixed(1)} months
-                            </div>
-                        )}
+                        <div className="text-[9px] text-muted-foreground mb-2 text-center">
+                            {sim ? `Median (P50): ${sim.time_p50.toFixed(1)} months` : 'Run simulation for range'}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground mb-1 italic">Critical-path baseline (est.):</div>
                         <div className="grid grid-cols-2 gap-2 text-xs">
                             <div className="flex justify-between">
                                 <span className="text-muted-foreground">Substructure:</span>
-                                <span>{((estimates.timeline?.phases?.excavation || 0) + (estimates.timeline?.phases?.foundation || 0)).toFixed(1)} mo</span>
+                                <span>~{((estimates.timeline?.phases?.excavation || 0) + (estimates.timeline?.phases?.foundation || 0)).toFixed(1)} mo</span>
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-muted-foreground">Structure:</span>
-                                <span>{(estimates.timeline?.phases?.structure || 0).toFixed(1)} mo</span>
+                                <span>~{(estimates.timeline?.phases?.structure || 0).toFixed(1)} mo</span>
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-muted-foreground">Finishing:</span>
-                                <span>{(estimates.timeline?.phases?.finishing || 0).toFixed(1)} mo</span>
+                                <span>~{(estimates.timeline?.phases?.finishing || 0).toFixed(1)} mo</span>
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-muted-foreground">Contingency:</span>
-                                <span>{(estimates.timeline?.phases?.contingency || 2).toFixed(1)} mo</span>
+                                <span>~{(estimates.timeline?.phases?.contingency || 2).toFixed(1)} mo</span>
                             </div>
                             <div className="pt-2 col-span-2 border-t border-border/10 flex justify-between items-center">
                                 <span className="text-muted-foreground">Efficiency Target:</span>
@@ -1493,7 +1677,7 @@ function FeasibilityTab() {
                                         estimates.efficiency_metrics.status === 'Optimal' ? "text-green-500" :
                                             estimates.efficiency_metrics.status === 'Inefficient' ? "text-red-500" : "text-yellow-500"
                                     )}>
-                                        {((estimates.efficiency_metrics?.achieved || 0) * 100).toFixed(0)}%
+                                        ~{((estimates.efficiency_metrics?.achieved || 0) * 100).toFixed(0)}%
                                     </span>
                                     {/* <span className="text-muted-foreground ml-1">
                                         / {((estimates.efficiency_metrics?.target || 0) * 100).toFixed(0)}%
@@ -1511,18 +1695,28 @@ function FeasibilityTab() {
                                 <span className="text-sm font-semibold">Building Breakdown</span>
                             </div>
                             <div className="space-y-2 max-h-[150px] overflow-y-auto scrollbar-thin pr-1">
-                                {estimates.breakdown.map((b: any, idx: number) => (
+                                {estimates.breakdown.map((b: any, idx: number) => {
+                                    const bCost = (b.cost.total) / 10000000;
+                                    const costLo = sim ? (bCost * (sim.cost_p10 / sim.cost_p50)).toFixed(2) : null;
+                                    const costHi = sim ? (bCost * (sim.cost_p90 / sim.cost_p50)).toFixed(2) : null;
+                                    const bTime = b.timeline.total;
+                                    const timeLo = sim ? (bTime * (sim.time_p10 / sim.time_p50)).toFixed(0) : null;
+                                    const timeHi = sim ? (bTime * (sim.time_p90 / sim.time_p50)).toFixed(0) : null;
+                                    return (
                                     <div key={idx} className="text-xs border-b border-border/10 pb-2 last:border-0 last:pb-0">
                                         <div className="flex justify-between font-medium mb-1">
                                             <span>{b.buildingName}</span>
-                                            <span className="text-emerald-500">{((b.cost.total)/10000000).toFixed(2)} Cr</span>
+                                            <span className="text-emerald-500">
+                                                {sim ? `₹${costLo} – ${costHi} Cr` : `~₹${bCost.toFixed(2)} Cr`}
+                                            </span>
                                         </div>
                                         <div className="flex justify-between text-[10px] text-muted-foreground">
-                                            <span>{b.timeline.total.toFixed(0)} months</span>
-                                            <span>Start: Now</span>
+                                            <span>{sim ? `${timeLo} – ${timeHi} mo` : `~${bTime.toFixed(0)} mo`}</span>
+                                            <span>{sim ? '' : '(est.)'}</span>
                                         </div>
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     )}
@@ -1664,11 +1858,14 @@ export function FeasibilityDashboard() {
                         <CardContent className="p-0 h-full">
                             <Tabs defaultValue="feasibility" className="flex flex-col h-full w-full">
                                 <div className="px-4 pt-2 shrink-0">
-                                    <TabsList className="grid w-full grid-cols-4">
+                                    <TabsList className="grid w-full gap-1" style={{ gridTemplateColumns: `repeat(${simEstimates?.breakdown && simEstimates.breakdown.length > 1 ? 5 : 4}, 1fr)` }}>
                                         <TabsTrigger value="feasibility" className="text-[11px]">Dashboard</TabsTrigger>
                                         <TabsTrigger value="metrics" className="text-[11px]">KPIs</TabsTrigger>
                                         <TabsTrigger value="cost" className="text-[11px]">Budget</TabsTrigger>
-                                    <TabsTrigger value="time" className="text-[11px]">Pre-Building Timeline</TabsTrigger>
+                                    <TabsTrigger value="time" className="text-[11px]">Timeline</TabsTrigger>
+                                    {simEstimates?.breakdown && simEstimates.breakdown.length > 1 && (
+                                        <TabsTrigger value="buildings" className="text-[11px]">Buildings</TabsTrigger>
+                                    )}
                                     </TabsList>
                                 </div>
 
@@ -1685,6 +1882,11 @@ export function FeasibilityDashboard() {
                                     <TabsContent value="time" className="h-full m-0 p-4 pt-2 overflow-y-auto scrollbar-thin">
                                         <TimeSimulatorTab estimates={simEstimates} isLoading={simLoading} />
                                     </TabsContent>
+                                    {simEstimates?.breakdown && simEstimates.breakdown.length > 1 && (
+                                        <TabsContent value="buildings" className="h-full m-0 p-4 pt-2 overflow-y-auto scrollbar-thin">
+                                            <MultiBuildingBudgetTab estimates={simEstimates} isLoading={simLoading} />
+                                        </TabsContent>
+                                    )}
                                 </div>
                             </Tabs>
                         </CardContent>

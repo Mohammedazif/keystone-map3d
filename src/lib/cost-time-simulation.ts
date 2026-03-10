@@ -446,8 +446,6 @@ function divideIntoPhases(
         const dur = totalMonths * t.share;
         const phase: ProjectPhase = {
             name: t.name,
-            startMonth: cumulativeMonth,
-            endMonth: cumulativeMonth + dur,
             durationMonths: dur,
             costShare: t.share,
             costAmount: totalCost * t.share,
@@ -656,7 +654,7 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
     // 2. Time simulation
     const timeSim = runTimeSimulation({ timeParam, floors, iterations });
 
-    // 3. Utility costs
+    // 3. Utility costs (deterministic baseline for breakdown display)
     const utilities = calculateUtilityCosts({
         costParam,
         totalGFA: gfa,
@@ -668,17 +666,32 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
         utilitiesPresent: input.utilitiesPresent,
     });
 
+    // Simulate utility costs with ±20% triangular uncertainty per iteration
+    // so that utility variance is reflected in the P10-P90 band
+    const utilityBase = utilities.total;
+    const totalCostRaw = costSim.rawTotals.map(total => {
+        const utilityMultiplier = utilityBase > 0
+            ? triSample(0.80, 1.0, 1.20)
+            : 0;
+        return total + utilityBase * utilityMultiplier;
+    });
+    const totalCostSorted = [...totalCostRaw].sort((a, b) => a - b);
+    const totalCostP10 = percentile(totalCostSorted, 10);
+    const totalCostP50 = percentile(totalCostSorted, 50);
+    const totalCostP90 = percentile(totalCostSorted, 90);
+    const totalCostMean = totalCostRaw.reduce((sum, value) => sum + value, 0) / totalCostRaw.length;
+
     // 4. Phase division
     const phases = divideIntoPhases(
         timeSim.p50,
-        costSim.p50,
-        costSim.p10,
-        costSim.p90,
+        totalCostP50,
+        totalCostP10,
+        totalCostP90,
         Math.max(3, numPhases),
     );
 
     // 5. S-curve bands
-    const sCurves = generateSCurveBands(timeSim.p50, costSim.p10, costSim.p50, costSim.p90);
+    const sCurves = generateSCurveBands(timeSim.p50, totalCostP10, totalCostP50, totalCostP90);
 
     // 6. Gantt uncertainty
     const df = timeParam.delay_factors ?? {
@@ -718,13 +731,20 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
     })).sort((a, b) => b.criticalPct - a.criticalPct);
 
     return {
-        cost_histogram: costSim.histogram,
-        cost_cdf: costSim.cdf,
-        cost_p10: costSim.p10,
-        cost_p50: costSim.p50,
-        cost_p90: costSim.p90,
-        cost_mean: costSim.mean,
-        cost_sensitivity: costSim.sensitivity,
+        cost_histogram: buildHistogram(totalCostRaw),
+        cost_cdf: buildCDF(totalCostRaw),
+        cost_p10: totalCostP10,
+        cost_p50: totalCostP50,
+        cost_p90: totalCostP90,
+        cost_mean: totalCostMean,
+        cost_sensitivity: utilityBase > 0
+            ? [...costSim.sensitivity, {
+                label: 'Utilities',
+                low: costSim.mean + utilityBase * 0.80,
+                high: costSim.mean + utilityBase * 1.20,
+                range: utilityBase * 0.40,
+            }].sort((a, b) => b.range - a.range)
+            : costSim.sensitivity,
 
         time_histogram: timeSim.histogram,
         time_cdf: timeSim.cdf,
@@ -749,7 +769,7 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
         delivery_phases: deliveryPhases,
 
         // New: raw arrays for advanced charts
-        cost_raw: costSim.rawTotals,
+        cost_raw: totalCostRaw,
         time_raw: timeSim.rawTotals,
         cost_components_raw: costSim.rawComponents as any,
         critical_path_probability: criticalPathProbability,
