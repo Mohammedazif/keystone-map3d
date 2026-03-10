@@ -224,6 +224,7 @@ export interface Project {
     amenities: any[]; // Storing FeatureCollection or array of amenities
     score?: number;
   };
+  generationParams?: any; // App settings, like setbacks
 }
 
 export interface UnitTypology {

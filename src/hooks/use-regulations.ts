@@ -29,8 +29,19 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
             try {
                 // 1. Fetch Building Regulations
                 // Priority: Specific Regulation ID > Generic ID > Smart Fallback
-                const location = project.location || 'Delhi';
-                const intendedUse = project.intendedUse || 'Residential';
+                // Parse location safely since it might be an object
+                let location = 'Delhi';
+                if (typeof project.location === 'string') {
+                    location = project.location;
+                } else if (project.location && typeof project.location === 'object') {
+                    // If it's a coordinate object without a resolved string name, we'll have to rely on smart fallback or NBC
+                    location = (project.location as any).name || (project.location as any).text || 'Default';
+                }
+                
+                let intendedUse = project.intendedUse || 'Residential';
+                // Normalize Mixed Use to deal with hyphenation inconsistencies
+                if (intendedUse.toLowerCase() === 'mixed use') intendedUse = 'Mixed-Use';
+                else if (intendedUse.toLowerCase() === 'mixed-use') intendedUse = 'Mixed Use';
 
                 let foundReg: RegulationData | null = null;
 
@@ -92,8 +103,9 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
                         const nbcRegs = nbcSnap.docs.map(d => d.data() as RegulationData);
                         
                         // Try to match intended Use, otherwise take any
-                        foundReg = nbcRegs.find(r => r.type === intendedUse)
-                            || nbcRegs.find(r => r.type && r.type.includes(intendedUse))
+                        foundReg = nbcRegs.find(r => r.type && r.type.toLowerCase() === intendedUse.toLowerCase())
+                            || nbcRegs.find(r => r.type && r.type.toLowerCase().replace('-', ' ') === intendedUse.toLowerCase().replace('-', ' '))
+                            || nbcRegs.find(r => r.type && r.type.toLowerCase().includes(intendedUse.toLowerCase().replace('-', ' ')))
                             || nbcRegs[0];
 
                         if (foundReg) {

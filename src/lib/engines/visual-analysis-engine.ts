@@ -167,6 +167,7 @@ export interface BuildingAnalysisResult {
     buildingId: string;
     value: number;
     color: string; // Hex color #RRGGBB
+    roofColor?: string; // Hex color for the roof face
     unit?: string; // Display unit e.g. 'hrs', 'kWh/m²/yr', 'trips/day'
     label?: string; // Display label
 }
@@ -517,6 +518,80 @@ function calculateSkyViewFactor(building: Building, allBuildings: Building[]): n
     return unobstructedRays / NUM_RAYS; // 0-1, 1 = full sky view
 }
 
+/** Calculate what fraction of a building's footprint is in shadow.
+ *  Uses multi-point sampling across the bounding box, checking each point
+ *  against shadow polygons. Much more robust than turf.intersect.
+ *  @returns shadow fraction 0-1 (0 = no shadow, 1 = fully shadowed) */
+function calculateShadowFraction(
+    building: Building,
+    shadows: { shadow: any; casterId: string; casterHeight: number }[]
+): number {
+    const GRID_SIZE = 5; // 5x5 = 25 sample points across building
+    
+    // Get building bounding box
+    const bbox = turf.bbox(building.geometry);
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    
+    const lngStep = (maxLng - minLng) / (GRID_SIZE + 1);
+    const latStep = (maxLat - minLat) / (GRID_SIZE + 1);
+    
+    let totalPoints = 0;
+    let shadowedFractionSum = 0;
+    
+    const targetHeight = building.height || (building.floors?.reduce((s, f) => s + f.height, 0)) || 10;
+    
+    // Sample the building footprint on a grid
+    for (let i = 1; i <= GRID_SIZE; i++) {
+        for (let j = 1; j <= GRID_SIZE; j++) {
+            const sampleLng = minLng + i * lngStep;
+            const sampleLat = minLat + j * latStep;
+            const pt = turf.point([sampleLng, sampleLat]);
+            
+            // Only count points that are actually inside the building footprint
+            try {
+                const geom = building.geometry.geometry || building.geometry;
+                if (!turf.booleanPointInPolygon(pt, geom as any)) continue;
+            } catch (e) {
+                continue;
+            }
+            
+            totalPoints++;
+            
+            // Check if this point is in any shadow, take the max shadow fraction (tallest caster)
+            let maxPointShadow = 0;
+            for (const s of shadows) {
+                if (s.casterId === building.id) continue;
+                try {
+                    if (turf.booleanPointInPolygon(pt, s.shadow)) {
+                        // A 10m building only shades the bottom 20% of a 50m building
+                        const heightFraction = Math.min(1, s.casterHeight / targetHeight);
+                        maxPointShadow = Math.max(maxPointShadow, heightFraction);
+                    }
+                } catch (e) {}
+            }
+            shadowedFractionSum += maxPointShadow;
+        }
+    }
+    
+    // Also always include centroid as a sample
+    const center = turf.centroid(building.geometry);
+    totalPoints++;
+    let maxCenterShadow = 0;
+    for (const s of shadows) {
+        if (s.casterId === building.id) continue;
+        try {
+            if (turf.booleanPointInPolygon(center, s.shadow)) {
+                const heightFraction = Math.min(1, s.casterHeight / targetHeight);
+                maxCenterShadow = Math.max(maxCenterShadow, heightFraction);
+            }
+        } catch (e) {}
+    }
+    shadowedFractionSum += maxCenterShadow;
+    
+    if (totalPoints === 0) return 0;
+    return shadowedFractionSum / totalPoints;
+}
+
 /** Detect Venturi effect: find narrow gaps between this building and neighbors */
 function detectVenturiEffect(building: Building, allBuildings: Building[]): number {
     const center = turf.centroid(building.geometry);
@@ -594,7 +669,8 @@ export async function runVisualAnalysis(
             const shadows: any[] = [];
             contextBuildings.forEach(b => {
                 const s = calculateBuildingShadow(b, pos.azimuth, pos.altitude);
-                if (s) shadows.push({ shadow: s, casterId: b.id });
+                const bHeight = b.height || (b.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+                if (s) shadows.push({ shadow: s, casterId: b.id, casterHeight: bHeight });
             });
 
             hourlySnapshots.push({ shadows, altitude: pos.altitude, azimuth: pos.azimuth, hour, solarW: weatherData ? getSolarAtHour(weatherData, Math.floor(hour)).shortwave : -1 });
@@ -603,17 +679,18 @@ export async function runVisualAnalysis(
         for (const building of targetBuildings) {
             const bCenter = turf.centroid(building.geometry);
             let sunHours = 0;
+            let unshadedCount = 0;
 
             for (const snap of hourlySnapshots) {
-                // Check if building centroid is shaded by any OTHER building's shadow
-                const isShadowed = snap.shadows.some(s => 
-                    s.casterId !== building.id && turf.booleanPointInPolygon(bCenter, s.shadow)
-                );
+                // Calculate shadow fraction using multi-point sampling
+                const shadowFraction = calculateShadowFraction(building, snap.shadows);
 
-                if (!isShadowed) {
-                    // Also factor in facade exposure (how much of the polygon faces the sun)
+                const sunFraction = 1 - shadowFraction;
+                if (sunFraction > 0.01) {
+                    if (shadowFraction < 0.1) unshadedCount++;
+                    // Factor in facade exposure (how much of the polygon faces the sun)
                     const exposure = calculatePolygonSolarExposure(building, snap.azimuth, snap.altitude);
-                    // Count proportional sun hours weighted by exposure quality
+                    // Count proportional sun hours weighted by exposure quality and shadow
                     const timeStep = 14 / hourSamples; // hours per sample
                     
                     // Weight by real solar radiation if available (clear sky = full weight, cloudy = reduced)
@@ -623,7 +700,7 @@ export async function runVisualAnalysis(
                         solarWeight = Math.min(1, snap.solarW / 800);
                     }
                     
-                    sunHours += timeStep * Math.max(0.3, exposure) * Math.max(0.2, solarWeight);
+                    sunHours += timeStep * Math.max(0.3, exposure) * Math.max(0.2, solarWeight) * sunFraction;
                 }
             }
 
@@ -631,10 +708,13 @@ export async function runVisualAnalysis(
             sunHours = Math.min(sunHours, 14);
 
             const color = getColorForValue(sunHours, mode, greenRegulations);
+            const roofColor = color; // Match building color
+
             results.set(building.id, {
                 buildingId: building.id,
                 value: parseFloat(sunHours.toFixed(1)),
                 color,
+                roofColor,
                 unit: 'hrs',
                 label: `${sunHours.toFixed(1)} hrs direct sun`
             });
@@ -662,6 +742,16 @@ export async function runVisualAnalysis(
             externalIlluminance = altitude > 0 ? 100000 * Math.sin(altitude) : 10000;
         }
 
+        // Pre-compute shadow polygons for daylight shadow check
+        const daylightShadows: { shadow: any; casterId: string; casterHeight: number }[] = [];
+        if (altitude > 0) {
+            contextBuildings.forEach(b => {
+                const s = calculateBuildingShadow(b, azimuth, altitude);
+                const bHeight = b.height || (b.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+                if (s) daylightShadows.push({ shadow: s, casterId: b.id, casterHeight: bHeight });
+            });
+        }
+
         for (const building of targetBuildings) {
             // Sky View Factor: ratio of unobstructed sky hemisphere
             const svf = calculateSkyViewFactor(building, contextBuildings);
@@ -669,6 +759,11 @@ export async function runVisualAnalysis(
             // Facade solar exposure at current time
             const solarExposure = altitude > 0 
                 ? calculatePolygonSolarExposure(building, azimuth, altitude) 
+                : 0;
+
+            // Calculate shadow fraction from neighboring buildings
+            const shadowFraction = altitude > 0
+                ? calculateShadowFraction(building, daylightShadows)
                 : 0;
 
             // Daylight Factor (DF) = Ei / Eo
@@ -679,7 +774,10 @@ export async function runVisualAnalysis(
             // DF combines diffuse sky (SVF-dependent) and direct sun (exposure-dependent)
             const diffuseComponent = svf * windowTransmission * windowWallRatio * 0.10; // ~10% of sky light enters
             const directComponent = solarExposure * windowTransmission * windowWallRatio * 0.15;
-            const daylightFactor = diffuseComponent + directComponent;
+            
+            // Apply shadow penalty: shadowed buildings get significantly reduced direct component
+            const shadowPenalty = 1 - (shadowFraction * 0.85); // Up to 85% reduction
+            let daylightFactor = diffuseComponent + directComponent * shadowPenalty;
 
             // Interior illuminance estimate
             const interiorLux = externalIlluminance * daylightFactor;
@@ -687,10 +785,12 @@ export async function runVisualAnalysis(
             const sdaEstimate = Math.min(100, (interiorLux / 300) * 50);
 
             const color = getColorForValue(daylightFactor, mode, greenRegulations);
+            const roofColor = color; // Match building color
             results.set(building.id, {
                 buildingId: building.id,
                 value: parseFloat(daylightFactor.toFixed(4)),
                 color,
+                roofColor,
                 unit: 'DF',
                 label: `DF: ${(daylightFactor * 100).toFixed(1)}% | ~${Math.round(interiorLux)} lux | sDA: ${sdaEstimate.toFixed(0)}%`
             });
@@ -724,7 +824,7 @@ export async function runVisualAnalysis(
             const height = building.height || (building.floors?.reduce((s, f) => s + f.height, 0)) || 10;
             
             // 1. Height-corrected wind speed: V(z) = V_ref × (z/z_ref)^α
-            const V_height = V_ref * Math.pow(height / Z_ref, alpha);
+            const V_height = V_ref * Math.pow(Math.max(height, 1) / Z_ref, alpha);
 
             // 2. Facade exposure to wind direction
             const exposure = calculatePolygonWindExposure(building, windDir);
@@ -773,7 +873,7 @@ export async function runVisualAnalysis(
             // Combined wind speed at building
             // Add a base floor to venturi/shelter so it rarely goes perfectly to zero
             const estimatedWindSpeed = V_height * Math.max(0.4, exposure) * Math.max(0.8, venturiAmp) * Math.max(0.3, shelterFactor);
-            
+
             // Lawson comfort level
             let comfort = 'Comfortable';
             if (estimatedWindSpeed > 8) comfort = 'Dangerous';
@@ -781,10 +881,12 @@ export async function runVisualAnalysis(
             else if (estimatedWindSpeed > 3.5) comfort = 'Windy';
 
             const color = getColorForValue(estimatedWindSpeed, mode, greenRegulations);
+            const roofColor = color; // Match building color
             results.set(building.id, {
                 buildingId: building.id,
                 value: parseFloat(estimatedWindSpeed.toFixed(2)),
                 color,
+                roofColor,
                 unit: 'm/s',
                 label: `${estimatedWindSpeed.toFixed(1)} m/s | ${comfort}`
             });
@@ -831,28 +933,50 @@ export async function runVisualAnalysis(
             // 4. Solar heat gain through building orientation
             // Calculate south-facing perimeter fraction (beneficial in heating zones, penalty in cooling)
             const { azimuth, altitude } = getSunPosition(date, lat, lng);
+            
+            // Calculate shadow fraction from neighboring buildings
+            let energyShadowFraction = 0;
+            if (altitude > 0) {
+                const energyShadows: { shadow: any; casterId: string; casterHeight: number }[] = [];
+                for (const other of contextBuildings) {
+                    if (other.id === building.id) continue;
+                    const shadow = calculateBuildingShadow(other, azimuth, altitude);
+                    const bHeight = other.height || (other.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+                    if (shadow) energyShadows.push({ shadow, casterId: other.id, casterHeight: bHeight });
+                }
+                energyShadowFraction = calculateShadowFraction(building, energyShadows);
+            }
+
             if (altitude > 0) {
                 const solarExposure = calculatePolygonSolarExposure(building, azimuth, altitude);
+                // Reduce effective solar exposure by shadow fraction
+                const effectiveSolarExposure = solarExposure * (1 - energyShadowFraction);
                 // In hot climates, high solar exposure increases cooling load
                 // In cool climates, it reduces heating load
                 if (climate.cdd > climate.hdd || (weatherData && calculateDegreeDays(weatherData).cdd > calculateDegreeDays(weatherData).hdd)) {
-                    eui *= (1 + solarExposure * 0.15); // Up to 15% penalty in hot climate
+                    eui *= (1 + effectiveSolarExposure * 0.15); // Up to 15% penalty in hot climate
                 } else {
-                    eui *= (1 - solarExposure * 0.10); // Up to 10% benefit in cold climate
+                    eui *= (1 - effectiveSolarExposure * 0.10); // Up to 10% benefit in cold climate
                 }
             }
 
             // 5. Height factor: taller buildings need more energy for pumping/lifts
-            if (height > 30) eui *= 1.05;
-            if (height > 60) eui *= 1.10;
+            if (height > 30) {
+                eui *= 1.05;
+            }
+            if (height > 60) {
+                 eui *= 1.10;
+            }
 
             eui = parseFloat(eui.toFixed(1));
 
             const color = getColorForValue(eui, mode, greenRegulations);
+            const roofColor = color; // Match building color
             results.set(building.id, {
                 buildingId: building.id,
                 value: eui,
                 color,
+                roofColor,
                 unit: 'kWh/m²/yr',
                 label: `EUI: ${eui} kWh/m²/yr`
             });
@@ -898,10 +1022,12 @@ export async function runVisualAnalysis(
             dailyTrips = Math.round(dailyTrips);
 
             const color = getColorForValue(dailyTrips, mode, greenRegulations);
+            const roofColor = color; // Mobility is identical for roof
             results.set(building.id, {
                 buildingId: building.id,
                 value: dailyTrips,
                 color,
+                roofColor,
                 unit: 'trips/day',
                 label: `${dailyTrips} trips/day (${building.intendedUse || 'Mixed'})`
             });
@@ -964,6 +1090,7 @@ export async function runVisualAnalysis(
             score = Math.max(0, Math.min(100, score));
 
             const color = getColorForValue(score, mode, greenRegulations);
+            const roofColor = color; // Match building color
             
             // Seismic Zone label
             let zoneLabel = 'Low';
@@ -976,6 +1103,7 @@ export async function runVisualAnalysis(
                 buildingId: building.id,
                 value: score,
                 color,
+                roofColor,
                 unit: '/100',
                 label: `Score: ${score}/100 | PGA: ${pga}g | ${zoneLabel}`
             });
@@ -1318,7 +1446,8 @@ export async function runWallAnalysis(
 
     // Pre-calc sun position if needed
     let sunVecX = 0, sunVecY = 0, sunAlt = 0;
-    let hourlySunData: { vecX: number, vecY: number, alt: number }[] = [];
+    let hourlySunData: { vecX: number, vecY: number, alt: number, shadows: { shadow: any; casterId: string; casterHeight: number }[] }[] = [];
+    let daylightShadows: { shadow: any; casterId: string; casterHeight: number }[] = [];
 
     const firstCentroid = targetBuildings.length > 0 ? turf.centroid(targetBuildings[0].geometry) : null;
     const [lng, lat] = firstCentroid ? firstCentroid.geometry.coordinates : [0, 0];
@@ -1332,18 +1461,34 @@ export async function runWallAnalysis(
             sampleDate.setHours(Math.floor(hour), (hour % 1) * 60, 0, 0);
             const { azimuth, altitude } = getSunPosition(sampleDate, lat, lng);
             if (altitude > 0) {
+                const hourShadows: { shadow: any; casterId: string; casterHeight: number }[] = [];
+                contextBuildings.forEach(b => {
+                    const s = calculateBuildingShadow(b, azimuth, altitude);
+                    const bHeight = b.height || (b.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+                    if (s) hourShadows.push({ shadow: s, casterId: b.id, casterHeight: bHeight });
+                });
+                
                 hourlySunData.push({
                     vecX: Math.sin(azimuth),
                     vecY: Math.cos(azimuth),
-                    alt: altitude
+                    alt: altitude,
+                    shadows: hourShadows
                 });
             }
         }
-    } else if (mode === 'daylight') {
+    } else if (mode === 'daylight' || mode === 'energy') {
         const { azimuth, altitude } = getSunPosition(date, lat, lng);
         sunVecX = Math.sin(azimuth);
         sunVecY = Math.cos(azimuth);
         sunAlt = altitude;
+        
+        if (altitude > 0) {
+            contextBuildings.forEach(b => {
+                const s = calculateBuildingShadow(b, azimuth, altitude);
+                const bHeight = b.height || (b.floors?.reduce((sum, f) => sum + f.height, 0)) || 10;
+                if (s) daylightShadows.push({ shadow: s, casterId: b.id, casterHeight: bHeight });
+            });
+        }
     } else if (mode === 'wind') {
         const currentHour = date.getHours();
         const apiWind = weatherData ? getWindAtHour(weatherData, currentHour) : null;
@@ -1390,6 +1535,11 @@ export async function runWallAnalysis(
             const p1 = coords[i];
             const p2 = coords[i + 1];
 
+            // Calculate Midpoint of the wall for shadow test
+            const midX = (p1[0] + p2[0]) / 2;
+            const midY = (p1[1] + p2[1]) / 2;
+            const wallMidpoint = turf.point([midX, midY]);
+
             // 1. Calculate Normal
             const dx = p2[0] - p1[0];
             const dy = p2[1] - p1[1];
@@ -1409,15 +1559,34 @@ export async function runWallAnalysis(
                     // Dot product
                     const dot = nx * sun.vecX + ny * sun.vecY;
                     if (dot > 0) {
-                        // Face sees sun. 
-                        // Shadows? Raycasting is expensive for every wall.
-                        // For now, assume "self-shadowing" is covered by dot product.
-                        // Context shadowing is too heavy for visual analysis of 1000s of walls in real-time without GPU.
-                        directHours += 1; // Simple hour count if facing sun
+                        // Check if wall midpoint is in shadow at this hour
+                        let inShadow = false;
+                        for (const s of sun.shadows) {
+                            if (s.casterId === building.id) continue;
+                            try {
+                                if (turf.booleanPointInPolygon(wallMidpoint, s.shadow)) {
+                                    // Make sure shadow is tall enough to cover the base of the wall
+                                    // A wall is shaded if the caster is taller than the wall's base height
+                                    if (s.casterHeight > baseHeight) {
+                                        // Reduce direct sun proportionally if it only covers part of the wall
+                                        const shadedHeight = Math.min(height, s.casterHeight - baseHeight);
+                                        const shadedFraction = shadedHeight / Math.max(height, 1);
+                                        // If more than 30% of the wall height is shaded, we count it as shaded for this point
+                                        if (shadedFraction > 0.3) {
+                                            inShadow = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                        
+                        if (!inShadow) {
+                            directHours += dot;
+                        }
                     }
-                    totalWeight++;
+                    totalWeight += Math.max(0, dot);
                 }
-                // Normalize to 12h day
                 if (totalWeight > 0) {
                     value = (directHours / totalWeight) * 12;
                 }
@@ -1425,8 +1594,26 @@ export async function runWallAnalysis(
                 // Instantaneous
                 const dot = nx * sunVecX + ny * sunVecY;
                 const facingFactor = Math.max(0, dot);
+                
+                // Calculate shadow fraction for this wall
+                let wallShadowFraction = 0;
+                for (const s of daylightShadows) {
+                    if (s.casterId === building.id) continue;
+                    try {
+                        if (turf.booleanPointInPolygon(wallMidpoint, s.shadow)) {
+                            if (s.casterHeight > baseHeight) {
+                                const shadedHeight = Math.min(height, s.casterHeight - baseHeight);
+                                const shadedFraction = shadedHeight / Math.max(height, 1);
+                                wallShadowFraction = Math.max(wallShadowFraction, shadedFraction);
+                            }
+                        }
+                    } catch (e) {}
+                }
+                
+                const shadowPenalty = 1 - (wallShadowFraction * 0.85);
+                
                 // Light on vertical surface includes direct (cos) and diffuse (sin)
-                const direct = sunAlt > 0 ? facingFactor * Math.cos(sunAlt) : 0;
+                const direct = sunAlt > 0 ? facingFactor * Math.cos(sunAlt) * shadowPenalty : 0;
                 const diffuse = sunAlt > 0 ? 0.5 * Math.sin(sunAlt) : 0; // Even shaded walls get diffuse
                 value = (direct + diffuse) * 0.04; // Baseline DF ~ 0-4%
             } else if (mode === 'wind') {
@@ -1455,9 +1642,25 @@ export async function runWallAnalysis(
                 const sVecY = Math.cos(sunAz);
                 const dot = nx * sVecX + ny * sVecY;
                 
+                // Calculate shadow fraction for this wall
+                let wallShadowFraction = 0;
+                for (const s of daylightShadows) {
+                    if (s.casterId === building.id) continue;
+                    try {
+                        if (turf.booleanPointInPolygon(wallMidpoint, s.shadow)) {
+                            if (s.casterHeight > baseHeight) {
+                                const shadedHeight = Math.min(height, s.casterHeight - baseHeight);
+                                const shadedFraction = shadedHeight / Math.max(height, 1);
+                                wallShadowFraction = Math.max(wallShadowFraction, shadedFraction);
+                            }
+                        }
+                    } catch (e) {}
+                }
+                
                 // Direct solar irradiation on a vertical wall scales with cos(altitude)
                 // (Unlike a roof which scales with sin(altitude))
-                const directSolar = Math.max(0, dot) * (sunAltitude > 0 ? Math.cos(sunAltitude) : 0);
+                // Reduce direct solar gain by shadow fraction
+                const directSolar = Math.max(0, dot) * (sunAltitude > 0 ? Math.cos(sunAltitude) : 0) * (1 - wallShadowFraction);
                 
                 // EUI contribution per face: more solar gain = more cooling need in hot, less heating in cold
                 const climate = getClimateZone(lat);

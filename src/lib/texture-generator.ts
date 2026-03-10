@@ -13,7 +13,7 @@ function hexToRgba(hex: string, alpha: number): string {
  * to look consistent from all angles including top-down/roof view.
  * Columns and strip width vary per type for visual differentiation.
  */
-export function generateBuildingTexture(type: BuildingTextureType, baseColor: string, opacity: number = 1.0, isSelected: boolean = false): ImageData | null {
+export function generateBuildingTexture(type: BuildingTextureType, baseColor: string, opacity: number = 1.0, isSelected: boolean = false, isAnalysis: boolean = false): ImageData | null {
     const canvas = document.createElement('canvas');
     const size = 128;
     canvas.width = size;
@@ -56,7 +56,7 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
             cols = 4; mullionWidth = 2; glassTintAlpha = 0.40; centerDividerWidth = 0;
     }
 
-    const finalGlassAlpha = glassTintAlpha * opacity;
+    const finalGlassAlpha = isAnalysis ? 0 : (glassTintAlpha * opacity);
     const finalMullionAlpha = 0.55 * opacity;
     const finalCenterAlpha = 0.30 * opacity;
 
@@ -71,8 +71,14 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
     
     ctx.globalAlpha = 1.0;
 
-    ctx.fillStyle = `rgba(200, 240, 255, ${finalGlassAlpha})`;
-    ctx.fillRect(0, 0, size, size);
+    if (!isAnalysis) {
+        ctx.fillStyle = `rgba(200, 240, 255, ${finalGlassAlpha})`;
+        ctx.fillRect(0, 0, size, size);
+    } else {
+        // Lighten analysis colors slightly for texture
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.1 * opacity})`;
+        ctx.fillRect(0, 0, size, size);
+    }
 
     const colW = size / cols;
     ctx.fillStyle = `rgba(255, 255, 255, ${finalMullionAlpha})`;
@@ -81,7 +87,7 @@ export function generateBuildingTexture(type: BuildingTextureType, baseColor: st
         ctx.fillRect(x - Math.floor(mullionWidth / 2), 0, mullionWidth, size);
     }
 
-    if (centerDividerWidth > 0) {
+    if (centerDividerWidth > 0 && !isAnalysis) {
         ctx.fillStyle = `rgba(200, 200, 200, ${finalCenterAlpha})`;
         ctx.fillRect(size / 2 - Math.floor(centerDividerWidth / 2), 0, centerDividerWidth, size);
     }

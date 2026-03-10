@@ -1286,6 +1286,10 @@ export function MapEditor({
     const wallSourceId = 'analysis-walls-source';
     if (map.current.getLayer(wallLayerId)) map.current.removeLayer(wallLayerId);
 
+    const roofLayerId = 'analysis-roofs';
+    const roofSourceId = 'analysis-roofs-source';
+    if (map.current.getLayer(roofLayerId)) map.current.removeLayer(roofLayerId);
+
     const windDirId = 'wind-direction';
     if (map.current.getLayer(windDirId)) map.current.removeLayer(windDirId);
 
@@ -1296,6 +1300,7 @@ export function MapEditor({
 
     if (map.current.getSource(heatmapId)) map.current.removeSource(heatmapId);
     if (map.current.getSource(wallSourceId)) map.current.removeSource(wallSourceId);
+    if (map.current.getSource(roofSourceId)) map.current.removeSource(roofSourceId);
     if (map.current.getSource(windDirId)) map.current.removeSource(windDirId);
 
     if (window.tb && window.tb.world) {
@@ -1336,6 +1341,7 @@ useEffect(() => {
 
   const resetBuildingColors = (forcedColor?: string) => {
     if (!map.current) return;
+    const { uiState } = getStoreState();
 
     plots.forEach(plot => {
       plot.buildings.forEach(building => {
@@ -1345,10 +1351,38 @@ useEffect(() => {
           const layerId = `building-floor-fill-${floor.id}-${building.id}`;
 
           if (map.current!.getLayer(layerId)) {
-            try {
-              map.current!.setPaintProperty(layerId, 'fill-extrusion-color', colorToApply);
-            } catch (e) {
-              console.warn(`[MAP EDITOR] Failed to reset color for ${layerId}`, e);
+            if (forcedColor) {
+              try {
+                map.current!.setPaintProperty(layerId, 'fill-extrusion-pattern', undefined as any);
+              } catch (e) {
+                try { map.current!.setPaintProperty(layerId, 'fill-extrusion-pattern', ''); } catch (e2) {}
+              }
+              try {
+                map.current!.setPaintProperty(layerId, 'fill-extrusion-color', colorToApply);
+              } catch (e) {}
+            } else {
+              const isBasementOrParking = (floor.level !== undefined && floor.level < 0) || (floor.type || '').toLowerCase() === 'parking';
+              const usePattern = !uiState.ghostMode && !isBasementOrParking && analysisMode === 'none';
+              if (usePattern) {
+                const floorUse = floor.intendedUse || building.intendedUse;
+                const userOpacity = building.opacity !== undefined ? building.opacity : 1.0;
+                const opacityStr = userOpacity.toFixed(2);
+                const isBuildingSelected = showSelectionHighlight && selectedObjectId && selectedObjectId.id === building.id && selectedObjectId.type === 'Building';
+                const patternName = `texture-${floorUse}-${opacityStr}${isBuildingSelected ? '-selected' : ''}`;
+                try {
+                  map.current!.setPaintProperty(layerId, 'fill-extrusion-pattern', patternName);
+                  map.current!.setPaintProperty(layerId, 'fill-extrusion-color', '#ffffff');
+                } catch (e) {}
+              } else {
+                try {
+                  map.current!.setPaintProperty(layerId, 'fill-extrusion-pattern', undefined as any);
+                } catch (e) {
+                  try { map.current!.setPaintProperty(layerId, 'fill-extrusion-pattern', ''); } catch (e2) {}
+                }
+                try {
+                  map.current!.setPaintProperty(layerId, 'fill-extrusion-color', colorToApply);
+                } catch (e) {}
+              }
             }
           }
         });
@@ -1462,24 +1496,61 @@ useEffect(() => {
             console.log(`[MAP EDITOR] ${analysisMode.toUpperCase()} Stats:`, stats);
           }
 
-          // ── Apply analysis colors to building floor layers ──
+          // ── Apply analysis colors to building roofs via overlay layer ──
+          // We create a separate overlay layer (like analysis-walls) because
+          // Mapbox GL JS cannot clear fill-extrusion-pattern once set.
           if (buildingResults.size > 0 && map.current) {
+            const roofFeatures: any[] = [];
+            const ROOF_THICKNESS = 0.3; // thin cap on top of building
+
             buildingResults.forEach((result: any, buildingId: string) => {
               const building = allBuildings.find(b => b.id === buildingId);
               if (!building) return;
               
-              const analysisColor = result.color || '#eeeeee';
-              building.floors.forEach((floor: any) => {
-                const layerId = `building-floor-fill-${floor.id}-${building.id}`;
-                if (map.current!.getLayer(layerId)) {
-                  try {
-                    map.current!.setPaintProperty(layerId, 'fill-extrusion-color', analysisColor);
-                  } catch (e) {
-                  }
+              const analysisColor = result.roofColor || result.color || '#eeeeee';
+              const buildingHeight = building.height || (building.floors?.reduce((s: number, f: any) => s + f.height, 0)) || 10;
+              const baseHeight = building.baseHeight || 0;
+              const roofTop = baseHeight + buildingHeight;
+              const roofBase = roofTop - ROOF_THICKNESS;
+
+              // Create a thin extrusion at the roof level with analysis color
+              roofFeatures.push({
+                type: 'Feature',
+                geometry: building.geometry.geometry || building.geometry,
+                properties: {
+                  color: analysisColor,
+                  height: roofTop + 0.1, // Slightly above to avoid z-fighting
+                  base_height: roofBase,
+                  buildingId: buildingId
                 }
               });
             });
-            console.log(`[MAP EDITOR] Applied analysis colors to ${buildingResults.size} buildings`);
+
+            const roofLayerId = 'analysis-roofs';
+            const roofSourceId = 'analysis-roofs-source';
+            const roofCollection = { type: 'FeatureCollection', features: roofFeatures };
+
+            if (map.current.getSource(roofSourceId)) {
+              (map.current.getSource(roofSourceId) as mapboxgl.GeoJSONSource).setData(roofCollection as any);
+            } else {
+              map.current.addSource(roofSourceId, {
+                type: 'geojson',
+                data: roofCollection as any
+              });
+              map.current.addLayer({
+                id: roofLayerId,
+                type: 'fill-extrusion',
+                source: roofSourceId,
+                paint: {
+                  'fill-extrusion-color': ['get', 'color'],
+                  'fill-extrusion-height': ['get', 'height'],
+                  'fill-extrusion-base': ['get', 'base_height'],
+                  'fill-extrusion-opacity': 0.9
+                }
+              }, LABELS_LAYER_ID);
+            }
+
+            console.log(`[MAP EDITOR] Applied analysis roof overlay to ${roofFeatures.length} buildings`);
           }
 
           // ── Apply colors to ground heatmap ──
@@ -2764,7 +2835,7 @@ useEffect(() => {
             else mapInstance.addSource(floorLayerId, { type: 'geojson', data: floorGeo });
 
             if (!mapInstance.getLayer(floorLayerId)) {
-              const usePattern = !uiState.ghostMode && !isBasementOrParking;
+              const usePattern = !uiState.ghostMode && !isBasementOrParking && analysisMode === 'none';
               let patternName = `texture-${floorUse}`;
 
               if (usePattern) {
@@ -2801,7 +2872,7 @@ useEffect(() => {
                 }
               }, LABELS_LAYER_ID);
             } else {
-              const usePattern = !uiState.ghostMode && !isBasementOrParking;
+              const usePattern = !uiState.ghostMode && !isBasementOrParking && analysisMode === 'none';
               let patternName = `texture-${floorUse}`;
 
               if (usePattern) {
@@ -2818,12 +2889,20 @@ useEffect(() => {
               mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-opacity', opacity);
               // Update Pattern & Color
               if (usePattern) {
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', patternName);
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', '#ffffff');
+                try {
+                  mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', patternName);
+                  mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', '#ffffff');
+                } catch (e) {}
               } else {
                 // Use undefined to unset property in strict Mapbox TS/JS
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', undefined); // Clear pattern
-                mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', isBuildingSelected ? selectionColor : ['get', 'color']);
+                try {
+                  mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', undefined as any); // Clear pattern
+                } catch (e) {
+                  try { mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-pattern', ''); } catch (e2) {}
+                }
+                try {
+                  mapInstance.setPaintProperty(floorLayerId, 'fill-extrusion-color', isBuildingSelected ? selectionColor : ['get', 'color']);
+                } catch (e) {}
               }
             }
 

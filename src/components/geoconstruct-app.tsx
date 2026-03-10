@@ -154,7 +154,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
       variant="secondary"
       size="icon"
       onClick={() => window.dispatchEvent(new CustomEvent('locateUser'))}
-      className={cn("absolute bottom-4 right-4 z-10 rounded-full h-12 w-12 shadow-lg transition-all duration-300",
+      className={cn("absolute bottom-4 right-4 z-10 rounded-full h-12 w-12 shadow-lg transition-all duration-300 print:hidden",
         uiState.isFeasibilityPanelOpen ? "scrollbar-hide translate-y-20 opacity-0 pointer-events-none" : "translate-y-0 opacity-100")}
     >
       <MapPin className="h-6 w-6" />
@@ -176,7 +176,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   )
 
   const header = (
-    <div className="p-2 border-b border-border flex items-center justify-between gap-4 bg-background/80 backdrop-blur-sm z-10">
+    <div className="p-2 border-b border-border flex items-center justify-between gap-4 bg-background/80 backdrop-blur-sm z-10 print:hidden">
       <div className="flex items-center gap-4 flex-1">
         <Button variant="outline" size="icon" asChild>
           <Link href="/"><ArrowLeft className="h-4 w-4" /></Link>
@@ -261,9 +261,9 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="h-dvh w-screen bg-background text-foreground flex flex-col overflow-hidden">
+    <div className="h-dvh print:h-auto print:block w-screen bg-background text-foreground flex flex-col overflow-hidden print:overflow-visible">
       {header}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative print:static print:h-auto print:overflow-visible">
         {showLoader && (
           <div className="absolute inset-0 flex items-center justify-center bg-background z-50">
             <div className="flex items-center gap-2">
@@ -272,7 +272,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
             </div>
           </div>
         )}
-        <div className={cn('h-full w-full', showLoader && 'opacity-0')}>
+        <div className={cn('h-full print:h-auto print:overflow-visible w-full', showLoader && 'opacity-0')}>
           <MapEditor
             activeGreenRegulations={greenRegulations}
             onMapReady={() => setIsMapReady(true)}
@@ -290,7 +290,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
           <DrawingToolbar />
 
           {/*Sidebar */}
-          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 pointer-events-none group" style={{ bottom: kpiBottom, width: sidebarWidth }}>
+          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 pointer-events-none group print:hidden" style={{ bottom: kpiBottom, width: sidebarWidth }}>
             <div className="pointer-events-auto shrink-0 w-full">
               <ProjectInfoPanel />
             </div>
@@ -370,7 +370,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
             </div>
           </div>
 
-          <div className={cn("absolute top-4 right-4 w-96 z-20 transition-transform duration-300 ease-in-out", 
+          <div className={cn("absolute top-4 right-4 w-96 z-20 transition-transform duration-300 ease-in-out print:hidden", 
             isSimulatorEnabled && analysisMode !== 'none' && isDataPanelOpen ? "translate-x-0" : "translate-x-[calc(100%+2rem)]")}>
             <SimulationDataPanel
               analysisMode={analysisMode}
@@ -380,7 +380,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
             />
           </div>
 
-          <div className={cn("absolute top-4 right-4 z-20 transition-transform duration-300 ease-in-out flex flex-col items-end pointer-events-none", 
+          <div className={cn("absolute top-4 right-4 z-20 transition-transform duration-300 ease-in-out flex flex-col items-end pointer-events-none print:hidden", 
             selectedObjectId && !isSimulatorEnabled ? "translate-x-0" : "translate-x-[calc(100%+2rem)]")} 
             style={{ 
               bottom: kpiBottom,
@@ -402,7 +402,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
 
           {selectedObjectId && <FeasibilityDashboard />}
 
-          <div className={cn("fixed top-[65px] right-0 h-[calc(100vh-65px)] bg-background/80 backdrop-blur-sm border-l border-border z-50 transition-transform duration-300 ease-in-out", isChatOpen ? "translate-x-0" : "translate-x-full")}>
+          <div className={cn("fixed top-[65px] right-0 h-[calc(100vh-65px)] bg-background/80 backdrop-blur-sm border-l border-border z-50 transition-transform duration-300 ease-in-out print:hidden", isChatOpen ? "translate-x-0" : "translate-x-full")}>
             <div className="h-full w-[440px] relative">
               {isChatOpen && <ChatPanel />}
             </div>

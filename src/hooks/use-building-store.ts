@@ -395,6 +395,8 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
         if (locationName) {
             const regulationsRef = collection(db, 'regulations');
             const q = query(regulationsRef, where('location', '==', locationName));
+            
+            console.log(`[Store] Fetching local regulations for ${locationName}...`);
             const querySnapshot = await getDocs(q);
             if (!querySnapshot.empty) {
                 fetchedRegulations = querySnapshot.docs.map(doc => doc.data() as RegulationData);
@@ -416,7 +418,10 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
 
     // Determine regulation based on Project settings
     const activeProject = useBuildingStore.getState().projects.find(p => p.id === useBuildingStore.getState().activeProjectId);
-    const intendedUse = activeProject?.intendedUse || 'Residential';
+    let intendedUse = activeProject?.intendedUse || 'Residential';
+    if (intendedUse.toLowerCase() === 'mixed use') intendedUse = 'Mixed-Use';
+    else if (intendedUse.toLowerCase() === 'mixed-use') intendedUse = 'Mixed Use';
+
     const projectRegulationId = activeProject?.regulationId;
 
     let defaultRegulation: RegulationData | undefined;
@@ -433,6 +438,39 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
 
         if (!defaultRegulation) {
             defaultRegulation = fetchedRegulations.find(r => r.type && r.type.toLowerCase().includes(intendedUse.toLowerCase()));
+        }
+    }
+
+    // 3. Fallback: National (NBC) if entirely missing or no matching use case found locally
+    if (!defaultRegulation) {
+        console.log(`[Store] No matching local regulations found for intended use: ${intendedUse}, fetching National (NBC) fallback...`);
+        try {
+            const regulationsRef = collection(db, 'regulations');
+            const nbcQ = query(regulationsRef, where('location', '==', 'National (NBC)'));
+            const nbcSnapshot = await getDocs(nbcQ);
+            
+            if (!nbcSnapshot.empty) {
+                const nbcRegulations = nbcSnapshot.docs.map(doc => doc.data() as RegulationData);
+                // Try exactly same intended use matching against NBC pool
+                defaultRegulation = nbcRegulations.find(r => r.type && r.type.toLowerCase() === intendedUse.toLowerCase());
+                if (!defaultRegulation) {
+                    defaultRegulation = nbcRegulations.find(r => r.type && r.type.toLowerCase().replace('-', ' ') === intendedUse.toLowerCase().replace('-', ' '));
+                }
+                if (!defaultRegulation) {
+                    defaultRegulation = nbcRegulations.find(r => r.type && r.type.toLowerCase().includes(intendedUse.toLowerCase().replace('-', ' ')));
+                }
+                
+                // If we found a match from NBC, ensure it's added to available regulations so UI can see it
+                if (defaultRegulation) {
+                    console.log(`[Store] Successfully applied NBC Fallback: ${defaultRegulation.type}`);
+                    // Ensure the NBC regulation is in the available loop for the dropdown UI
+                    if (!fetchedRegulations.find(r => r.id === defaultRegulation!.id)) {
+                        fetchedRegulations.push(defaultRegulation);
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[Store] Failed to fetch NBC fallback regulations', e);
         }
     }
 
@@ -496,7 +534,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         width: 12,
         spacing: 15,
         orientation: 0,
-        setback: 4,
+        setback: 0,
         selectedUtilities: ['Roads', 'Water', 'Electrical', 'HVAC', 'STP', 'WTP', 'Solar PV', 'EV Charging'],
     },
 
@@ -882,7 +920,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             const userMaxCoverage = params.siteCoverage !== undefined ? params.siteCoverage * 100 : (plotStub.regulation?.geometry?.max_ground_coverage?.value || 50);
             console.log(`[SiteUtil DEBUG] params.siteCoverage=${params.siteCoverage}, computed userMaxCoverage=${userMaxCoverage}%, regulation=${plotStub.regulation?.geometry?.max_ground_coverage?.value}%`);
 
-            set({ isGeneratingScenarios: true });
+            // Persist the full generation params so the dashboard KPI can read the actual values
+            set({ isGeneratingScenarios: true, generationParams: { ...params } });
 
             // Helper to generate buildings for a scenario
             const createScenario = (name: string, p: Omit<AlgoParams, 'width'> & { width?: number; maxBuildingHeight?: number; far?: number; maxCoverage?: number; overrideTypologies?: string[]; seed?: number }): { plots: Plot[] } => {
@@ -3623,6 +3662,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         }
                         draft.plots = project.plots || [];
 
+                        // Restore generation parameters specifically
+                        if (project.generationParams) {
+                            draft.generationParams = project.generationParams;
+                        }
+
                         // Load design options if available
                         if (project.designOptions) {
                             if (typeof project.designOptions === 'string') {
@@ -3680,6 +3724,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 ...projectToSave,
                 plots: prepareForFirestore(plots), // Convert geometries to strings
                 designOptions: JSON.stringify(designOptions), // Persist saved scenarios
+                generationParams: JSON.parse(JSON.stringify(get().generationParams)), // Persist setbacks
                 lastModified: new Date().toISOString(),
             }
 

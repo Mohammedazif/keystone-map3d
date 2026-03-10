@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
-import { useBuildingStore, useSelectedBuilding, useProjectData } from '@/hooks/use-building-store';
+import { useBuildingStore, useSelectedBuilding, useProjectData, useSelectedPlot } from '@/hooks/use-building-store';
 import { AreaChart, Scale, Building, Car, CheckCircle, AlertTriangle, ShieldCheck, DollarSign, LocateFixed, ChevronUp, ChevronDown, Compass, DoorOpen, Clock, TrendingUp, BarChart2, Zap, Settings2, Maximize2, Minimize2, Calculator } from 'lucide-react';
 import { useDevelopmentMetrics } from '@/hooks/use-development-metrics';
 import { useRegulations } from '@/hooks/use-regulations';
@@ -25,6 +25,7 @@ import {
 } from './simulation-charts';
 import { generateDeliveryPhases } from '@/lib/cost-time-simulation';
 import { ProjectEstimates } from '@/lib/types';
+import { FeasibilityReport } from './feasibility-report';
 
 function MetricsTab() {
     const activeProject = useProjectData();
@@ -1439,6 +1440,7 @@ function FeasibilityTab() {
     const toggleVastuCompass = useBuildingStore(state => state.actions.toggleVastuCompass);
     const plots = useBuildingStore(state => state.plots);
     const actions = useBuildingStore(state => state.actions);
+    const generationParams = useBuildingStore(state => state.generationParams);
     const [isGeneratingGates, setIsGeneratingGates] = useState(false);
     const [gatesGenerated, setGatesGenerated] = useState(false);
 
@@ -1567,6 +1569,34 @@ function FeasibilityTab() {
                     <div className="font-bold text-xl text-slate-500">{(metrics.roadArea / Math.max(1, metrics.totalPlotArea) * 100).toFixed(1)}%</div>
                 </div>
             </div>
+
+            {/* Setbacks Used */}
+            {generationParams?.setback != null && (
+                <div className="rounded-lg border p-3 bg-secondary/20 border-border/30">
+                    <div className="flex items-center gap-2 mb-2">
+                        <Maximize2 className="h-4 w-4 text-blue-400" />
+                        <span className="text-sm font-semibold">Site Setbacks (Applied)</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 text-center">
+                        <div>
+                            <div className="text-[10px] text-muted-foreground uppercase">Front</div>
+                            <div className="font-bold text-lg">{generationParams.frontSetback ?? generationParams.setback}m</div>
+                        </div>
+                        <div>
+                            <div className="text-[10px] text-muted-foreground uppercase">Rear</div>
+                            <div className="font-bold text-lg">{generationParams.rearSetback ?? generationParams.setback}m</div>
+                        </div>
+                        <div>
+                            <div className="text-[10px] text-muted-foreground uppercase">Left</div>
+                            <div className="font-bold text-lg">{generationParams.sideSetback ?? generationParams.setback}m</div>
+                        </div>
+                        <div>
+                            <div className="text-[10px] text-muted-foreground uppercase">Right</div>
+                            <div className="font-bold text-lg">{generationParams.sideSetback ?? generationParams.setback}m</div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="space-y-3">
                 {complianceCards.map((card, idx) => (
@@ -1733,13 +1763,15 @@ function FeasibilityTab() {
 
 
 export function FeasibilityDashboard() {
-    const plots = useBuildingStore(state => state.plots);
-    const activeProject = useBuildingStore(state => state.projects.find(p => p.id === state.activeProjectId));
-    const uiState = useBuildingStore(state => state.uiState);
-    const setOpen = useBuildingStore(state => state.actions.setFeasibilityPanelOpen);
-
-    const isOpen = uiState.isFeasibilityPanelOpen ?? true;
+    const { uiState, projects, activeProjectId } = useBuildingStore();
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const isOpen = uiState.isFeasibilityPanelOpen ?? true;
+    const plots = useBuildingStore(state => state.plots);
+    const selectedPlot = useSelectedPlot();
+    const activeProject = projects.find(p => p.id === activeProjectId);
+    const setOpen = useBuildingStore(state => state.actions.setFeasibilityPanelOpen);
+    const generationParams = useBuildingStore(state => state.generationParams);
+
 
     const activeProjectData = useProjectData();
     const metricsForSim = useDevelopmentMetrics(activeProjectData);
@@ -1790,7 +1822,7 @@ export function FeasibilityDashboard() {
     if (plots.length === 0) {
         return (
             <div className={cn(
-                "absolute bottom-0 left-0 right-0 z-40 overflow-hidden transition-all duration-300 ease-in-out",
+                "absolute bottom-0 left-0 right-0 z-40 overflow-hidden print:overflow-visible transition-all duration-300 ease-in-out",
                 isOpen ? "h-[150px]" : "h-[50px] hover:h-[60px]"
             )}>
                 <Card className="bg-background/95 backdrop-blur-md border border-border shadow-2xl w-full h-full rounded-none border-x-0 border-b-0 flex flex-col">
@@ -1819,13 +1851,13 @@ export function FeasibilityDashboard() {
 
     return (
         <div className={cn(
-            "overflow-hidden transition-all duration-300 ease-in-out",
+            "overflow-hidden print:overflow-visible print:h-auto print:static transition-all duration-300 ease-in-out",
             isFullscreen && isOpen
                 ? "fixed inset-0 top-[64px] z-[60]"
                 : "absolute bottom-0 left-0 right-0 z-40",
             !isFullscreen && (isOpen ? "h-[45vh]" : "h-[50px] hover:h-[60px]")
         )}>
-            <Card className={`${cardClasses} w-full h-full rounded-none border-x-0 border-b-0 flex flex-col`}>
+            <Card className={`${cardClasses} w-full h-full rounded-none border-x-0 border-b-0 flex flex-col print:hidden`}>
                 <CardHeader className="flex flex-row items-center justify-between p-3 pb-2 h-[50px] shrink-0 border-b border-border/10">
                     <div className="flex items-center gap-2">
                         <CardTitle className="text-sm font-bold">{activeProject.name} Feasibility</CardTitle>
@@ -1834,6 +1866,9 @@ export function FeasibilityDashboard() {
                     <div className="flex items-center gap-1">
                         <Button variant="outline" size="sm" className="h-8 px-2 text-xs" onClick={handleExportData}>
                             Download Data
+                        </Button>
+                        <Button variant="default" size="sm" className="h-8 px-2 text-xs print:hidden" onClick={() => window.print()}>
+                            Export Report (PDF)
                         </Button>
                         {isOpen && (
                             <Button variant="ghost" size="sm" className="h-8 w-8 p-0 hover:bg-muted" onClick={() => setIsFullscreen(!isFullscreen)}>
@@ -1893,6 +1928,13 @@ export function FeasibilityDashboard() {
                     )}
                 </div>
             </Card>
+            
+            {/* Print-only Report Wrapper */}
+            <div className="hidden print:block absolute inset-0 z-[9999] bg-white print:overflow-visible print:h-auto print:static">
+                {activeProject && selectedPlot && (
+                    <FeasibilityReport project={activeProject} plot={selectedPlot} metrics={metricsForSim} estimates={simEstimates} generationParams={generationParams} />
+                )}
+            </div>
         </div>
     );
 }

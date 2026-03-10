@@ -76,7 +76,7 @@ export function DrawingToolbar() {
     const kpiBottom = isFeasibilityPanelOpen ? 'calc(45vh + 8px)' : '58px';
 
     return (
-        <div className="absolute left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 transition-all duration-300" style={{ bottom: kpiBottom }}>
+        <div className="absolute left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 transition-all duration-300 print:hidden" style={{ bottom: kpiBottom }}>
             {drawingState.objectType === 'Road' && drawingState.isDrawing && (
                 <div className="bg-background/90 backdrop-blur-sm p-4 rounded-lg border border-border shadow-lg w-64 animate-in fade-in slide-in-from-bottom-2 flex flex-col gap-3">
                     <div className="flex justify-between items-center">
