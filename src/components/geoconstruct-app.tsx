@@ -6,7 +6,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe } from 'lucide-react';
+import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe, Wand2 } from 'lucide-react';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { LocationConnectivityPanel } from './location-connectivity-panel';
 import { GreenScorecardPanel } from './green-scorecard-panel';
@@ -29,6 +29,7 @@ import { AiScenarioViewerModal } from './ai-scenario-viewer-modal';
 import { MapSearch } from './map-search';
 import { RegulationViewerModal } from './regulation-viewer-modal';
 import { ScenarioSelectorModal } from './scenario-selector-modal';
+import { AiRenderingModal } from './ai-rendering-modal';
 import { SavedScenariosPanel } from './saved-scenarios-panel';
 import { SimulationTab } from './simulation-tab';
 import { SimulationDataPanel } from './simulation-data-panel';
@@ -61,6 +62,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const aiScenarios = useBuildingStore(s => s.aiScenarios);
   const isLoading = useBuildingStore(s => s.isLoading);
   const isSaving = useBuildingStore(s => s.isSaving);
+  const isGeneratingRendering = useBuildingStore(s => s.isGeneratingRendering);
+  const renderingDesignParams = useBuildingStore(s => s.renderingDesignParams);
   const plots = useBuildingStore(s => s.plots);
   const uiState = useBuildingStore(s => s.uiState);
 
@@ -70,9 +73,6 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const project = projects.find(p => p.id === projectId);
 
   const selectedPlot = useSelectedPlot();
-
-  console.log('[GeoConstructApp] Current project:', project);
-  console.log('[GeoConstructApp] Project greenCertification:', project?.greenCertification);
 
   const { regulations: greenRegulations } = useGreenRegulations(project);
 
@@ -195,10 +195,26 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
         <MapSearch />
       </div>
       <div className='flex items-center gap-2 flex-1 justify-end'>
-        <Button variant={activeTab === 'explorer' ? 'secondary' : 'outline'} onClick={() => setActiveTab('explorer')}>
-          <Layers className="mr-2 h-4 w-4" />
-          Explorer
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (!selectedPlot || !renderingDesignParams) return;
+                  actions.generateArchitecturalRendering(selectedPlot.id, renderingDesignParams);
+                }}
+                disabled={isGeneratingRendering || !selectedPlot || !renderingDesignParams}
+              >
+                {isGeneratingRendering ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
+                {isGeneratingRendering ? 'Rendering…' : '3D Render'}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Generate AI 3D architectural rendering</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -424,6 +440,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
       }
       <Toaster />
       <ScenarioSelectorModal />
+      <AiRenderingModal />
     </div >
   );
 }
