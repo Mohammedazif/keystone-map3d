@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { useBuildingStore, useSelectedPlot, useProjectData } from '@/hooks/use-building-store';
+import type { BuildingIntendedUse } from '@/lib/types';
 import { Info, RotateCcw, Box, Layers, Maximize, Move, MousePointer, AlertTriangle, Sparkles, MousePointerClick } from "lucide-react";
 import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
@@ -89,7 +90,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         plots: state.plots,
         generationParams: state.generationParams,
         designOptions: state.designOptions,
-        selectedObjectId: state.selectedObjectId
+        selectedObjectId: state.selectedObjectId,
     }));
 
     const [selectedTypologies, setSelectedTypologies] = useState<BuildingTypology[]>(['point']);
@@ -165,11 +166,29 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         else if (landUse === 'mixed') setProgramMix({ residential: 40, commercial: 40, institutional: 10, hospitality: 10 });
     }, [landUse]);
 
+    // Sync design params to store for the top-level AI rendering button
+    useEffect(() => {
+        actions.setRenderingDesignParams({
+            landUse,
+            unitMix: unitMixConfig,
+            selectedUtilities,
+            hasPodium,
+            podiumFloors,
+            parkingTypes: selectedParking.filter(p => p !== 'none'),
+            typology: selectedTypologies[0] || 'point',
+        });
+    }, [landUse, unitMixConfig, selectedUtilities, hasPodium, podiumFloors, selectedParking, selectedTypologies, actions]);
+
     // Derive the truly selected plot based on user selection
     const selectedPlot = selectedObjectId?.type === 'Plot'
         ? plots.find(p => p.id === selectedObjectId.id)
         : selectedObjectId
             ? plots.find(p => p.buildings.some(b => b.id === selectedObjectId.id) || p.greenAreas.some(g => g.id === selectedObjectId.id) || p.parkingAreas.some(pk => pk.id === selectedObjectId.id))
+            : undefined;
+    const selectedBuilding = selectedObjectId?.type === 'Building'
+        ? selectedPlot?.buildings.find(b => b.id === selectedObjectId.id)
+        : selectedPlot?.buildings.length === 1
+            ? selectedPlot.buildings[0]
             : undefined;
 
     // Apply typology-specific dimensions on initial mount and when landUse/typology changes
@@ -421,6 +440,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
 
                             {/* Regulation / Zone Display (Read-Only) */}
+
                             {selectedPlot.regulation ? (
                                 <div className="space-y-1.5">
                                     <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Regulation / Zone</Label>

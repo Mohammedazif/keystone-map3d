@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { Feature, Polygon, MultiPolygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core } from '@/lib/types';
+import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
@@ -13,6 +13,7 @@ import { toast } from './use-toast';
 import { useMemo } from 'react';
 import { generateSiteLayout } from '@/ai/flows/ai-site-layout-generator';
 import { generateMassingOptions } from '@/ai/flows/ai-massing-generator';
+import { generateArchitecturalRendering } from '@/ai/flows/ai-architectural-rendering';
 import { generateLayoutZones } from '@/ai/flows/ai-zone-generator';
 
 import { generateLamellas, generateTowers, generatePerimeter, AlgoParams, AlgoTypology } from '@/lib/generators/basic-generator';
@@ -66,6 +67,11 @@ interface BuildingState {
     active: boolean;
     isSaving: boolean;
     isGeneratingAi: boolean;
+    isGeneratingRendering: boolean;
+    aiRenderingUrl: string | null;
+    aiRenderingResult: GenerateRenderingOutput | null;
+    aiRenderingMinimized: boolean;
+    renderingDesignParams: DesignParamsForRendering | null;
     isGeneratingAlgo: boolean;
     generationParams: AlgoParams;
 
@@ -104,6 +110,11 @@ interface BuildingState {
         clearAllPlots: () => void;
         runAiLayoutGenerator: (plotId: string, prompt: string) => Promise<void>;
         runAiMassingGenerator: (plotId: string) => Promise<void>;
+        generateArchitecturalRendering: (plotId: string, designParams: { landUse: string; unitMix: Record<string, number>; selectedUtilities: string[]; hasPodium: boolean; podiumFloors: number; parkingTypes: string[]; typology: string }) => Promise<void>;
+        clearAiRendering: () => void;
+        setRenderingDesignParams: (params: DesignParamsForRendering) => void;
+        refreshAiRenderingData: (regenerateImage?: boolean) => Promise<void>;
+        toggleAiRenderingMinimized: (minimized?: boolean) => void;
         applyAiLayout: (plotId: string, scenario: AiScenario | AiMassingScenario) => void;
         clearAiScenarios: () => void;
         setHoveredObject: (id: string | null, type: SelectableObjectType | null) => void;
@@ -494,6 +505,164 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
     }));
 }
 
+// ── Helper: collect rendering project data from current store state ──
+export type DesignParamsForRendering = { landUse: string; unitMix: Record<string, number>; selectedUtilities: string[]; hasPodium: boolean; podiumFloors: number; parkingTypes: string[]; typology: string };
+
+function collectRenderingData(plots: Plot[], selectedPlot: Plot, designParams: DesignParamsForRendering): { buildingsInfo: RenderingBuildingInfo[]; plotInfo: RenderingPlotInfo; summary: RenderingProjectSummary } | null {
+    const allPlots = plots;
+    const allBuildings = allPlots.flatMap(p => p.buildings);
+
+    const buildingsInfo: RenderingBuildingInfo[] = allBuildings.map(b => {
+        let footprintWidth = Math.round(Math.sqrt(b.area));
+        let footprintDepth = footprintWidth;
+        try {
+            if (b.geometry) {
+                const bbox = turf.bbox(b.geometry);
+                const sw = turf.point([bbox[0], bbox[1]]);
+                const ne = turf.point([bbox[2], bbox[3]]);
+                const se = turf.point([bbox[2], bbox[1]]);
+                footprintWidth = Math.round(turf.distance(sw, se, { units: 'meters' })) || footprintWidth;
+                footprintDepth = Math.round(turf.distance(se, ne, { units: 'meters' })) || footprintDepth;
+            }
+        } catch { /* square fallback */ }
+
+        const basementFloors = b.floors ? b.floors.filter(f => f.level !== undefined && f.level < 0).length : 0;
+        const aboveGround = b.numFloors;
+        const totalFlrs = aboveGround + basementFloors;
+        const gfa = b.area * totalFlrs;
+
+        const parkingFlrs = b.floors ? b.floors.filter(f => f.type === 'Parking') : [];
+        const parkingCapacity = parkingFlrs.reduce((sum, f) => sum + (f.parkingCapacity || 0), 0);
+        const evStations = b.floors ? b.floors.reduce((sum, f) => sum + (f.evStations || 0), 0) : 0;
+
+        const coreBreakdown = { lifts: 0, stairs: 0, service: 0, lobbies: 0 };
+        if (b.cores) {
+            b.cores.forEach(c => {
+                if (c.type === 'Lift') coreBreakdown.lifts++;
+                else if (c.type === 'Stair') coreBreakdown.stairs++;
+                else if (c.type === 'Service') coreBreakdown.service++;
+                else if (c.type === 'Lobby') coreBreakdown.lobbies++;
+            });
+        }
+
+        const unitBreakdown: Record<string, number> = {};
+        if (b.units) {
+            b.units.forEach(u => { unitBreakdown[u.type] = (unitBreakdown[u.type] || 0) + 1; });
+        }
+
+        return {
+            name: b.name, height: b.height, numFloors: aboveGround, basementFloors,
+            totalFloors: totalFlrs, floorHeight: b.typicalFloorHeight, footprintArea: b.area,
+            footprintWidth, footprintDepth, intendedUse: b.intendedUse,
+            typology: designParams.typology, gfa, programMix: b.programMix,
+            cores: coreBreakdown, unitCount: b.units?.length || 0, unitBreakdown,
+            parkingFloors: parkingFlrs.length, parkingCapacity, evStations,
+        };
+    });
+
+    if (buildingsInfo.length === 0) return null;
+
+    const totalPlotArea = allPlots.reduce((s, p) => s + p.area, 0);
+    const totalGreenAreas = allPlots.reduce((s, p) => s + p.greenAreas.length, 0);
+    const totalParkingAreas = allPlots.reduce((s, p) => s + p.parkingAreas.length, 0);
+    const allRoadSides = new Set<string>();
+    allPlots.forEach(p => p.roadAccessSides?.forEach(s => allRoadSides.add(s)));
+
+    const plotInfo: RenderingPlotInfo = {
+        plotArea: totalPlotArea, subPlotCount: allPlots.length, setback: selectedPlot.setback,
+        location: (selectedPlot.location as string) || 'unspecified',
+        greenAreas: totalGreenAreas, parkingAreas: totalParkingAreas,
+        far: selectedPlot.far ?? undefined, maxCoverage: selectedPlot.maxCoverage ?? undefined,
+        maxBuildingHeight: selectedPlot.maxBuildingHeight ?? undefined,
+        regulationType: selectedPlot.regulation?.type ?? undefined,
+        roadAccessSides: allRoadSides.size > 0 ? Array.from(allRoadSides) : undefined,
+    };
+
+    const totalGFA = buildingsInfo.reduce((s, b) => s + b.gfa, 0);
+    const totalFootprint = buildingsInfo.reduce((s, b) => s + b.footprintArea, 0);
+    const achievedFAR = totalPlotArea > 0 ? totalGFA / totalPlotArea : 0;
+    const groundCoveragePct = totalPlotArea > 0 ? (totalFootprint / totalPlotArea) * 100 : 0;
+    const sellableArea = totalGFA * 0.70;
+    const openSpace = Math.max(0, totalPlotArea - totalFootprint);
+    const efficiency = totalGFA > 0 ? sellableArea / totalGFA : 0;
+    const totalUnits = buildingsInfo.reduce((s, b) => s + b.unitCount, 0);
+
+    const parkingMap: Record<string, number> = {};
+    allPlots.forEach(pl => {
+        pl.buildings.forEach(b => {
+            if (b.floors) b.floors.filter(f => f.type === 'Parking').forEach(f => {
+                const pType = f.parkingType || 'General';
+                parkingMap[pType] = (parkingMap[pType] || 0) + (f.parkingCapacity || 0);
+            });
+        });
+        pl.parkingAreas.forEach(pa => {
+            const pType = pa.type || 'Surface';
+            parkingMap[pType] = (parkingMap[pType] || 0) + (pa.capacity || 0);
+        });
+    });
+    const parkingSummary = Object.entries(parkingMap).map(([type, count]) => ({ type, count }));
+
+    const utilSet = new Set<string>();
+    allPlots.forEach(pl => {
+        if (pl.utilityAreas) pl.utilityAreas.forEach(u => utilSet.add(u.type));
+        pl.buildings.forEach(b => {
+            if (b.utilities) b.utilities.forEach(u => utilSet.add(u));
+            if (b.internalUtilities) b.internalUtilities.forEach(u => utilSet.add(u.type));
+        });
+    });
+    designParams.selectedUtilities.forEach(u => utilSet.add(u));
+
+    const bylawScore = (() => {
+        let score = 0, total = 0;
+        total++; if (selectedPlot.far && achievedFAR <= selectedPlot.far) score++;
+        total++; if (selectedPlot.maxCoverage && groundCoveragePct <= selectedPlot.maxCoverage * 100) score++;
+        total++; if (selectedPlot.maxBuildingHeight) { if (buildingsInfo.every(b => b.height <= (selectedPlot.maxBuildingHeight || 999))) score++; } else score++;
+        total++; if (selectedPlot.setback > 0) score++;
+        return total > 0 ? Math.round((score / total) * 100) : 0;
+    })();
+
+    const greenScore = (() => {
+        const totalGreen = allPlots.reduce((s, p) => s + p.greenAreas.length, 0);
+        const checks = [
+            totalGreen > 0,
+            totalPlotArea > 0 && openSpace / totalPlotArea >= 0.25,
+            utilSet.has('STP') || utilSet.has(UtilityType.STP),
+            utilSet.has('Solar PV') || utilSet.has(UtilityType.SolarPV),
+            utilSet.has('Rainwater Harvesting') || utilSet.has(UtilityType.RainwaterHarvesting),
+            utilSet.has('EV Station') || utilSet.has(UtilityType.EVStation),
+        ];
+        const passed = checks.filter(Boolean).length;
+        return Math.round((passed / checks.length) * 100);
+    })();
+
+    const plotsWithBuildings = allPlots.filter(p => p.buildings.length > 0).length;
+    const vastuScore = plotsWithBuildings > 0
+        ? Math.round(allPlots.reduce((s, p) => s + (p.developmentStats?.vastuScore?.overall ?? 0), 0) / plotsWithBuildings)
+        : 0;
+
+    const zonesBuildable = allPlots.flatMap(p => (p.buildableAreas || []).map(ba => ({ name: ba.name, area: Math.round(ba.area), intendedUse: ba.intendedUse })));
+    const zonesGreen = allPlots.flatMap(p => (p.greenAreas || []).map(ga => ({ name: ga.name, area: Math.round(ga.area) })));
+    const zonesParking = allPlots.flatMap(p => (p.parkingAreas || []).map(pa => ({ name: pa.name, area: Math.round(pa.area), type: pa.type, capacity: pa.capacity })));
+    const zonesUtility = allPlots.flatMap(p => (p.utilityAreas || []).map(ua => ({ name: ua.name, area: Math.round(ua.area), type: ua.type })));
+
+    const summary: RenderingProjectSummary = {
+        totalBuiltUpArea: totalGFA, achievedFAR: Math.round(achievedFAR * 100) / 100,
+        groundCoveragePct: Math.round(groundCoveragePct * 10) / 10,
+        sellableArea: Math.round(sellableArea), openSpace: Math.round(openSpace),
+        efficiency: Math.round(efficiency * 100) / 100, totalUnits, parkingSummary,
+        utilities: Array.from(utilSet),
+        compliance: { bylaws: bylawScore, green: greenScore, vastu: vastuScore },
+        zones: { buildable: zonesBuildable, green: zonesGreen, parking: zonesParking, utility: zonesUtility },
+        designStrategy: {
+            landUse: designParams.landUse, typology: designParams.typology,
+            unitMix: designParams.unitMix, hasPodium: designParams.hasPodium,
+            podiumFloors: designParams.podiumFloors, parkingTypes: designParams.parkingTypes,
+            selectedUtilities: designParams.selectedUtilities,
+        },
+    };
+
+    return { buildingsInfo, plotInfo, summary };
+}
 
 const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     projects: [],
@@ -527,6 +696,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     active: false,
     isSaving: false,
     isGeneratingAi: false,
+    isGeneratingRendering: false,
+    aiRenderingUrl: null,
+    aiRenderingResult: null,
+    aiRenderingMinimized: false,
+    renderingDesignParams: null,
 
     isGeneratingAlgo: false,
     generationParams: {
@@ -5007,6 +5181,48 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ isGeneratingAi: false });
             }
         },
+        generateArchitecturalRendering: async (plotId: string, designParams: { landUse: string; unitMix: Record<string, number>; selectedUtilities: string[]; hasPodium: boolean; podiumFloors: number; parkingTypes: string[]; typology: string }) => {
+            set({ isGeneratingRendering: true });
+            const { plots } = get();
+            const plot = plots.find(p => p.id === plotId);
+            if (!plot) {
+                toast({ variant: 'destructive', title: 'Error', description: 'No plot selected.' });
+                set({ isGeneratingRendering: false });
+                return;
+            }
+
+            try {
+            const result = collectRenderingData(plots, plot, designParams);
+
+            if (!result) {
+                toast({ variant: 'destructive', title: 'Error', description: 'No buildings on this plot to render.' });
+                set({ isGeneratingRendering: false });
+                return;
+            }
+
+            const { buildingsInfo, plotInfo, summary } = result;
+
+                const res = await generateArchitecturalRendering({
+                    buildings: buildingsInfo,
+                    plot: plotInfo,
+                    design: {
+                        landUse: designParams.landUse,
+                        unitMix: designParams.unitMix,
+                        selectedUtilities: designParams.selectedUtilities,
+                        hasPodium: designParams.hasPodium,
+                        podiumFloors: designParams.podiumFloors,
+                        parkingTypes: designParams.parkingTypes,
+                    },
+                });
+                set({ aiRenderingUrl: res.imageUrl, aiRenderingResult: { ...res, buildings: buildingsInfo, plot: plotInfo, summary } });
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+                toast({ variant: 'destructive', title: 'Rendering Failed', description: msg });
+            } finally {
+                set({ isGeneratingRendering: false });
+            }
+        },
+
         runAiMassingGenerator: async (plotId: string) => {
             set({ isGeneratingAi: true });
             const { plots, selectedObjectId } = get();
@@ -5059,6 +5275,54 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 set({ isGeneratingAi: false });
             }
         },
+        clearAiRendering: () => {
+            set({ aiRenderingUrl: null, aiRenderingResult: null, aiRenderingMinimized: false });
+        },
+        setRenderingDesignParams: (params: DesignParamsForRendering) => {
+            set({ renderingDesignParams: params });
+        },
+        refreshAiRenderingData: async (regenerateImage?: boolean) => {
+            const { aiRenderingResult, plots } = get();
+            if (!aiRenderingResult || !plots.length) return;
+            const ds = aiRenderingResult.summary?.designStrategy;
+            if (!ds) return;
+            const plot = plots[0];
+            const designParams = {
+                landUse: ds.landUse, typology: ds.typology, unitMix: ds.unitMix,
+                hasPodium: ds.hasPodium, podiumFloors: ds.podiumFloors,
+                parkingTypes: ds.parkingTypes, selectedUtilities: ds.selectedUtilities,
+            };
+            const result = collectRenderingData(plots, plot, designParams);
+            if (!result) return;
+
+            if (regenerateImage) {
+                set({ isGeneratingRendering: true });
+                try {
+                    const res = await generateArchitecturalRendering({
+                        buildings: result.buildingsInfo,
+                        plot: result.plotInfo,
+                        design: {
+                            landUse: designParams.landUse, unitMix: designParams.unitMix,
+                            selectedUtilities: designParams.selectedUtilities,
+                            hasPodium: designParams.hasPodium, podiumFloors: designParams.podiumFloors,
+                            parkingTypes: designParams.parkingTypes,
+                        },
+                    });
+                    set({ aiRenderingUrl: res.imageUrl, aiRenderingResult: { ...res, buildings: result.buildingsInfo, plot: result.plotInfo, summary: result.summary } });
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+                    toast({ variant: 'destructive', title: 'Rendering Failed', description: msg });
+                } finally {
+                    set({ isGeneratingRendering: false });
+                }
+            } else {
+                set({ aiRenderingResult: { ...aiRenderingResult, buildings: result.buildingsInfo, plot: result.plotInfo, summary: result.summary } });
+            }
+        },
+        toggleAiRenderingMinimized: (minimized?: boolean) => {
+            set({ aiRenderingMinimized: minimized ?? !get().aiRenderingMinimized });
+        },
+
         applyAiLayout: (plotId, scenario) => {
             const { projects, activeProjectId } = get();
             const project = projects.find(p => p.id === activeProjectId);

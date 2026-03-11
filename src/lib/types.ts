@@ -460,6 +460,99 @@ export const GenerateMassingOutputSchema = z.object({
 });
 export type GenerateMassingOutput = z.infer<typeof GenerateMassingOutputSchema>;
 
+// ─── AI RENDERING SCHEMAS ───────────────────────────────────────────────────
+export interface RenderingBuildingInfo {
+  name: string;
+  height: number;
+  numFloors: number;       // above-ground floors
+  basementFloors: number;  // underground floors (B1, B2…)
+  totalFloors: number;     // above + basement
+  floorHeight: number;
+  footprintArea: number;
+  footprintWidth: number;  // meters — measured from polygon bounding box
+  footprintDepth: number;  // meters — measured from polygon bounding box
+  intendedUse: string;
+  typology: string;
+  gfa: number;             // gross floor area (footprint × totalFloors)
+  programMix?: { residential: number; commercial: number; hospitality: number; institutional: number };
+  cores: { lifts: number; stairs: number; service: number; lobbies: number };
+  unitCount: number;
+  unitBreakdown: Record<string, number>;  // e.g. { '2BHK': 10, '3BHK': 8 }
+  parkingFloors: number;
+  parkingCapacity: number;
+  evStations: number;
+}
+
+export interface RenderingPlotInfo {
+  plotArea: number;
+  subPlotCount: number;    // number of plots/subplots in the project
+  setback: number;
+  location: string;
+  greenAreas: number;
+  parkingAreas: number;
+  far?: number;
+  maxCoverage?: number;
+  maxBuildingHeight?: number;
+  regulationType?: string;
+  roadAccessSides?: string[];
+}
+
+export interface RenderingDesignInfo {
+  landUse: string;
+  unitMix: Record<string, number>;
+  selectedUtilities: string[];
+  hasPodium: boolean;
+  podiumFloors: number;
+  parkingTypes: string[];
+}
+
+export interface RenderingProjectSummary {
+  // KPIs
+  totalBuiltUpArea: number;    // GFA across all buildings
+  achievedFAR: number;
+  groundCoveragePct: number;   // %
+  sellableArea: number;
+  openSpace: number;           // sqm
+  efficiency: number;          // 0–1
+  totalUnits: number;
+  // Parking
+  parkingSummary: { type: string; count: number }[];
+  // Utilities on site
+  utilities: string[];
+  // Compliance
+  compliance: { bylaws: number; green: number; vastu: number }; // 0-100 scores
+  // Custom zones
+  zones: {
+    buildable: { name: string; area: number; intendedUse: string }[];
+    green: { name: string; area: number }[];
+    parking: { name: string; area: number; type?: string; capacity?: number }[];
+    utility: { name: string; area: number; type: string }[];
+  };
+  // Design strategy
+  designStrategy: {
+    landUse: string;
+    typology: string;
+    unitMix: Record<string, number>;
+    hasPodium: boolean;
+    podiumFloors: number;
+    parkingTypes: string[];
+    selectedUtilities: string[];
+  };
+}
+
+export interface GenerateRenderingInput {
+  buildings: RenderingBuildingInfo[];
+  plot: RenderingPlotInfo;
+  design: RenderingDesignInfo;
+}
+
+export interface GenerateRenderingOutput {
+  imageUrl: string;
+  buildings: RenderingBuildingInfo[];
+  plot: RenderingPlotInfo;
+  summary: RenderingProjectSummary;
+}
+
 
 export const AiZoneSchema = z.object({
   name: z.string().describe("A descriptive name for the zone (e.g., 'Residential Block A', 'Community Park', 'Visitor Parking', 'STP Zone')."),
