@@ -109,13 +109,13 @@ export function ScenarioContent() {
         <div className="flex flex-col h-full relative">
 
             {/* Scenarios List */}
-            <ScrollArea className="h-[400px] pr-2 -mr-2">
+            <ScrollArea className="flex-1 overflow-auto pr-2">
                 {designOptions.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-12 text-center border-2 border-dashed rounded-lg bg-muted/20">
-                        <LayoutTemplate className="h-12 w-12 text-muted-foreground/50 mb-2" />
-                        <h4 className="font-semibold text-muted-foreground">No Scenarios Yet</h4>
-                        <p className="text-xs text-muted-foreground px-8 mb-4">
-                            Generate multiple options to compare stats and layouts.
+                    <div className="flex flex-col items-center justify-center py-8 text-center border border-dashed rounded-lg bg-muted/10">
+                        <LayoutTemplate className="h-8 w-8 text-muted-foreground/30 mb-1.5" />
+                        <h4 className="font-medium text-xs text-muted-foreground">No Scenarios</h4>
+                        <p className="text-[11px] text-muted-foreground/60 px-6 mt-0.5">
+                            Generate and save designs to compare them.
                         </p>
                     </div>
                 ) : (
@@ -162,7 +162,7 @@ export function ScenarioContent() {
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
-                                                    className="h-6 w-6 text-muted-foreground hover:text-destructive -mr-2 -mt-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                    className="h-6 w-6 text-muted-foreground hover:text-destructive -mr-2 -mt-2"
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         actions.deleteDesignOption(option.id);
@@ -210,16 +210,7 @@ export function ScenarioContent() {
                 ) : (
                     <div className="flex gap-2">
                         <Button variant="outline" size="sm" className="flex-1" onClick={() => setIsCreating(true)}>
-                            <Plus className="mr-2 h-4 w-4" /> Save Current
-                        </Button>
-                        <Button
-                            /* variant="default" */
-                            className="flex-1 bg-teal-600 hover:bg-teal-700 text-white"
-                            size="sm"
-                            onClick={handleGenerateBatch}
-                            disabled={plots.length === 0}
-                        >
-                            <Sparkles className="mr-2 h-3 w-3" /> Generate 3
+                            <Plus className="mr-2 h-3.5 w-3.5" /> Save Current
                         </Button>
                     </div>
                 )}

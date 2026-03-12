@@ -69,28 +69,28 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
 
         return (
             <div key={obj.id} className={cn("flex items-center justify-between p-2 rounded-md transition-colors", isSelected ? 'bg-primary/20' : 'hover:bg-muted')}>
-                <button onClick={() => actions.selectObject(obj.id, type)} className="flex-1 text-left text-sm flex items-center gap-2">
-                    <Icon className="h-4 w-4 text-primary" />
-                    <span>{obj.name}</span>
+                <button onClick={() => actions.selectObject(obj.id, type)} className="flex-1 text-left text-xs flex items-center gap-1.5 min-w-0">
+                    <Icon className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <span className="truncate">{obj.name}</span>
                     {info}
                 </button>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-0.5 shrink-0">
                     {type === 'UtilityArea' && (
                         <Button
                             size="icon"
                             variant="ghost"
-                            className="h-7 w-7"
+                            className="h-6 w-6"
                             onClick={(e) => {
                                 e.stopPropagation();
                                 actions.toggleObjectVisibility(plot.id, obj.id, type);
                             }}
-                            title={obj.visible !== false ? "Hide Utility" : "Show Utility"}
+                            title={obj.visible !== false ? "Hide" : "Show"}
                         >
-                            {obj.visible !== false ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4 text-muted-foreground" />}
+                            {obj.visible !== false ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3 text-muted-foreground" />}
                         </Button>
                     )}
-                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => actions.deleteObject(plot.id, obj.id, type)}>
-                        <Trash2 className="h-4 w-4 text-destructive" />
+                    <Button size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => actions.deleteObject(plot.id, obj.id, type)}>
+                        <Trash2 className="h-3 w-3" />
                     </Button>
                 </div>
             </div>
@@ -100,20 +100,18 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
     const buildableAreas = plot.buildableAreas || [];
 
     return (
-        <Collapsible open={isOpen} onOpenChange={setIsOpen} className="bg-secondary/30 rounded-lg">
-            <div className={cn("flex items-center justify-between p-2 rounded-t-lg transition-colors", isOpen && "border-b border-border/50", isPlotSelected ? 'bg-primary/20' : 'hover:bg-muted/50')}>
-                <div className='flex-1 text-left flex items-center gap-2'>
-                    <CollapsibleTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-6 w-6">
-                            {isOpen ? <ChevronDown className='h-4 w-4' /> : <ChevronRight className='h-4 w-4' />}
-                        </Button>
-                    </CollapsibleTrigger>
-                    <button onClick={() => actions.selectObject(plot.id, 'Plot')} className="flex-1 text-left">
-                        <span className='font-medium text-sm'>{plot.name}</span>
-                    </button>
-                </div>
-                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => actions.deletePlot(plot.id)}>
-                    <Trash2 className="h-4 w-4 text-destructive" />
+        <Collapsible open={isOpen} onOpenChange={setIsOpen} className="bg-secondary/20 rounded-lg">
+            <div className={cn("flex items-center gap-1 p-1.5 rounded-t-lg transition-colors", isOpen && "border-b border-border/30", isPlotSelected ? 'bg-primary/15' : 'hover:bg-muted/50')}>
+                <CollapsibleTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0">
+                        {isOpen ? <ChevronDown className='h-3 w-3' /> : <ChevronRight className='h-3 w-3' />}
+                    </Button>
+                </CollapsibleTrigger>
+                <button onClick={() => actions.selectObject(plot.id, 'Plot')} className="flex-1 text-left min-w-0">
+                    <span className='font-medium text-xs truncate block'>{plot.name}</span>
+                </button>
+                <Button size="icon" variant="ghost" className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive" onClick={() => actions.deletePlot(plot.id)}>
+                    <Trash2 className="h-3 w-3" />
                 </Button>
             </div>
             <CollapsibleContent>
@@ -168,12 +166,14 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                                     actions.toggleComponentVisibility(toggleKey!);
                                                 }}
                                             >
-                                                <IconComp className={`h-3 w-3 mr-2 ${iconColor}`} />
-                                                <span className="flex-1">{util.name}</span>
-                                                {isVisible ?
-                                                    <Eye className="h-3 w-3 ml-2" /> :
-                                                    <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />
-                                                }
+                                <IconComp className={`h-3.5 w-3.5 mr-1.5 shrink-0 ${iconColor}`} />
+                                                <span className="flex-1 truncate">{util.name}</span>
+                                                <span className="shrink-0 ml-1">
+                                                    {isVisible ?
+                                                        <Eye className="h-3 w-3 text-primary" /> :
+                                                        <EyeOff className="h-3 w-3 text-muted-foreground/40" />
+                                                    }
+                                                </span>
                                             </div>
                                         );
                                     })}
@@ -200,11 +200,13 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                                 }}
                                                 title={componentVisibility.basements ? "Hide Basements" : "Show Basements"}
                                             >
-                                                <ArrowDownToLine className="h-3 w-3 mr-2 text-slate-500" />
-                                                <span className="flex-1">
-                                                    {floor.parkingType || 'Basement'} Parking ({floor.parkingCapacity || 0})
+                                            <ArrowDownToLine className="h-3.5 w-3.5 mr-1.5 text-slate-500 shrink-0" />
+                                                <span className="flex-1 truncate">
+                                                    {floor.parkingType || 'Basement'} ({floor.parkingCapacity || 0})
                                                 </span>
-                                                {componentVisibility.basements ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
+                                                <span className="shrink-0 ml-1">
+                                                    {componentVisibility.basements ? <Eye className="h-3 w-3 text-primary" /> : <EyeOff className="h-3 w-3 text-muted-foreground/40" />}
+                                                </span>
                                             </div>
                                         ))
                                     }
@@ -227,9 +229,11 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                         }}
                                         title={componentVisibility.cores ? "Hide Cores" : "Show Only Cores"}
                                     >
-                                        <Box className="h-3 w-3 mr-2" style={{ color: '#9370DB' }} />
-                                        <span className="flex-1">Cores ({b.cores.length})</span>
-                                        {componentVisibility.cores ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
+                                        <Box className="h-3.5 w-3.5 mr-1.5 shrink-0" style={{ color: '#9370DB' }} />
+                                        <span className="flex-1 truncate">Cores ({b.cores.length})</span>
+                                        <span className="shrink-0 ml-1">
+                                            {componentVisibility.cores ? <Eye className="h-3 w-3 text-primary" /> : <EyeOff className="h-3 w-3 text-muted-foreground/40" />}
+                                        </span>
                                     </div>
                                 </div>
                             )}
@@ -246,9 +250,11 @@ function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
                                         onClick={(e) => { e.stopPropagation(); actions.toggleComponentVisibility('units'); }}
                                         title={componentVisibility.units ? "Hide Units" : "Show Only Units"}
                                     >
-                                        <Grid className="h-3 w-3 mr-2 text-blue-400" />
-                                        <span className="flex-1">Units ({b.units.length})</span>
-                                        {componentVisibility.units ? <Eye className="h-3 w-3 ml-2" /> : <EyeOff className="h-3 w-3 ml-2 opacity-0 group-hover:opacity-50" />}
+                                        <Grid className="h-3.5 w-3.5 mr-1.5 text-blue-400 shrink-0" />
+                                        <span className="flex-1 truncate">Units ({b.units.length})</span>
+                                        <span className="shrink-0 ml-1">
+                                            {componentVisibility.units ? <Eye className="h-3 w-3 text-primary" /> : <EyeOff className="h-3 w-3 text-muted-foreground/40" />}
+                                        </span>
                                     </div>
                                 </div>
                             )}
@@ -290,34 +296,34 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
     return (
         <div className={cn('w-full flex-1 min-h-0 flex flex-col', className)}>
             <Container className={cn("flex flex-col h-full", embedded ? "" : "bg-background/80 backdrop-blur-sm border-t-0 rounded-t-none rounded-b-xl shadow-none")}>
-                <div className="p-4 border-b shrink-0">
-                    <div className="flex flex-row items-center justify-between mb-0">
-                        <h2 className="text-lg font-semibold flex items-center gap-2">
-                            <Layers className="h-5 w-5" />
-                            Project Explorer
+                <div className="px-3 py-2 border-b shrink-0">
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-xs font-semibold flex items-center gap-1.5">
+                            <Layers className="h-3.5 w-3.5" />
+                            Explorer
                         </h2>
                         <Button
                             variant="ghost"
                             size="icon"
-                            className={cn("h-7 w-7", uiState.ghostMode && "text-primary bg-primary/10")}
+                            className={cn("h-6 w-6", uiState.ghostMode && "text-primary bg-primary/10")}
                             onClick={() => actions.toggleGhostMode()}
-                            title="Toggle Ghost Mode (View Internals)"
+                            title="Ghost Mode"
                         >
-                            <Ghost className="h-4 w-4" />
+                            <Ghost className="h-3.5 w-3.5" />
                         </Button>
                     </div>
                 </div>
                 <div className={cn("flex-1 overflow-hidden", embedded ? "" : "p-0")}>
                     <ScrollArea className="h-full">
-                        <div className="space-y-2 p-3">
+                        <div className="space-y-1.5 p-2">
                             {plots.length > 0 ? (
                                 plots.map(plot => <PlotItem key={plot.id} plot={plot} />)
                             ) : (
-                                <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground gap-2">
-                                    <LandPlot className="h-10 w-10 opacity-20" />
-                                    <div className="text-xs max-w-[200px]">
-                                        <p className="font-medium">No plots defined</p>
-                                        <p className="opacity-70">Use the drawing tools to outline your site boundary and begin planning.</p>
+                                <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground gap-1.5">
+                                    <LandPlot className="h-8 w-8 opacity-15" />
+                                    <div className="text-[11px] max-w-[180px]">
+                                        <p className="font-medium">No plots yet</p>
+                                        <p className="opacity-60">Draw a plot boundary to start.</p>
                                     </div>
                                 </div>
                             )}

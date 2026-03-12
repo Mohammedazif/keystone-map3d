@@ -117,13 +117,13 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
   if (!isPlotCreated) {
     return (
       <div className={cn('flex flex-col h-full', embedded ? '' : 'w-full max-h-[calc(100vh-200px)]')}>
-        <div className="p-4 border-b shrink-0">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Globe className="h-5 w-5 text-blue-500" />
-            Bhuvan Thematic Services
+        <div className="px-3 py-2 border-b shrink-0">
+          <h2 className="text-xs font-semibold flex items-center gap-1.5">
+            <Globe className="h-3.5 w-3.5 text-blue-500" />
+            Bhuvan Thematic
           </h2>
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center gap-3">
+        <div className="flex-1 flex flex-col items-center justify-center p-4 text-center gap-2">
           <div className="rounded-full bg-muted p-3">
             <MapPin className="h-6 w-6 text-muted-foreground" />
           </div>
@@ -138,10 +138,10 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
 
   return (
     <div className={cn('flex flex-col h-full', embedded ? '' : 'w-full max-h-[calc(100vh-200px)]')}>
-      <div className="p-4 border-b shrink-0">
+      <div className="px-3 py-2 border-b shrink-0">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Globe className="h-5 w-5 text-blue-500" />
+          <h2 className="text-xs font-semibold flex items-center gap-1.5">
+            <Globe className="h-3.5 w-3.5 text-blue-500" />
             Thematic Services
           </h2>
           {stateCode !== 'IN' && (
@@ -213,7 +213,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                       {isUnavailable && !isCategoryActive && <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0 ml-1" />}
                     </div>
                     <span className={cn(
-                      'text-[9px] opacity-80 line-clamp-2 leading-tight',
+                      'text-[10px] opacity-80 line-clamp-2 leading-tight',
                       isCategoryActive ? 'text-primary-foreground/80' : 'text-muted-foreground'
                     )}>
                       {primaryTheme.description}
@@ -226,13 +226,13 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                       {error && (
                         <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/20">
                           <AlertTriangle className="h-3 w-3 text-amber-400 shrink-0 mt-0.5" />
-                          <p className="text-[9px] text-amber-400 leading-relaxed font-medium">{error}</p>
+                          <p className="text-[10px] text-amber-400 leading-relaxed font-medium">{error}</p>
                         </div>
                       )}
 
                       {groupThemes.length > 1 && (
                         <div className="space-y-1.5">
-                          <Label className="text-[9px] text-muted-foreground uppercase tracking-widest font-bold">Select Year / Scale</Label>
+                          <Label className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Select Year / Scale</Label>
                           <div className="flex flex-wrap gap-1.5">
                             {groupThemes.map(variant => {
                               const variantAvail = checkAvailability(variant.id, stateCode, plotLat, plotLng, districtNameHint);
@@ -265,7 +265,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                       <div className="grid grid-cols-1 gap-3 pt-1">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <Label className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">
+                            <Label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
                               Opacity: {Math.round(activeBhuvanOpacity * 100)}%
                             </Label>
                           </div>
@@ -287,7 +287,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                               Legend
                             </Label> */}
                           </div>
-                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[9px]">
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
                             {activeTheme?.legend.map((item, i) => (
                               <div key={i} className="flex items-center gap-1.5 py-0.5">
                                 <div
@@ -305,7 +305,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-1.5">
                               <MousePointer2 className="h-3 w-3 text-primary" />
-                              <Label className="text-[9px] font-bold text-primary uppercase tracking-widest">Info</Label>
+                              <Label className="text-[10px] font-bold text-primary uppercase tracking-wider">Info</Label>
                             </div>
                             {isFetchingBhuvan && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
                           </div>
@@ -315,7 +315,7 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                               dangerouslySetInnerHTML={{ __html: bhuvanData }} 
                             />
                           ) : (
-                            <p className="text-[9px] text-muted-foreground italic text-center py-1">
+                            <p className="text-[10px] text-muted-foreground italic text-center py-1">
                               {isFetchingBhuvan ? "NRSC lookup..." : "Click plot on map to query"}
                             </p>
                           )}

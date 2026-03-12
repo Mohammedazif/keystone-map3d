@@ -3447,15 +3447,14 @@ useEffect(() => {
       <div ref={mapContainer} className="w-full h-full" />
       {children}
 
-      {/* Map Styles & Terrain Toggle */}
-      <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-1 flex items-center gap-1">
+      {/* Map Style & View Controls */}
+      <div className="absolute top-4 right-14 z-10 bg-background/90 backdrop-blur rounded-md border shadow-sm p-0.5 flex items-center gap-0.5">
         
-        {/* Unified 3-Way Style Toggle */}
+        {/* Style Toggle */}
         <button
           onClick={() => {
             if (!map.current) return;
             
-            // Define the cycle sequence: map -> satellite -> terrain -> map
             let nextMode: 'map' | 'satellite' | 'terrain';
             if (mapStyleMode === 'map') nextMode = 'satellite';
             else if (mapStyleMode === 'satellite') nextMode = 'terrain';
@@ -3463,7 +3462,6 @@ useEffect(() => {
             
             setMapStyleMode(nextMode);
 
-            // 1. Handle Satellite Layer
             if (map.current.getLayer('satellite-basemap')) {
               map.current.setLayoutProperty(
                 'satellite-basemap',
@@ -3472,7 +3470,6 @@ useEffect(() => {
               );
             }
 
-            // 2. Handle Terrain
             if (nextMode === 'terrain') {
               map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.0 });
             } else {
@@ -3481,17 +3478,18 @@ useEffect(() => {
 
             if (window.tb) window.tb.repaint();
           }}
-          className={`h-9 min-w-[120px] rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1.5 px-3 ${mapStyleMode !== 'map' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
+          className={`h-7 min-w-[90px] rounded-sm text-[11px] font-medium transition-colors flex items-center justify-center gap-1 px-2 ${mapStyleMode !== 'map' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
           title="Toggle Map Style"
         >
-          {mapStyleMode === 'map' && <><MapIcon className="w-4 h-4" /> Analytic Flat</>}
-          {mapStyleMode === 'satellite' && <><Globe className="w-4 h-4" /> Satellite</>}
-          {mapStyleMode === 'terrain' && <><ImageIcon className="w-4 h-4" /> Terrain ON</>}
+          {mapStyleMode === 'map' && <><MapIcon className="w-3.5 h-3.5" /> Map View</>}
+          {mapStyleMode === 'satellite' && <><Globe className="w-3.5 h-3.5" /> Satellite</>}
+          {mapStyleMode === 'terrain' && <><ImageIcon className="w-3.5 h-3.5" /> Terrain</>}
         </button>
 
-        <div className="h-6 w-[1px] bg-border mx-1" />
+        <div className="h-5 w-[1px] bg-border" />
 
-        <div className="flex gap-0.5">
+        {/* Compass */}
+        <div className="flex gap-0">
           {[
             { label: 'N', angle: 0 },
             { label: 'E', angle: 90 },
@@ -3509,8 +3507,8 @@ useEffect(() => {
                   });
                 }
               }}
-              className="w-9 h-9 flex items-center justify-center rounded-sm text-xs font-bold hover:bg-muted transition-colors text-muted-foreground hover:text-primary"
-              title={`Rotate to ${dir.label}`}
+              className="w-7 h-7 flex items-center justify-center rounded-sm text-[11px] font-semibold hover:bg-muted transition-colors text-muted-foreground hover:text-primary"
+              title={`Face ${dir.label === 'N' ? 'North' : dir.label === 'E' ? 'East' : dir.label === 'S' ? 'South' : 'West'}`}
             >
               {dir.label}
             </button>

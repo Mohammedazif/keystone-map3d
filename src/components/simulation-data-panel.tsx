@@ -124,7 +124,7 @@ export function SimulationDataPanel({ analysisMode, isOpen, onClose, date }: Sim
                         </>
                     )}
                 </svg>
-                <div className="flex justify-between text-[9px] text-muted-foreground mt-0.5">
+                <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
                     <span>12 AM</span>
                     <span>6 AM</span>
                     <span>12 PM</span>
@@ -209,7 +209,7 @@ export function SimulationDataPanel({ analysisMode, isOpen, onClose, date }: Sim
                     <div className={cn("h-2 w-2 rounded-full animate-pulse", isHistorical ? "bg-blue-400" : "bg-green-500")} />
                     <h3 className="text-sm font-semibold">{modeLabels[analysisMode] || 'Simulation Data'}</h3>
                     {isHistorical && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-600 font-semibold">ERA5</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-600 font-semibold">ERA5</span>
                     )}
                 </div>
                 <div className="flex items-center gap-1">
@@ -240,7 +240,7 @@ export function SimulationDataPanel({ analysisMode, isOpen, onClose, date }: Sim
                                 <>{date?.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })} {date?.getHours()}:00</>
                             ) : 'Current Conditions'}
                         </span>
-                        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium ml-1",
+                        <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium ml-1",
                             conditions.isLive
                                 ? (isHistorical ? "bg-blue-500/15 text-blue-600" : "bg-green-500/15 text-green-600")
                                 : "bg-yellow-500/15 text-yellow-600"
@@ -252,22 +252,22 @@ export function SimulationDataPanel({ analysisMode, isOpen, onClose, date }: Sim
                         <div className="text-center">
                             <Thermometer className="h-4 w-4 mx-auto text-red-400 mb-0.5" />
                             <div className="text-sm font-bold">{conditions.temperature.toFixed(0)}°</div>
-                            <div className="text-[9px] text-muted-foreground">Temp</div>
+                            <div className="text-[10px] text-muted-foreground">Temp</div>
                         </div>
                         <div className="text-center">
                             <Wind className="h-4 w-4 mx-auto text-blue-400 mb-0.5" />
-                            <div className="text-sm font-bold">{conditions.windSpeed} <span className="text-[9px] font-normal">m/s</span></div>
-                            <div className="text-[9px] text-muted-foreground">{conditions.windDirectionLabel}</div>
+                            <div className="text-sm font-bold">{conditions.windSpeed} <span className="text-[10px] font-normal">m/s</span></div>
+                            <div className="text-[10px] text-muted-foreground">{conditions.windDirectionLabel}</div>
                         </div>
                         <div className="text-center">
                             <Sun className="h-4 w-4 mx-auto text-amber-400 mb-0.5" />
                             <div className="text-sm font-bold">{conditions.solarRadiation.toFixed(0)}</div>
-                            <div className="text-[9px] text-muted-foreground">W/m²</div>
+                            <div className="text-[10px] text-muted-foreground">W/m²</div>
                         </div>
                         <div className="text-center">
                             <Droplets className="h-4 w-4 mx-auto text-cyan-400 mb-0.5" />
                             <div className="text-sm font-bold">{conditions.humidity}%</div>
-                            <div className="text-[9px] text-muted-foreground">Humidity</div>
+                            <div className="text-[10px] text-muted-foreground">Humidity</div>
                         </div>
                     </div>
                 </div>
@@ -277,7 +277,7 @@ export function SimulationDataPanel({ analysisMode, isOpen, onClose, date }: Sim
             <div className="px-4 py-3 space-y-2.5">
                 <div className="flex items-center gap-1 mb-1">
                     <span className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">24-Hour Data</span>
-                    <span className="text-[9px] text-muted-foreground ml-auto">
+                    <span className="text-[10px] text-muted-foreground ml-auto">
                         {isHistorical ? 'ERA5 Archive' : 'Forecast'}
                     </span>
                 </div>

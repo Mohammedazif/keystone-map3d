@@ -61,9 +61,9 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
     return (
         <div className={cn("flex flex-col h-full", embedded ? "" : "p-0")}>
             {/* Header */}
-            <div className="p-4 border-b shrink-0">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                    <Bookmark className="h-5 w-5 text-yellow-500" />
+            <div className="px-3 py-2 border-b shrink-0">
+                <h2 className="text-xs font-semibold flex items-center gap-1.5">
+                    <Bookmark className="h-3.5 w-3.5 text-yellow-500" />
                     Saved Scenarios
                 </h2>
             </div>
@@ -73,14 +73,14 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
             </div>
 
             {/* Scenarios List */}
-            <ScrollArea className="flex-1 -mx-2 px-3">
-                <div className="space-y-4 pb-4">
+            <ScrollArea className="flex-1 px-2">
+                <div className="space-y-3 pb-4">
                     {designOptions.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground gap-2">
-                            <BookX className="h-10 w-10 opacity-20" />
-                            <div className="text-xs">
-                                <p className="font-medium">No scenarios saved yet</p>
-                                <p className="opacity-70">Generate a design and click 'Save' to see it here.</p>
+                        <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground gap-1.5">
+                            <BookX className="h-8 w-8 opacity-15" />
+                            <div className="text-[11px]">
+                                <p className="font-medium">No scenarios saved</p>
+                                <p className="opacity-60">Generate and save a design to see it here.</p>
                             </div>
                         </div>
                     ) : (
@@ -152,11 +152,11 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
                                         />
 
                                         {/* Overlay Actions */}
-                                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <div className="absolute top-1.5 right-1.5">
                                             <Button
                                                 variant="destructive"
                                                 size="icon"
-                                                className="h-7 w-7 shadow-sm"
+                                                className="h-6 w-6 shadow-sm opacity-70 hover:opacity-100"
                                                 onClick={(e) => handleDelete(e, option.id)}
                                             >
                                                 <Trash2 className="h-3 w-3" />
@@ -180,28 +180,28 @@ export function SavedScenariosPanel({ embedded = false }: SavedScenariosPanelPro
                                             <div className="flex items-center gap-1.5 text-muted-foreground">
                                                 <Calculator className="h-3 w-3" />
                                                 <div className="flex flex-col">
-                                                    <span className="text-[9px] uppercase font-bold text-muted-foreground/70">GFA</span>
+                                                    <span className="text-[10px] uppercase font-bold text-muted-foreground/70">GFA</span>
                                                     <span className="text-xs font-mono text-foreground">{Math.round(totalGFA).toLocaleString()} m²</span>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-1.5 text-muted-foreground">
                                                 <Home className="h-3 w-3" />
                                                 <div className="flex flex-col">
-                                                    <span className="text-[9px] uppercase font-bold text-muted-foreground/70">Units</span>
+                                                    <span className="text-[10px] uppercase font-bold text-muted-foreground/70">Units</span>
                                                     <span className="text-xs font-mono text-foreground">{totalUnits}</span>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-1.5 text-muted-foreground">
                                                 <Building2 className="h-3 w-3" />
                                                 <div className="flex flex-col">
-                                                    <span className="text-[9px] uppercase font-bold text-muted-foreground/70">Buildings</span>
+                                                    <span className="text-[10px] uppercase font-bold text-muted-foreground/70">Buildings</span>
                                                     <span className="text-xs font-mono text-foreground">{totalBuildings}</span>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-1.5 text-muted-foreground">
                                                 <div className="h-3 w-3 flex items-center justify-center font-bold text-[10px] border border-current rounded-sm">F</div>
                                                 <div className="flex flex-col">
-                                                    <span className="text-[9px] uppercase font-bold text-muted-foreground/70">Avg. Floors</span>
+                                                    <span className="text-[10px] uppercase font-bold text-muted-foreground/70">Avg. Floors</span>
                                                     <span className="text-xs font-mono text-foreground">
                                                         {Math.round(
                                                             plots.reduce((sum: number, p: any) =>

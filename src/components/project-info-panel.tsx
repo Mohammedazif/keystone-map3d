@@ -38,30 +38,30 @@ export function ProjectInfoPanel({ embedded = false }: { embedded?: boolean }) {
                 </CardHeader>
             )}
             <div className={cn(embedded ? "" : "p-6 pt-0 space-y-4")}>
-                <div className={cn("space-y-4", embedded ? "p-3" : "")}>
-                    <div className="space-y-2">
-                        <div className="flex justify-between items-center text-sm">
-                            <div className={cn("flex items-center gap-2", isPlotExceeded ? "text-red-500 font-medium" : "text-muted-foreground")}>
-                                <LandPlot className={cn("h-4 w-4", isPlotExceeded ? "text-red-500" : "text-primary")} />
+                <div className={cn("space-y-2.5", embedded ? "px-3 py-2" : "")}>
+                    <div className="space-y-1">
+                        <div className="flex justify-between items-center text-xs">
+                            <div className={cn("flex items-center gap-1.5", isPlotExceeded ? "text-red-500 font-medium" : "text-muted-foreground")}>
+                                <LandPlot className={cn("h-3.5 w-3.5", isPlotExceeded ? "text-red-500" : "text-primary")} />
                                 <span>Plot Area</span>
                             </div>
-                            <div className={cn("font-mono text-xs", isPlotExceeded && "text-red-500 font-bold")}>
-                                {consumedPlotArea.toFixed(2)} / {totalPlotArea.toFixed(2)} m²
+                            <div className={cn("font-mono text-[10px]", isPlotExceeded && "text-red-500 font-bold")}>
+                                {consumedPlotArea.toFixed(0)} / {totalPlotArea.toFixed(0)} m²
                             </div>
                         </div>
-                        <Progress value={plotUsagePercentage} indicatorClassName={isPlotExceeded ? "bg-red-500" : undefined} />
+                        <Progress value={plotUsagePercentage} className="h-1.5" indicatorClassName={isPlotExceeded ? "bg-red-500" : undefined} />
                     </div>
-                    <div className="space-y-2">
-                        <div className="flex justify-between items-center text-sm">
-                            <div className={cn("flex items-center gap-2", isGfaExceeded ? "text-red-500 font-medium" : "text-muted-foreground")}>
-                                <Scale className={cn("h-4 w-4", isGfaExceeded ? "text-red-500" : "text-primary")} />
-                                <span>Gross Floor Area (FAR: {far.toFixed(2)})</span>
+                    <div className="space-y-1">
+                        <div className="flex justify-between items-center text-xs">
+                            <div className={cn("flex items-center gap-1.5", isGfaExceeded ? "text-red-500 font-medium" : "text-muted-foreground")}>
+                                <Scale className={cn("h-3.5 w-3.5", isGfaExceeded ? "text-red-500" : "text-primary")} />
+                                <span>GFA <span className="text-[10px]">(FAR {far.toFixed(2)})</span></span>
                             </div>
-                            <div className={cn("font-mono text-xs", isGfaExceeded && "text-red-500 font-bold")}>
-                                {consumedBuildableArea.toFixed(2)} / {totalBuildableArea.toFixed(2)} m²
+                            <div className={cn("font-mono text-[10px]", isGfaExceeded && "text-red-500 font-bold")}>
+                                {consumedBuildableArea.toFixed(0)} / {totalBuildableArea.toFixed(0)} m²
                             </div>
                         </div>
-                        <Progress value={gfaUsagePercentage} indicatorClassName={isGfaExceeded ? "bg-red-500" : undefined} />
+                        <Progress value={gfaUsagePercentage} className="h-1.5" indicatorClassName={isGfaExceeded ? "bg-red-500" : undefined} />
                     </div>
                 </div>
             </div>

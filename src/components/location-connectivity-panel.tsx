@@ -132,12 +132,12 @@ export function LocationConnectivityPanel() {
 
     return (
         <div className="h-full flex flex-col w-full max-h-[calc(100vh-200px)]">
-            <div className="p-4 border-b space-y-4">
+            <div className="px-3 py-2 border-b space-y-2">
                 <div>
-                    <h2 className="text-lg font-semibold flex items-center gap-2">
-                        <MapPin className="h-5 w-5" /> Location & Connectivity
+                    <h2 className="text-xs font-semibold flex items-center gap-1.5">
+                        <MapPin className="h-3.5 w-3.5" /> Location & Connectivity
                     </h2>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-[11px] text-muted-foreground">
                         {activeProject?.name || 'No Project'}
                         {center && (
                             <span className="text-xs ml-2 opacity-60">

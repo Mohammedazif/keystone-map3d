@@ -51,21 +51,21 @@ export function SimulationTab({
 
     return (
         <div className="flex flex-col h-full">
-            <div className="p-4 border-b shrink-0">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                    <Sun className="h-5 w-5 text-orange-500" />
-                    Scenario Simulation
+            <div className="px-3 py-2 border-b shrink-0">
+                <h2 className="text-xs font-semibold flex items-center gap-1.5">
+                    <Sun className="h-3.5 w-3.5 text-orange-500" />
+                    Simulation
                 </h2>
             </div>
 
             <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-3 space-y-4 scrollbar-thin">
                 {!isPlotCreated ? (
-                    <div className="flex flex-col items-center justify-center h-48 text-center space-y-3 bg-muted/5 rounded-lg border border-dashed">
-                        <div className="h-12 w-12 rounded-full bg-muted/30 flex items-center justify-center">
-                            <MousePointerClick className="h-6 w-6 text-muted-foreground/50" />
+                    <div className="flex flex-col items-center justify-center h-40 text-center space-y-2 bg-muted/5 rounded-lg border border-dashed">
+                        <div className="h-10 w-10 rounded-full bg-muted/20 flex items-center justify-center">
+                            <MousePointerClick className="h-5 w-5 text-muted-foreground/40" />
                         </div>
-                        <p className="text-xs text-muted-foreground max-w-[200px]">
-                            Create a plot on the map to run environmental simulations.
+                        <p className="text-xs text-muted-foreground max-w-[180px]">
+                            Create a plot to run simulations.
                         </p>
                     </div>
                 ) : (
@@ -177,7 +177,7 @@ export function SimulationTab({
                                     >
                                         <div className="flex items-center justify-between w-full">
                                             <span className="capitalize font-medium">{m.label}</span>
-                                            {analysisMode === m.id && <div className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />}
+                                            {analysisMode === m.id && <div className="h-2 w-2 rounded-full bg-white animate-pulse" />}
                                         </div>
                                         {m.tool && (
                                             <span className={cn(

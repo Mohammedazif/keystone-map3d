@@ -425,9 +425,9 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     return (
         <TooltipProvider>
             <Container className={cn("flex flex-col font-sans h-full", embedded ? "" : "w-full shadow-xl bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 max-h-[calc(100vh-200px)]")}>
-                <div className="p-4 border-b shrink-0">
-                    <h2 className="text-lg font-semibold flex items-center gap-2">
-                        <Sparkles className="h-5 w-5 text-primary" />
+                <div className="px-3 py-2 border-b shrink-0">
+                    <h2 className="text-xs font-semibold flex items-center gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5 text-primary" />
                         Design Strategy
                     </h2>
                 </div>
@@ -493,7 +493,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                         )}
                                                     >
                                                         <div className="h-5 w-5">{typologyIcons[type]}</div>
-                                                        <span className="text-[9px] font-medium capitalize truncate w-full text-center">{type === 'lshaped' ? 'L-Shape' : type === 'ushaped' ? 'U-Shape' : type === 'oshaped' ? 'O-Shape' : type}</span>
+                                                        <span className="text-[10px] font-medium capitalize truncate w-full text-center">{type === 'lshaped' ? 'L-Shape' : type === 'ushaped' ? 'U-Shape' : type === 'oshaped' ? 'O-Shape' : type}</span>
                                                     </button>
                                                 </TooltipTrigger>
                                                 <TooltipContent side="bottom">
@@ -667,21 +667,24 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             {/* Podium / Stepped Massing Controls (Residential) */}
                             {landUse === 'residential' && (
                                 <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider cursor-pointer" onClick={() => setHasPodium(!hasPodium)}>
+                                    <button className="flex items-center justify-between w-full" onClick={() => setHasPodium(!hasPodium)}>
+                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider cursor-pointer">
                                             Stepped / Podium Massing
                                         </Label>
-                                        <input
-                                            type="checkbox"
-                                            checked={hasPodium}
-                                            onChange={(e) => setHasPodium(e.target.checked)}
-                                            className="h-3 w-3 accent-primary"
-                                        />
-                                    </div>
+                                        <div className={cn(
+                                            'h-4 w-7 rounded-full transition-colors relative',
+                                            hasPodium ? 'bg-primary' : 'bg-muted-foreground/30'
+                                        )}>
+                                            <div className={cn(
+                                                'h-3 w-3 rounded-full bg-white absolute top-0.5 transition-transform',
+                                                hasPodium ? 'translate-x-3.5' : 'translate-x-0.5'
+                                            )} />
+                                        </div>
+                                    </button>
 
                                     {hasPodium && (
                                         <div className="space-y-3 pt-2">
-                                            <p className="text-[9px] text-muted-foreground italic">
+                                    <p className="text-[10px] text-muted-foreground italic">
                                                 Lower floors form the wide podium. Upper residential floors get a smaller footprint.
                                             </p>
                                             <div className="space-y-1">
@@ -830,17 +833,20 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             {/* Podium for Mixed-Use (Floor-wise: auto-podium; Plot-wise: slider) */}
                             {landUse === 'mixed' && (
                                 <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider cursor-pointer" onClick={() => setHasPodium(!hasPodium)}>
+                                    <button className="flex items-center justify-between w-full" onClick={() => setHasPodium(!hasPodium)}>
+                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider cursor-pointer">
                                             Stepped / Podium Massing
                                         </Label>
-                                        <input
-                                            type="checkbox"
-                                            checked={hasPodium}
-                                            onChange={(e) => setHasPodium(e.target.checked)}
-                                            className="h-3 w-3 accent-primary"
-                                        />
-                                    </div>
+                                        <div className={cn(
+                                            'h-4 w-7 rounded-full transition-colors relative',
+                                            hasPodium ? 'bg-primary' : 'bg-muted-foreground/30'
+                                        )}>
+                                            <div className={cn(
+                                                'h-3 w-3 rounded-full bg-white absolute top-0.5 transition-transform',
+                                                hasPodium ? 'translate-x-3.5' : 'translate-x-0.5'
+                                            )} />
+                                        </div>
+                                    </button>
 
                                     {hasPodium && (
                                         <div className="space-y-3 pt-2">
@@ -923,7 +929,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                     >
                                                         <div className="flex flex-col items-center gap-1">
                                                             <div className="h-4 w-4">{parkingIcons[type]}</div>
-                                                            <span className="text-[9px] font-medium capitalize">{type === 'ug' ? 'Bsmt' : type === 'surface' ? 'Ground' : 'None'}</span>
+                                                            <span className="text-[10px] font-medium capitalize">{type === 'ug' ? 'Bsmt' : type === 'surface' ? 'Ground' : 'None'}</span>
                                                         </div>
                                                     </button>
                                                 </TooltipTrigger>
@@ -996,7 +1002,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             else setSelectedUtilities(ALL);
                                         }}
                                     >
-                                        {selectedUtilities.length === 13 ? 'Select None' : 'Select All'}
+                                        {selectedUtilities.length === 14 ? 'Deselect All' : 'Select All'}
                                     </Button>
                                 </div>
                                 <div className="grid grid-cols-3 gap-2">
@@ -1010,7 +1016,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                         )
                                                     }}
                                                     className={cn(
-                                                        'text-[9px] px-1 py-1.5 rounded-md border transition-all truncate',
+                                                        'text-[10px] px-1.5 py-1.5 rounded-md border transition-all truncate',
                                                         selectedUtilities.includes(type)
                                                             ? 'bg-primary/10 border-primary/50 text-foreground font-medium'
                                                             : 'bg-muted/10 border-border text-muted-foreground hover:bg-muted/30'
@@ -1054,7 +1060,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             </button>
                                         ))}
                                     </div>
-                                    <p className="text-[9px] text-muted-foreground italic">
+                                    <p className="text-[10px] text-muted-foreground italic">
                                         Large buildings will fill the available area within setbacks.
                                     </p>
                                 </div>
@@ -1146,7 +1152,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         {/* Variable Setback Overrides */}
                                         <div className="grid grid-cols-3 gap-2 pt-1">
                                             <div className="space-y-1">
-                                                <Label className="text-[9px] text-muted-foreground">Front</Label>
+                                                <Label className="text-[10px] text-muted-foreground">Front</Label>
                                                 <Input
                                                     type="number"
                                                     step="0.5"
@@ -1157,7 +1163,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 />
                                             </div>
                                             <div className="space-y-1">
-                                                <Label className="text-[9px] text-muted-foreground">Rear</Label>
+                                                <Label className="text-[10px] text-muted-foreground">Rear</Label>
                                                 <Input
                                                     type="number"
                                                     step="0.5"
@@ -1168,7 +1174,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 />
                                             </div>
                                             <div className="space-y-1">
-                                                <Label className="text-[9px] text-muted-foreground">Side</Label>
+                                                <Label className="text-[10px] text-muted-foreground">Side</Label>
                                                 <Input
                                                     type="number"
                                                     step="0.5"
@@ -1182,17 +1188,23 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     </div>
 
                                     {/* Use Floor Limit Toggle */}
-                                    <div className="flex items-center justify-between">
-                                        <Label className="text-[10px] font-medium text-foreground/80 cursor-pointer" onClick={() => setUseFloorLimit(!useFloorLimit)}>
+                                    <button
+                                        className="flex items-center justify-between w-full group"
+                                        onClick={() => setUseFloorLimit(!useFloorLimit)}
+                                    >
+                                        <Label className="text-[10px] font-medium text-foreground/80 cursor-pointer">
                                             Use Floor Limit
                                         </Label>
-                                        <input
-                                            type="checkbox"
-                                            checked={useFloorLimit}
-                                            onChange={(e) => setUseFloorLimit(e.target.checked)}
-                                            className="h-3 w-3 accent-primary"
-                                        />
-                                    </div>
+                                        <div className={cn(
+                                            'h-4 w-7 rounded-full transition-colors relative',
+                                            useFloorLimit ? 'bg-primary' : 'bg-muted-foreground/30'
+                                        )}>
+                                            <div className={cn(
+                                                'h-3 w-3 rounded-full bg-white absolute top-0.5 transition-transform',
+                                                useFloorLimit ? 'translate-x-3.5' : 'translate-x-0.5'
+                                            )} />
+                                        </div>
+                                    </button>
 
                                     <div className="space-y-2">
                                         <div className="flex justify-between items-center">
@@ -1214,7 +1226,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         />
                                         {!useFloorLimit && (
                                             <>
-                                                <p className="text-[9px] text-muted-foreground italic mt-1 leading-tight">
+                                                <p className="text-[10px] text-muted-foreground italic mt-1 leading-tight">
                                                     Floors will be assigned sequentially to hit target GFA, capping at {floorRange[1]} floors per building. Infill footprints added only if needed.
                                                 </p>
                                                 {/* <div className="flex items-center gap-2 mt-2">
@@ -1302,11 +1314,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                         </div>
                     ) : (
                         <div className="flex h-full items-center justify-center p-4 text-center">
-                            <div className="space-y-2 flex flex-col items-center">
-                                <div className="h-12 w-12 rounded-full bg-muted/30 flex items-center justify-center">
-                                    <MousePointerClick className="h-6 w-6 text-muted-foreground/50" />
+                            <div className="space-y-1.5 flex flex-col items-center">
+                                <div className="h-10 w-10 rounded-full bg-muted/20 flex items-center justify-center">
+                                    <MousePointerClick className="h-5 w-5 text-muted-foreground/40" />
                                 </div>
-                                <p className="text-sm text-muted-foreground max-w-[180px]">Select a plot on the map to view and generate design scenarios.</p>
+                                <p className="text-xs text-muted-foreground max-w-[180px]">Select a plot to configure design parameters.</p>
                             </div>
                         </div>
                     )}

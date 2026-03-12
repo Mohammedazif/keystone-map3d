@@ -208,9 +208,9 @@ export function NationalCodePanel() {
                             >
                                 <div className="flex justify-between items-start mb-1">
                                     <p className="text-xs font-bold truncate">{reg.type}</p>
-                                    <Badge variant="outline" className="text-[9px] h-4">NBC</Badge>
+                                    <Badge variant="outline" className="text-[10px] h-4">NBC</Badge>
                                 </div>
-                                <div className="grid grid-cols-3 gap-1 text-[9px]">
+                                <div className="grid grid-cols-3 gap-1 text-[10px]">
                                     <div className="flex flex-col">
                                         <span className="text-muted-foreground uppercase">FAR</span>
                                         <span className="font-mono text-primary">{reg.geometry?.floor_area_ratio?.value || 'N/A'}</span>

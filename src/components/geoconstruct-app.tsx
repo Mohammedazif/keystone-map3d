@@ -1,40 +1,43 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { MapEditor } from '@/components/map-editor';
-import { ChatPanel } from '@/components/chat-panel';
 import { Toaster } from '@/components/ui/toaster';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe, Wand2 } from 'lucide-react';
+import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe, Wand2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
-import { LocationConnectivityPanel } from './location-connectivity-panel';
-import { GreenScorecardPanel } from './green-scorecard-panel';
-import { BhuvanPanel } from './bhuvan-panel';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useState, useEffect, useRef } from 'react';
-import { FeasibilityDashboard } from './feasibility-dashboard';
 import { useBuildingStore, useSelectedPlot } from '@/hooks/use-building-store';
 import { cn } from '@/lib/utils';
 import Link from 'next/link';
-import { PropertiesPanel } from './properties-panel';
-import { ProjectExplorer } from './project-explorer';
 import { DrawingToolbar } from './drawing-toolbar';
 import { DrawingStatus } from './drawing-status';
 import { ProjectInfoPanel } from './project-info-panel';
 import { ParametricToolbar } from './parametric-toolbar';
-import { DefineZoneModal } from './define-zone-modal';
-import { AiScenarioViewerModal } from './ai-scenario-viewer-modal';
 import { MapSearch } from './map-search';
-import { RegulationViewerModal } from './regulation-viewer-modal';
-import { ScenarioSelectorModal } from './scenario-selector-modal';
-import { AiRenderingModal } from './ai-rendering-modal';
-import { SavedScenariosPanel } from './saved-scenarios-panel';
-import { SimulationTab } from './simulation-tab';
-import { SimulationDataPanel } from './simulation-data-panel';
 import { AnalysisMode } from './solar-controls';
 import { Sun } from 'lucide-react';
+
+// Lazy-loaded panels & modals (not needed on initial render)
+const ChatPanel = dynamic(() => import('./chat-panel').then(m => ({ default: m.ChatPanel })), { ssr: false });
+const FeasibilityDashboard = dynamic(() => import('./feasibility-dashboard').then(m => ({ default: m.FeasibilityDashboard })), { ssr: false });
+const PropertiesPanel = dynamic(() => import('./properties-panel').then(m => ({ default: m.PropertiesPanel })), { ssr: false });
+const ProjectExplorer = dynamic(() => import('./project-explorer').then(m => ({ default: m.ProjectExplorer })), { ssr: false });
+const SavedScenariosPanel = dynamic(() => import('./saved-scenarios-panel').then(m => ({ default: m.SavedScenariosPanel })), { ssr: false });
+const SimulationTab = dynamic(() => import('./simulation-tab').then(m => ({ default: m.SimulationTab })), { ssr: false });
+const SimulationDataPanel = dynamic(() => import('./simulation-data-panel').then(m => ({ default: m.SimulationDataPanel })), { ssr: false });
+const LocationConnectivityPanel = dynamic(() => import('./location-connectivity-panel').then(m => ({ default: m.LocationConnectivityPanel })), { ssr: false });
+const GreenScorecardPanel = dynamic(() => import('./green-scorecard-panel').then(m => ({ default: m.GreenScorecardPanel })), { ssr: false });
+const BhuvanPanel = dynamic(() => import('./bhuvan-panel').then(m => ({ default: m.BhuvanPanel })), { ssr: false });
+const DefineZoneModal = dynamic(() => import('./define-zone-modal').then(m => ({ default: m.DefineZoneModal })), { ssr: false });
+const AiScenarioViewerModal = dynamic(() => import('./ai-scenario-viewer-modal').then(m => ({ default: m.AiScenarioViewerModal })), { ssr: false });
+const RegulationViewerModal = dynamic(() => import('./regulation-viewer-modal').then(m => ({ default: m.RegulationViewerModal })), { ssr: false });
+const ScenarioSelectorModal = dynamic(() => import('./scenario-selector-modal').then(m => ({ default: m.ScenarioSelectorModal })), { ssr: false });
+const AiRenderingModal = dynamic(() => import('./ai-rendering-modal').then(m => ({ default: m.AiRenderingModal })), { ssr: false });
 
 
 export function GeoConstructApp({ projectId }: { projectId: string }) {
@@ -44,13 +47,15 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const [activeTab, setActiveTab] = useState("design");
   const [isMapReady, setIsMapReady] = useState(false);
   const [isRegulationViewerOpen, setIsRegulationViewerOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false);
 
   // Simulation State
   const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false);
   const [solarDate, setSolarDate] = useState<Date>(() => new Date());
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('none');
   const [isDataPanelOpen, setIsDataPanelOpen] = useState(true);
-  const [sidebarWidth, setSidebarWidth] = useState(384);
+  const [sidebarWidth, setSidebarWidth] = useState(340);
   const isResizing = useRef(false);
 
   const selectedObjectId = useBuildingStore(s => s.selectedObjectId);
@@ -68,7 +73,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   const uiState = useBuildingStore(s => s.uiState);
 
   const kpiOpen = !!selectedObjectId && (uiState.isFeasibilityPanelOpen ?? true);
-  const kpiBottom = kpiOpen ? 'calc(45vh + 8px)' : '58px';
+  const kpiBottom = kpiOpen ? 'calc(45vh + 8px)' : '52px';
 
   const project = projects.find(p => p.id === projectId);
 
@@ -123,7 +128,7 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing.current) return;
-      const newWidth = Math.min(Math.max(384, e.clientX - 16), 600);
+      const newWidth = Math.min(Math.max(320, e.clientX - 16), 560);
       setSidebarWidth(newWidth);
       window.dispatchEvent(new CustomEvent('resizeMap'));
     };
@@ -154,11 +159,12 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
       variant="secondary"
       size="icon"
       onClick={() => window.dispatchEvent(new CustomEvent('locateUser'))}
-      className={cn("absolute right-4 z-10 rounded-full h-12 w-12 shadow-lg transition-all duration-300 print:hidden",
+      className={cn("absolute right-4 z-10 rounded-full h-9 w-9 shadow-md transition-all duration-300 print:hidden",
         uiState.isFeasibilityPanelOpen ? "scrollbar-hide translate-y-20 opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
         selectedObjectId ? "bottom-[70px]" : "bottom-4")}
+      title="Locate Me"
     >
-      <MapPin className="h-6 w-6" />
+      <MapPin className="h-4 w-4" />
     </Button>
   );
 
@@ -166,8 +172,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
     <Sheet>
       <SheetTrigger asChild>
         <Button variant="secondary" className="absolute top-2 right-2 z-10 rounded-full">
-          <Bot className="mr-2 h-5 w-5" />
-          AI Assistant
+          <Bot className="mr-1.5 h-4 w-4" />
+          AI
         </Button>
       </SheetTrigger>
       <SheetContent side="right" className="w-[80vw] p-0 border-l-0 bg-transparent">
@@ -177,63 +183,58 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
   )
 
   const header = (
-    <div className="p-2 border-b border-border flex items-center justify-between gap-4 bg-background/80 backdrop-blur-sm z-10 print:hidden">
-      <div className="flex items-center gap-4 flex-1">
-        <Button variant="outline" size="icon" asChild>
+    <div className="px-3 py-1.5 border-b border-border/60 flex items-center justify-between gap-3 bg-background/90 backdrop-blur-sm z-30 relative print:hidden">
+      <div className="flex items-center gap-3 shrink-0">
+        <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
           <Link href="/"><ArrowLeft className="h-4 w-4" /></Link>
         </Button>
-        <div>
-          <h1 className="text-xl font-headline font-bold">
-            {project?.name || 'Loading Project...'}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Urban Planning & Feasibility
-          </p>
-        </div>
+        <h1 className="text-sm font-semibold truncate max-w-[200px]">
+          {project?.name || 'Loading...'}
+        </h1>
       </div>
-      <div className="flex-1 flex justify-center">
+      <div className="flex-1 flex justify-center max-w-md">
         <MapSearch />
       </div>
-      <div className='flex items-center gap-2 flex-1 justify-end'>
-        <TooltipProvider>
+      <div className='flex items-center gap-1.5 shrink-0'>
+        <TooltipProvider delayDuration={300}>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant="outline"
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2.5 text-xs"
                 onClick={() => {
                   if (!selectedPlot || !renderingDesignParams) return;
                   actions.generateArchitecturalRendering(selectedPlot.id, renderingDesignParams);
                 }}
                 disabled={isGeneratingRendering || !selectedPlot || !renderingDesignParams}
               >
-                {isGeneratingRendering ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
+                {isGeneratingRendering ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1.5 h-3.5 w-3.5" />}
                 {isGeneratingRendering ? 'Rendering…' : '3D Render'}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>
-              <p>Generate AI 3D architectural rendering</p>
-            </TooltipContent>
+            <TooltipContent side="bottom"><p>Generate AI 3D rendering</p></TooltipContent>
           </Tooltip>
-        </TooltipProvider>
-        <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="icon" onClick={() => setIsChatOpen(!isChatOpen)}>
-                <Bot className={cn("transition-transform h-5 w-5", isChatOpen && "text-primary")} />
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsChatOpen(!isChatOpen)}>
+                <Bot className={cn("h-4 w-4", isChatOpen && "text-primary")} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>
-              <p>{isChatOpen ? "Collapse" : "Expand"} AI Assistant</p>
-            </TooltipContent>
+            <TooltipContent side="bottom"><p>{isChatOpen ? 'Close' : 'Open'} AI Assistant</p></TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsRegulationViewerOpen(true)} disabled={!selectedPlot || !selectedPlot.availableRegulations || selectedPlot.availableRegulations.length === 0}>
+                <BookCopy className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom"><p>Regulations</p></TooltipContent>
           </Tooltip>
         </TooltipProvider>
-        <Button variant="outline" onClick={() => setIsRegulationViewerOpen(true)} disabled={!selectedPlot || !selectedPlot.availableRegulations || selectedPlot.availableRegulations.length === 0}>
-          <BookCopy className="mr-2 h-4 w-4" />
-          Regulations
-        </Button>
-        <Button onClick={() => actions.saveCurrentProject()} disabled={isSaving}>
-          {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-          {isSaving ? 'Saving...' : 'Save'}
+        <Button size="sm" className="h-8 px-3 text-xs" onClick={() => actions.saveCurrentProject()} disabled={isSaving}>
+          {isSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Save className="mr-1.5 h-3.5 w-3.5" />}
+          {isSaving ? 'Saving' : 'Save'}
         </Button>
       </div>
     </div>
@@ -306,12 +307,21 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
 
           <DrawingToolbar />
 
+          {/* Sidebar collapse toggle */}
+          {isSidebarCollapsed && (
+            <Button
+              variant="secondary"
+              size="icon"
+              className="absolute top-3 left-3 z-20 h-9 w-9 rounded-lg shadow-md print:hidden"
+              onClick={() => setIsSidebarCollapsed(false)}
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </Button>
+          )}
+
           {/*Sidebar */}
-          <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 pointer-events-none group print:hidden" style={{ bottom: kpiBottom, width: sidebarWidth }}>
-            <div className="pointer-events-auto shrink-0 w-full">
-              <ProjectInfoPanel />
-            </div>
-            <div className="pointer-events-auto min-h-0 w-full flex flex-row bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-xl border shadow-xl overflow-hidden text-clip shrink max-h-full relative">
+          <div className={cn("absolute top-3 left-3 z-20 flex flex-col gap-2 pointer-events-none group print:hidden transition-all duration-300", isSidebarCollapsed && "-translate-x-[calc(100%+24px)] opacity-0 pointer-events-none")} style={{ bottom: kpiBottom, width: sidebarWidth }}>
+            <div className="pointer-events-auto min-h-0 w-full flex flex-row bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-xl border shadow-lg overflow-hidden text-clip shrink max-h-full relative">
               {/* Resize Handle */}
               <div 
                 className="absolute right-0 top-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 transition-colors z-50 pointer-events-auto"
@@ -319,33 +329,47 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
               />
               
               <Tabs value={activeTab} onValueChange={setActiveTab} orientation="vertical" className="flex flex-row h-auto max-h-full w-full min-h-0">
-                <div className="w-14 bg-muted/30 border-r flex flex-col items-center py-4 gap-4 shrink-0">
-                  <TabsList className="bg-transparent flex flex-col h-auto p-0 gap-4 w-full items-center">
-                    <TabsTrigger value="design" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <Sparkles className="h-5 w-5" />
+                <div className="w-11 bg-muted/20 border-r flex flex-col items-center py-2 gap-1 shrink-0">
+                  {/* Collapse sidebar button */}
+                  <button
+                    onClick={() => setIsSidebarCollapsed(true)}
+                    className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted transition-colors mb-1"
+                    title="Collapse sidebar"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </button>
+                  <TabsList className="bg-transparent flex flex-col h-auto p-0 gap-1 w-full items-center">
+                    <TabsTrigger value="design" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Design">
+                      <Sparkles className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="explorer" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <Layers className="h-5 w-5" />
+                    <TabsTrigger value="explorer" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Explorer">
+                      <Layers className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="saved" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <Bookmark className="h-5 w-5" />
+                    <TabsTrigger value="saved" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Saved Scenarios">
+                      <Bookmark className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="simulation" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <Sun className="h-5 w-5" />
+                    <TabsTrigger value="simulation" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Solar Simulation">
+                      <Sun className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="bhuvan" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Thematic Services">
-                      <Globe className="h-5 w-5" />
+                    <TabsTrigger value="bhuvan" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Thematic Services">
+                      <Globe className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="scorecard" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <Leaf className="h-5 w-5" />
+                    <TabsTrigger value="scorecard" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Green Scorecard">
+                      <Leaf className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="location" className="justify-center w-10 h-10 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all">
-                      <MapPin className="h-5 w-5" />
+                    <TabsTrigger value="location" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Location">
+                      <MapPin className="h-4 w-4" />
                     </TabsTrigger>
                   </TabsList>
                 </div>
 
                 <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
+                  {/* Frozen project metrics - always visible */}
+                  <div className="shrink-0 border-b border-border/40">
+                    <ProjectInfoPanel embedded={true} />
+                  </div>
+
+                  {/* Scrollable tab content */}
                   <TabsContent
                     value="design"
                     className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin m-0 p-0 data-[state=active]:block h-full min-h-0"
@@ -397,13 +421,28 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
             />
           </div>
 
-          <div className={cn("absolute top-4 right-4 z-20 transition-transform duration-300 ease-in-out flex flex-col items-end pointer-events-none print:hidden", 
-            selectedObjectId && !isSimulatorEnabled ? "translate-x-0" : "translate-x-[calc(100%+2rem)]")} 
+          {/* Right panel collapse toggle */}
+          {isRightPanelCollapsed && selectedObjectId && !isSimulatorEnabled && (
+            <Button
+              variant="secondary"
+              size="icon"
+              className="absolute top-3 right-3 z-20 h-9 w-9 rounded-lg shadow-md print:hidden"
+              onClick={() => setIsRightPanelCollapsed(false)}
+            >
+              <PanelRightOpen className="h-4 w-4" />
+            </Button>
+          )}
+
+          {/* Right properties sidebar */}
+          <div className={cn("absolute top-3 right-3 z-20 transition-all duration-300 ease-in-out flex flex-col items-end pointer-events-none print:hidden", 
+            selectedObjectId && !isSimulatorEnabled && !isRightPanelCollapsed ? "translate-x-0 opacity-100" : "translate-x-[calc(100%+2rem)] opacity-0")} 
             style={{ 
               bottom: kpiBottom,
-              width: '420px',
+              width: '340px',
             }}>
-            <PropertiesPanel />
+            <div className="pointer-events-auto w-full max-h-full flex flex-col bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-xl border shadow-lg overflow-hidden">
+              <PropertiesPanel onCollapse={() => setIsRightPanelCollapsed(true)} />
+            </div>
           </div>
 
           <TooltipProvider>
@@ -419,8 +458,8 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
 
           {selectedObjectId && <FeasibilityDashboard />}
 
-          <div className={cn("fixed top-[65px] right-0 h-[calc(100vh-65px)] bg-background/80 backdrop-blur-sm border-l border-border z-50 transition-transform duration-300 ease-in-out print:hidden", isChatOpen ? "translate-x-0" : "translate-x-full")}>
-            <div className="h-full w-[440px] relative">
+          <div className={cn("fixed top-[45px] right-0 h-[calc(100vh-45px)] bg-background/95 backdrop-blur-sm border-l border-border z-50 transition-transform duration-300 ease-in-out print:hidden", isChatOpen ? "translate-x-0" : "translate-x-full")}>
+            <div className="h-full w-[380px] relative">
               {isChatOpen && <ChatPanel />}
             </div>
           </div>

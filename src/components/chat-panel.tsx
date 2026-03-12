@@ -130,8 +130,8 @@ export function ChatPanel() {
     <Card className="h-full flex flex-col bg-background/80 backdrop-blur-sm border-0 rounded-none">
       <CardHeader className="border-b border-border py-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2 font-headline text-base">
-            <Bot className="text-primary h-5 w-5" />
+          <CardTitle className="flex items-center gap-1.5 font-headline text-sm">
+            <Bot className="text-primary h-4 w-4" />
             AI Assistant
           </CardTitle>
 

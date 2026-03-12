@@ -73,7 +73,7 @@ export function DrawingToolbar() {
 
 
     const isFeasibilityPanelOpen = useBuildingStore(state => !!state.selectedObjectId && state.uiState.isFeasibilityPanelOpen);
-    const kpiBottom = isFeasibilityPanelOpen ? 'calc(45vh + 8px)' : '58px';
+    const kpiBottom = isFeasibilityPanelOpen ? 'calc(45vh + 8px)' : '52px';
 
     return (
         <div className="absolute left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 transition-all duration-300 print:hidden" style={{ bottom: kpiBottom }}>

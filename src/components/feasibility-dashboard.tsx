@@ -234,7 +234,7 @@ function MetricsTab() {
                                                         {Math.round(bUnits.reduce((s, u) => s + (u.targetArea || 0), 0))} m²
                                                     </span>
                                                 </div>
-                                                <div className="mt-2 text-[9px] text-muted-foreground/60 italic text-center">
+                                                <div className="mt-2 text-[10px] text-muted-foreground/60 italic text-center">
                                                     (Generated units will never mathematically exceed Available leasable space)
                                                 </div>
                                             </div>
@@ -1060,15 +1060,15 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                     <div className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mb-2">Total Project Cost</div>
                     <div className="grid grid-cols-3 gap-2">
                         <div className="p-2 rounded bg-slate-600/20 border border-slate-500/20 text-center">
-                            <div className="text-[9px] text-muted-foreground">P10 (Optimistic)</div>
+                            <div className="text-[10px] text-muted-foreground">P10 (Optimistic)</div>
                             <div className="text-sm font-bold text-slate-300">{fmtCr(sim.cost_p10)}</div>
                         </div>
                         <div className="p-2 rounded bg-slate-600/20 border border-slate-500/20 text-center">
-                            <div className="text-[9px] text-muted-foreground">P50 (Expected)</div>
+                            <div className="text-[10px] text-muted-foreground">P50 (Expected)</div>
                             <div className="text-sm font-bold text-slate-300">{fmtCr(sim.cost_p50)}</div>
                         </div>
                         <div className="p-2 rounded bg-slate-600/20 border border-slate-500/20 text-center">
-                            <div className="text-[9px] text-muted-foreground">P90 (Pessimistic)</div>
+                            <div className="text-[10px] text-muted-foreground">P90 (Pessimistic)</div>
                             <div className="text-sm font-bold text-slate-300">{fmtCr(sim.cost_p90)}</div>
                         </div>
                     </div>
@@ -1137,7 +1137,7 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                         {sim ? `${sim.time_p10.toFixed(1)} – ${sim.time_p90.toFixed(1)} months` : 'months (Critical Path)'}
                     </div>
                     {sim && (
-                        <div className="text-[9px] text-muted-foreground mt-0.5">
+                        <div className="text-[10px] text-muted-foreground mt-0.5">
                             Median: {sim.time_p50.toFixed(1)} months
                         </div>
                     )}
@@ -1270,7 +1270,7 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                     </div>
                     <div className="flex gap-3 mt-2">
                         {[['#f59e0b', 'Sub/Foundation'], ['#3b82f6', 'Structure'], ['#8b5cf6', 'Finishing'], ['#9ca3af', 'Contingency']].map(([c, l]) => (
-                            <div key={l as string} className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                            <div key={l as string} className="flex items-center gap-1 text-[10px] text-muted-foreground">
                                 <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: c as string, opacity: 0.7 }} />
                                 <span>{l}</span>
                             </div>
@@ -1404,7 +1404,7 @@ function MultiBuildingBudgetTab({ estimates, isLoading }: MultiBuildingTabProps)
                     <div className="text-[10px] uppercase tracking-wider font-semibold text-amber-400 mb-2">Utilities Included</div>
                     <div className="text-sm font-bold text-amber-300 mb-2">~{fmtCr(totalUtilities)}</div>
                     {estimates.simulation?.utility_costs && estimates.simulation.utility_costs.length > 0 && (
-                        <div className="space-y-1 text-[9px] text-amber-200">
+                        <div className="space-y-1 text-[10px] text-amber-200">
                             {estimates.simulation.utility_costs.map((u: any, i: number) => (
                                 <div key={i} className="flex justify-between">
                                     <span>{u.label} ({u.unit})</span>
@@ -1419,7 +1419,7 @@ function MultiBuildingBudgetTab({ estimates, isLoading }: MultiBuildingTabProps)
             {/* Budget Impact & Overlap Info */}
             <div className="rounded-lg border p-3 bg-cyan-500/10 border-cyan-500/20">
                 <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-400 mb-2">Budget Decision Tips</div>
-                <div className="space-y-1 text-[9px] text-cyan-200">
+                <div className="space-y-1 text-[10px] text-cyan-200">
                     <div>• Largest building: <span className="font-bold">{largestBuilding.buildingName}</span> (~{(largestBuilding.cost.total / 10000000).toFixed(1)} Cr)</div>
                     <div>• Average per building: <span className="font-bold">~{(avgCostPerBuilding / 10000000).toFixed(1)} Cr</span></div>
                     <div>• Cost variance: <span className="font-bold">~{(costVariance / 10000000).toFixed(1)} Cr</span></div>
@@ -1650,7 +1650,7 @@ function FeasibilityTab() {
                                         ? `₹${(sim.cost_p10 / 10000000).toFixed(1)} – ${(sim.cost_p90 / 10000000).toFixed(1)} Cr`
                                         : `~₹${((estimates.total_construction_cost || 0) / 10000000).toFixed(2)} Cr`}
                                 </div>
-                                <div className="text-[9px] text-muted-foreground">
+                                <div className="text-[10px] text-muted-foreground">
                                     {sim ? `Median: ₹${(sim.cost_p50 / 10000000).toFixed(2)} Cr` : 'Run simulation for range'}
                                 </div>
                             </div>
@@ -1678,10 +1678,10 @@ function FeasibilityTab() {
                                     : `~${(estimates.timeline?.total_months || 0).toFixed(1)} Months (est.)`}
                             </Badge>
                         </div>
-                        <div className="text-[9px] text-muted-foreground mb-2 text-center">
+                        <div className="text-[10px] text-muted-foreground mb-2 text-center">
                             {sim ? `Median (P50): ${sim.time_p50.toFixed(1)} months` : 'Run simulation for range'}
                         </div>
-                        <div className="text-[9px] text-muted-foreground mb-1 italic">Critical-path baseline (est.):</div>
+                        <div className="text-[10px] text-muted-foreground mb-1 italic">Critical-path baseline (est.):</div>
                         <div className="grid grid-cols-2 gap-2 text-xs">
                             <div className="flex justify-between">
                                 <span className="text-muted-foreground">Substructure:</span>
