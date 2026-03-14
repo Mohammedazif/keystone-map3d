@@ -174,8 +174,17 @@ export class RegulationEngine {
     }
 
     private calculateHousingMetrics(totalBuiltUpArea: number) {
-        // Approx 100 sqm per unit (Could also be dynamic based on unit mix)
-        const totalUnits = Math.floor(totalBuiltUpArea / 100);
+        // Use actual dwelling units from buildings
+        let totalUnits = 0;
+        this.project.plots.forEach(p => {
+            p.buildings.forEach((b: any) => {
+                if (b.visible !== false) {
+                    totalUnits += b.units?.length || 0;
+                }
+            });
+        });
+        // Fallback to GFA estimate if no actual units exist
+        if (totalUnits === 0) totalUnits = Math.floor(totalBuiltUpArea / 100);
 
         // Parking Norms: Defaults to 1 per unit if no regulations found
         let parkingRatio = 1;
@@ -335,8 +344,16 @@ export class RegulationEngine {
             });
         }
 
-        // Parking (weight: 10)
-        const totalUnits = Math.floor(areaMetrics.totalBuiltUpArea / 100);
+        // Parking
+        let totalUnits = 0;
+        this.project.plots.forEach(p => {
+            p.buildings.forEach((b: any) => {
+                if (b.visible !== false) {
+                    totalUnits += b.units?.length || 0;
+                }
+            });
+        });
+        if (totalUnits === 0) totalUnits = Math.floor(areaMetrics.totalBuiltUpArea / 100);
         let parkRatio = this.regulations?.facilities?.parking?.value || 1;
         const reqParking = Math.ceil(totalUnits * parkRatio);
         let provParking = 0;

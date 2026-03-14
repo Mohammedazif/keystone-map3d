@@ -2835,25 +2835,23 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 }
 
                 // --- PARKING GENERATION ---
-                // --- PARKING GENERATION ---
-                // Handle multiple parking types (UG, Podium/Stilt)
+                // Smart demand-driven allocation: B1+B2 default, then B3+ tallest-first until target met
                 // Surface parking is handled separately in Peripheral Zone Generation
                 if (params.parkingTypes && params.parkingTypes.length > 0 && newBuildings.length > 0) {
-                    newBuildings.forEach((b: Building) => {
-                        // Towers share the podium's basement/stilt, so they don't get their own parking floors directly
-                        if (b.id.includes('-tower')) return;
+                    // Filter eligible buildings (towers share podium parking)
+                    const eligibleBuildings = newBuildings.filter((b: Building) => !b.id.includes('-tower'));
 
-                        const parkingArea = b.area || 500;
-                        const capacityPerFloor = Math.floor((parkingArea * 0.75) / 12.5);
+                    // Underground Parking (Basements)
+                    if (params.parkingTypes?.includes('ug') && eligibleBuildings.length > 0) {
+                        // STEP 1: Add default B1 + B2 to ALL eligible buildings
+                        eligibleBuildings.forEach((b: Building) => {
+                            const parkingArea = b.area || 500;
+                            const capacityPerFloor = Math.floor((parkingArea * 0.75) / 12.5);
 
-                        // Underground Parking (Basements)
-                        if (params.parkingTypes?.includes('ug')) {
-                            // Add Basements (Levels -1, -2)
                             // EV Charging: Points = Units × 1.5 × 0.2 (from utility sizing doc)
-                            // Split EV stations across basement levels
                             const totalUnitsInBuilding = b.units?.length || Math.floor(b.area / 100) * (b.numFloors || 5);
                             const totalEVPoints = Math.ceil(totalUnitsInBuilding * 1.5 * 0.2);
-                            const evPerFloor = Math.ceil(totalEVPoints / 2); // Split across 2 basements
+                            const evPerFloor = Math.ceil(totalEVPoints / 2);
 
                             b.floors.push({
                                 id: `floor-${b.id}-b1`,
@@ -2875,19 +2873,119 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 parkingCapacity: capacityPerFloor,
                                 evStations: totalEVPoints - evPerFloor
                             });
-                            
+
                             // Tag building with EV utility for visual indicators
                             if (!b.utilities) b.utilities = [];
                             if (!b.utilities.includes(UtilityType.EVStation)) {
                                 b.utilities.push(UtilityType.EVStation);
                             }
-                            
-                            console.log(`[Parking] EV Charging: ${totalEVPoints} points (${evPerFloor} B1, ${totalEVPoints - evPerFloor} B2) for ${b.name}`);
-                        }
 
-                        // Podium/Stilt Parking
-                        if (params.parkingTypes?.includes('pod')) {
-                            // Add Stilt (Level 0)
+                            console.log(`[Parking] Default B1+B2: ${capacityPerFloor * 2} slots, EV: ${totalEVPoints} points for ${b.name}`);
+                        });
+
+                        // STEP 2: Level-by-level sweep — add basements one level at a time
+                        // to buildings sorted tallest-first, stopping as soon as parking target is met.
+                        
+                        // 2a. Compute required parking using ACTUAL dwelling units
+                        // (same formula as compliance engine — counts b.units.length across all buildings)
+                        const allPlots = get().plots || [];
+                        let totalUnitsForParking = 0;
+                        allPlots.forEach((p: any) => {
+                            if (p.id === plotStub.id) {
+                                // Current plot: use newBuildings + existing manual buildings
+                                const manualBldgs = (plotStub.buildings || []).filter(
+                                    (b: Building) => b.id.startsWith('bldg-') && b.visible !== false
+                                );
+                                [...newBuildings, ...manualBldgs].forEach((b: Building) => {
+                                    totalUnitsForParking += b.units?.length || 0;
+                                });
+                            } else {
+                                // Other plots: use their existing buildings
+                                (p.buildings || []).forEach((b: Building) => {
+                                    if (b.visible === false) return;
+                                    totalUnitsForParking += b.units?.length || 0;
+                                });
+                            }
+                        });
+                        // Fallback to GFA estimate if no actual units exist
+                        if (totalUnitsForParking === 0) {
+                            const totalBuiltUpArea = newBuildings.reduce((sum: number, b: Building) => {
+                                const fsiFloors = b.floors ? b.floors.filter(f => f.type !== 'Parking').length : b.numFloors;
+                                return sum + (b.area * (fsiFloors || b.numFloors || 1));
+                            }, 0);
+                            totalUnitsForParking = Math.floor(totalBuiltUpArea / 100);
+                        }
+                        
+                        // Find parking ratio from regulation — use MAX across all available regulations
+                        let regParkingRatio = 1;
+                        const plotReg = (plotStub as any).regulation;
+                        if (plotReg?.facilities?.parking?.value) {
+                            regParkingRatio = plotReg.facilities.parking.value;
+                        }
+                        // Also check all available regulations — use the HIGHEST ratio found
+                        if ((plotStub as any).availableRegulations) {
+                            for (const r of (plotStub as any).availableRegulations) {
+                                if (r?.facilities?.parking?.value && r.facilities.parking.value > regParkingRatio) {
+                                    regParkingRatio = r.facilities.parking.value;
+                                }
+                            }
+                        }
+                        const requiredParking = Math.ceil(totalUnitsForParking * regParkingRatio);
+                        
+                        // 2b. Count parking from B1+B2 basements only (fresh, just-added)
+                        let totalProvidedParking = 0;
+                        eligibleBuildings.forEach((b: Building) => {
+                            b.floors.filter(f => f.type === 'Parking').forEach(f => {
+                                totalProvidedParking += f.parkingCapacity || 0;
+                            });
+                        });
+                        
+                        console.log(`[Parking] Target: required=${requiredParking} (actualUnits=${totalUnitsForParking}, ratio=${regParkingRatio}), after B1+B2: provided=${totalProvidedParking}`);
+                        
+                        // 2c. Sort buildings tallest-first
+                        const sortedByHeight = [...eligibleBuildings].sort((a, b) => {
+                            const heightA = a.height || (a.numFloors * (a.typicalFloorHeight || 3.5));
+                            const heightB = b.height || (b.numFloors * (b.typicalFloorHeight || 3.5));
+                            return heightB - heightA;
+                        });
+                        
+                        // 2d. Level-by-level sweep: B3 to all → B4 to all → B5 to all
+                        const MAX_BASEMENTS = 5;
+                        const DEFAULT_BASEMENTS = 2; // B1+B2 already added
+                        
+                        for (let lvl = DEFAULT_BASEMENTS + 1; lvl <= MAX_BASEMENTS; lvl++) {
+                            if (totalProvidedParking >= requiredParking) break; // Target met!
+                            
+                            // Add this basement level to each building (tallest first)
+                            for (const b of sortedByHeight) {
+                                if (totalProvidedParking >= requiredParking) break; // Target met!
+                                
+                                const parkingArea = b.area || 500;
+                                const capacityPerFloor = Math.floor((parkingArea * 0.75) / 12.5);
+                                
+                                b.floors.push({
+                                    id: `floor-${b.id}-b${lvl}`,
+                                    height: 3.5,
+                                    color: '#505050',
+                                    type: 'Parking',
+                                    parkingType: ParkingType.Basement,
+                                    level: -lvl,
+                                    parkingCapacity: capacityPerFloor,
+                                });
+                                
+                                totalProvidedParking += capacityPerFloor;
+                                console.log(`[Parking] B${lvl} → ${b.name}: +${capacityPerFloor} slots (total: ${totalProvidedParking}/${requiredParking})`);
+                            }
+                        }
+                        
+                        console.log(`[Parking] Final: provided=${totalProvidedParking}, required=${requiredParking}, met=${totalProvidedParking >= requiredParking}`);
+                    }
+
+                    // Podium/Stilt Parking
+                    if (params.parkingTypes?.includes('pod')) {
+                        eligibleBuildings.forEach((b: Building) => {
+                            const parkingArea = b.area || 500;
+                            const capacityPerFloor = Math.floor((parkingArea * 0.75) / 12.5);
                             b.floors.push({
                                 id: `floor-${b.id}-stilt`,
                                 height: 3.5,
@@ -2897,14 +2995,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                 level: 0,
                                 parkingCapacity: capacityPerFloor
                             });
-                            // Height recalculation: Stilt is parking, so it shouldn't add to the occupiable height
-                            // But stilt physically lifts the building. However, user wants "4 floors" to mean "14m" 
-                            // of occupiable space. If they want total structural height, we should add it.
-                            // To match the previous fix where `building.height` = occupiable height, we won't add it.
-                            // If they want structural height, we would do:
-                            // b.height = b.floors.filter(f => f.level !== undefined && f.level >= 0).reduce((sum, f) => sum + (f.height || 0), 0);
-                        }
-                    });
+                        });
+                    }
                 }
 
 

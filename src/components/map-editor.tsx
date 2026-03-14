@@ -3352,6 +3352,7 @@ useEffect(() => {
             if (opacity === 0) return false;
         }
         
+
         return (
           lid === 'all-buildings-hit-layer' ||
           lid.startsWith('utility-area-') ||
@@ -3381,12 +3382,47 @@ useEffect(() => {
             props.area = calcArea;
           } catch (e) { }
 
+          // Find if this building has parking, and if the user wants to see it
+          let parkingHtml = '';
+          if (cv.basements) {
+              // We need to look up the actual building to sum its parking capacity
+              const bldgId = f.properties?.id;
+              let totalParkingCapacity = 0;
+              let basementCount = 0;
+              
+              if (bldgId) {
+                  // Search through all plots to find this building
+                  plots.forEach(p => {
+                      p.buildings.forEach(b => {
+                          if (b.id === bldgId || b.id === f.properties?.linkedId) {
+                              if (b.floors) {
+                                  b.floors.filter(fl => fl.type === 'Parking' || fl.parkingType === 'Basement').forEach(fl => {
+                                      totalParkingCapacity += fl.parkingCapacity || 0;
+                                      basementCount++;
+                                  });
+                              }
+                          }
+                      });
+                  });
+              }
+
+              if (basementCount > 0) {
+                  parkingHtml = `
+                    <div class="mt-2 pt-2 border-t border-neutral-200">
+                      <div class="font-bold text-xs text-neutral-900" style="color: #171717;">Parking (${basementCount} levels)</div>
+                      <div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Capacity: ${totalParkingCapacity} cars</div>
+                    </div>
+                  `;
+              }
+          }
+
           html = `
             <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${props.name || 'Building'}</div>
             <div class="text-xs text-muted-foreground" style="color: #525252;">${props.use || ''}</div>
             <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">${props.floors || 0} Fl • ${Math.round(props.height || 0)}m</div>
             ${dims ? `<div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Size: ${dims}</div>` : ''}
             <div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Footprint: ${props.area.toFixed(2)} m²</div>
+            ${parkingHtml}
           `;
         } else if (f.layer?.id.startsWith('utility-area-') || f.layer?.id.startsWith('parking-area-')) {
           const typeLabel = props.type || (f.layer?.id.startsWith('parking-area-') ? 'Parking' : 'Utility');
