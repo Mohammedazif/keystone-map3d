@@ -59,6 +59,10 @@ export interface Building {
   centroid: Feature<Point>;
   originalGeometry?: Feature<Polygon>;
   originalCentroid?: Feature<Point>;
+  originalCores?: Core[];
+  originalUnits?: Unit[];
+  originalInternalUtilities?: UtilityArea[];
+  originalAlignmentRotation?: number;
   height: number;
   opacity: number;
   extrusion: boolean;

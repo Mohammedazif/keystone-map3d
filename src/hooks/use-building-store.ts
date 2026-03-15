@@ -182,18 +182,33 @@ const prepareForFirestore = (plots: Plot[]): any[] => {
                 ...b,
                 geometry: JSON.stringify(b.geometry),
                 centroid: JSON.stringify(b.centroid),
+                originalGeometry: b.originalGeometry ? JSON.stringify(b.originalGeometry) : undefined,
+                originalCentroid: b.originalCentroid ? JSON.stringify(b.originalCentroid) : undefined,
                 cores: (b.cores || []).map(c => ({
                     ...c,
                     geometry: JSON.stringify(c.geometry)
                 })),
+                originalCores: b.originalCores ? b.originalCores.map(c => ({
+                    ...c,
+                    geometry: JSON.stringify(c.geometry)
+                })) : undefined,
                 units: (b.units || []).map(u => ({
                     ...u,
                     geometry: JSON.stringify(u.geometry)
                 })),
+                originalUnits: b.originalUnits ? b.originalUnits.map(u => ({
+                    ...u,
+                    geometry: JSON.stringify(u.geometry)
+                })) : undefined,
                 internalUtilities: (b.internalUtilities || []).map(u => ({
                     ...u,
                     geometry: JSON.stringify(u.geometry)
                 })),
+                originalInternalUtilities: b.originalInternalUtilities ? b.originalInternalUtilities.map(u => ({
+                    ...u,
+                    geometry: JSON.stringify(u.geometry),
+                    centroid: JSON.stringify(u.centroid)
+                })) : undefined,
             })),
             greenAreas: (plot.greenAreas || []).map(g => ({
                 ...g,
@@ -241,6 +256,164 @@ const safeParse = (data: any, label: string) => {
     }
 };
 
+const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+
+// function normalizeRotation(angle: number) {
+//     let normalized = ((angle % 360) + 360) % 360;
+//     if (normalized >= 180) {
+//         normalized -= 180;
+//     }
+//     return normalized;
+// }
+const normalizeRotation = (angle: number) => {
+    let normalized = ((angle % 360) + 360) % 360;
+    if (normalized >= 180) normalized -= 360;
+    return normalized;
+};
+
+// const captureBuildingRotationSnapshot = (building: Building) => {
+//     if (!building.originalGeometry && building.geometry) {
+//         building.originalGeometry = deepClone(building.geometry);
+//     }
+//     if (!building.originalCentroid && building.centroid) {
+//         building.originalCentroid = deepClone(building.centroid);
+//     }
+//     if (!building.originalCores && building.cores) {
+//         building.originalCores = deepClone(building.cores);
+//     }
+//     if (!building.originalUnits && building.units) {
+//         building.originalUnits = deepClone(building.units);
+//     }
+//     if (!building.originalInternalUtilities && building.internalUtilities) {
+//         building.originalInternalUtilities = deepClone(building.internalUtilities);
+//     }
+//     if (building.originalAlignmentRotation === undefined) {
+//         building.originalAlignmentRotation = building.alignmentRotation ?? 0;
+//     }
+// };
+
+const captureBuildingRotationSnapshot = (building: Building) => {
+
+    if (building.originalGeometry === undefined && building.geometry) {
+        building.originalGeometry = deepClone(building.geometry);
+    }
+
+    if (building.originalCentroid === undefined && building.centroid) {
+        building.originalCentroid = deepClone(building.centroid);
+    }
+
+    if (building.originalCores === undefined && building.cores) {
+        building.originalCores = deepClone(building.cores);
+    }
+
+    if (building.originalUnits === undefined && building.units) {
+        building.originalUnits = deepClone(building.units);
+    }
+
+    if (building.originalInternalUtilities === undefined && building.internalUtilities) {
+        building.originalInternalUtilities = deepClone(building.internalUtilities);
+    }
+
+    if (building.originalAlignmentRotation === undefined) {
+        building.originalAlignmentRotation = building.alignmentRotation ?? 0;
+    }
+};
+
+// const restoreBuildingRotationSnapshot = (building: Building) => {
+//     if (!building.originalGeometry || !building.originalCentroid) return false;
+
+//     building.geometry = deepClone(building.originalGeometry);
+//     building.centroid = deepClone(building.originalCentroid);
+
+//     if (building.originalCores) {
+//         building.cores = deepClone(building.originalCores);
+//     }
+//     if (building.originalUnits) {
+//         building.units = deepClone(building.originalUnits);
+//     }
+//     if (building.originalInternalUtilities) {
+//         building.internalUtilities = deepClone(building.originalInternalUtilities);
+//     }
+
+//     building.alignmentRotation = building.originalAlignmentRotation ?? 0;
+//     return true;
+// };
+
+const restoreBuildingRotationSnapshot = (building: Building) => {
+
+    if (!building.originalGeometry || !building.originalCentroid) return false;
+
+    building.geometry = deepClone(building.originalGeometry);
+    building.centroid = deepClone(building.originalCentroid);
+
+    if (building.originalCores) {
+        building.cores = deepClone(building.originalCores);
+    }
+
+    if (building.originalUnits) {
+        building.units = deepClone(building.originalUnits);
+    }
+
+    if (building.originalInternalUtilities) {
+        building.internalUtilities = deepClone(building.originalInternalUtilities);
+    }
+
+    building.alignmentRotation = building.originalAlignmentRotation ?? 0;
+
+    return true;
+};
+
+const rotateBuildingFromSnapshot = (building: Building, angle: number) => {
+
+    captureBuildingRotationSnapshot(building);
+
+    if (!building.originalGeometry || !building.originalCentroid) return;
+
+    const rotation = normalizeRotation(angle);
+
+    const pivot = building.originalCentroid.geometry.coordinates;
+
+    // rotate building footprint
+    building.geometry = turf.transformRotate(
+        building.originalGeometry,
+        rotation,
+        { pivot }
+    );
+    building.centroid = turf.transformRotate(
+        building.originalCentroid,
+        rotation,
+        { pivot }
+    );
+
+    // rotate cores
+    if (building.originalCores) {
+        building.cores = building.originalCores.map(core => ({
+            ...core,
+            geometry: turf.transformRotate(core.geometry, rotation, { pivot })
+        }));
+    }
+
+    // rotate units
+    if (building.originalUnits) {
+        building.units = building.originalUnits.map(unit => ({
+            ...unit,
+            geometry: turf.transformRotate(unit.geometry, rotation, { pivot })
+        }));
+    }
+
+    // rotate utilities
+    if (building.originalInternalUtilities) {
+        building.internalUtilities = building.originalInternalUtilities.map(util => ({
+            ...util,
+            geometry: turf.transformRotate(util.geometry, rotation, { pivot }),
+            centroid: turf.transformRotate(util.centroid, rotation, { pivot })
+        }));
+    }
+
+    building.alignmentRotation = rotation;
+};
+
+
 // Helper to parse geometry from Firestore
 const parseFromFirestore = (plots: any[]): Plot[] => {
     if (!plots || !Array.isArray(plots)) {
@@ -262,18 +435,33 @@ const parseFromFirestore = (plots: any[]): Plot[] => {
                     ...b,
                     geometry: safeParse(b.geometry, `bldg-${b.id}`),
                     centroid: safeParse(b.centroid, `bldg-${b.id}-centroid`),
+                    originalGeometry: b.originalGeometry ? safeParse(b.originalGeometry, `bldg-${b.id}-original-geometry`) : undefined,
+                    originalCentroid: b.originalCentroid ? safeParse(b.originalCentroid, `bldg-${b.id}-original-centroid`) : undefined,
                     cores: (b.cores || []).map((c: any) => ({
                         ...c,
                         geometry: safeParse(c.geometry, `core-${c.id}`)
                     })),
+                    originalCores: b.originalCores ? b.originalCores.map((c: any) => ({
+                        ...c,
+                        geometry: safeParse(c.geometry, `core-${c.id}-original`)
+                    })) : undefined,
                     units: (b.units || []).map((u: any) => ({
                         ...u,
                         geometry: safeParse(u.geometry, `unit-${u.id}`)
                     })),
+                    originalUnits: b.originalUnits ? b.originalUnits.map((u: any) => ({
+                        ...u,
+                        geometry: safeParse(u.geometry, `unit-${u.id}-original`)
+                    })) : undefined,
                     internalUtilities: (b.internalUtilities || []).map((u: any) => ({
                         ...u,
                         geometry: safeParse(u.geometry, `util-int-${u.id}`)
                     })),
+                    originalInternalUtilities: b.originalInternalUtilities ? b.originalInternalUtilities.map((u: any) => ({
+                        ...u,
+                        geometry: safeParse(u.geometry, `util-int-${u.id}-original`),
+                        centroid: safeParse(u.centroid, `util-int-${u.id}-original-centroid`)
+                    })) : undefined,
                 })),
                 greenAreas: (plot.greenAreas || []).map((g: any) => ({
                     ...g,
@@ -683,35 +871,18 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const building = plot.buildings.find(b => b.id === buildingId);
                         if (!building || !building.geometry) return;
 
-                        // Calculate centroid for rotation origin
-                        const centroid = turf.centroid(building.geometry);
-                        const origin = centroid.geometry.coordinates;
+                        const nextRotation = normalizeRotation((building.alignmentRotation ?? 0) + angle);
+                        rotateBuildingFromSnapshot(building, nextRotation);
+                    }));
+                },
+                restoreBuilding: (plotId: string, buildingId: string) => {
+                    set(produce((draft: BuildingState) => {
+                        const plot = draft.plots.find(p => p.id === plotId);
+                        if (!plot) return;
+                        const building = plot.buildings.find(b => b.id === buildingId);
+                        if (!building) return;
 
-                        // Rotate main geometry
-                        building.geometry = turf.transformRotate(building.geometry as any, angle, { pivot: origin });
-                        building.centroid = turf.centroid(building.geometry as any);
-
-                        // Rotate cores
-                        if (building.cores) {
-                            building.cores.forEach(core => {
-                                core.geometry = turf.transformRotate(core.geometry, angle, { pivot: origin });
-                            });
-                        }
-
-                        // Rotate units
-                        if (building.units) {
-                            building.units.forEach(unit => {
-                                unit.geometry = turf.transformRotate(unit.geometry, angle, { pivot: origin });
-                            });
-                        }
-
-                        // Rotate internal utilities
-                        if (building.internalUtilities) {
-                            building.internalUtilities.forEach(util => {
-                                util.geometry = turf.transformRotate(util.geometry, angle, { pivot: origin });
-                                util.centroid = turf.centroid(util.geometry);
-                            });
-                        }
+                        restoreBuildingRotationSnapshot(building);
                     }));
                 },
         // setMapLocation: Moved to bottom

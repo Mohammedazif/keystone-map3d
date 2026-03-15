@@ -1,17 +1,18 @@
 'use client';
 import { Button } from '@/components/ui/button';
-import { useBuildingStore, type DrawingObjectType } from '@/hooks/use-building-store';
+import { useBuildingStore, useSelectedBuilding, useSelectedPlot, type DrawingObjectType } from '@/hooks/use-building-store';
 import { useToast } from '@/hooks/use-toast';
-import { Building2, LandPlot, Map, WandSparkles, Cuboid, Route, Move, MousePointerClick } from 'lucide-react';
+import { Building2, LandPlot, Map, Route, Move, MousePointerClick, RotateCw } from 'lucide-react';
 import { Slider } from './ui/slider';
 import { Label } from './ui/label';
 import React from 'react';
-import { AiGeneratorModal } from './ai-generator-modal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
-import { AiMassingModal } from './ai-massing-modal';
 import { produce } from 'immer';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { BuildingIntendedUse } from '@/lib/types';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { Input } from './ui/input';
+import { Separator } from './ui/separator';
 
 export function DrawingToolbar() {
     const { actions, drawingState, plots, selectedObjectId, drawingPoints, uiState } = useBuildingStore(s => ({
@@ -23,6 +24,10 @@ export function DrawingToolbar() {
         uiState: s.uiState
     }));
     const { toast } = useToast();
+    const selectedBuilding = useSelectedBuilding();
+    const selectedPlot = useSelectedPlot();
+    const [rotationInput, setRotationInput] = React.useState('');
+    const [rotateOpen, setRotateOpen] = React.useState(false);
 
     const setRoadWidth = (width: number) => {
         useBuildingStore.setState(produce(draft => {
@@ -67,7 +72,16 @@ export function DrawingToolbar() {
         { name: 'Move', icon: Move, tooltip: 'Move Objects' },
     ];
 
-    const isPlotSelected = selectedObjectId?.type === 'Plot';
+    const canRotateSelectedBuilding = !!selectedBuilding && !!selectedPlot;
+    const handleRotate = (angle: number) => {
+        if (!canRotateSelectedBuilding || angle === 0) return;
+        actions.rotateBuilding(selectedPlot.id, selectedBuilding.id, angle);
+    };
+
+    const handleRestoreRotation = () => {
+        if (!canRotateSelectedBuilding) return;
+        actions.restoreBuilding(selectedPlot.id, selectedBuilding.id);
+    };
 
 
     const isFeasibilityPanelOpen = useBuildingStore(state => !!state.selectedObjectId && state.uiState.isFeasibilityPanelOpen);
@@ -147,6 +161,76 @@ export function DrawingToolbar() {
                             </TooltipContent>
                         </Tooltip>
                     ))}
+                    <Tooltip>
+                        <Popover open={rotateOpen} onOpenChange={setRotateOpen}>
+                            <TooltipTrigger asChild>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        disabled={!canRotateSelectedBuilding || drawingState.isDrawing}
+                                    >
+                                        <RotateCw className="h-5 w-5" />
+                                    </Button>
+                                </PopoverTrigger>
+                            </TooltipTrigger>
+                            <PopoverContent className="w-56 p-3" side="top" align="center">
+                                <div className="space-y-2.5">
+                                    <div className="text-xs font-medium text-muted-foreground">Rotate Building</div>
+                                    <div className="grid grid-cols-3 gap-1">
+                                        {[-90, -45, -15, 15, 45, 90].map(angle => (
+                                            <Button
+                                                key={angle}
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-7 text-[10px] px-1"
+                                                onClick={() => handleRotate(angle)}
+                                            >
+                                                {angle > 0 ? '+' : ''}{angle} deg
+                                            </Button>
+                                        ))}
+                                    </div>
+                                    <div className="flex gap-1.5 items-center">
+                                        <Input
+                                            className="h-7 text-xs flex-1"
+                                            type="number"
+                                            placeholder="Custom deg"
+                                            value={rotationInput}
+                                            onChange={e => setRotationInput(e.target.value)}
+                                            onKeyDown={e => {
+                                                if (e.key !== 'Enter') return;
+                                                const angle = parseFloat(rotationInput);
+                                                if (!isNaN(angle)) {
+                                                    handleRotate(angle);
+                                                    setRotationInput('');
+                                                }
+                                            }}
+                                        />
+                                        <Button
+                                            size="sm"
+                                            className="h-7 text-xs px-2"
+                                            onClick={() => {
+                                                const angle = parseFloat(rotationInput);
+                                                if (!isNaN(angle)) {
+                                                    handleRotate(angle);
+                                                    setRotationInput('');
+                                                }
+                                            }}
+                                        >
+                                            Apply
+                                        </Button>
+                                    </div>
+                                    <Separator className="my-2" />
+                                    <Button variant="ghost" size="sm" className="w-full h-7 text-xs" onClick={handleRestoreRotation}>
+                                        Restore Original
+                                    </Button>
+                                </div>
+                            </PopoverContent>
+                        </Popover>
+                        <TooltipContent side="top">
+                            <p>{canRotateSelectedBuilding ? 'Rotate Selected Building' : 'Select a building to rotate'}</p>
+                        </TooltipContent>
+                    </Tooltip>
                     {/* <div className="h-10 border-l border-border mx-2"></div> */}
                     {/* <Tooltip>
                         <TooltipTrigger asChild>
