@@ -215,6 +215,41 @@ export function UploadGreenRegulationDialog({ isOpen, onOpenChange, onExtracted 
                                 </div>
                             </div>
 
+                            {extractedData.ratingBands && extractedData.ratingBands.length > 0 && (
+                                <div className="space-y-2">
+                                    <Label className="text-sm font-semibold">Rating Bands</Label>
+                                    <div className="grid gap-2">
+                                        {extractedData.ratingBands.map((band, idx) => (
+                                            <div key={`${band.label}-${idx}`} className="grid grid-cols-[1fr_100px_100px] gap-2 items-center p-2 border rounded-md bg-secondary/10">
+                                                <Input
+                                                    value={band.label}
+                                                    onChange={(e) => setExtractedData(produce(extractedData, draft => {
+                                                        if (!draft.ratingBands) draft.ratingBands = [];
+                                                        draft.ratingBands[idx].label = e.target.value;
+                                                    }))}
+                                                />
+                                                <Input
+                                                    type="number"
+                                                    value={band.minPoints}
+                                                    onChange={(e) => setExtractedData(produce(extractedData, draft => {
+                                                        if (!draft.ratingBands) draft.ratingBands = [];
+                                                        draft.ratingBands[idx].minPoints = Number(e.target.value || 0);
+                                                    }))}
+                                                />
+                                                <Input
+                                                    type="number"
+                                                    value={band.maxPoints ?? ''}
+                                                    onChange={(e) => setExtractedData(produce(extractedData, draft => {
+                                                        if (!draft.ratingBands) draft.ratingBands = [];
+                                                        draft.ratingBands[idx].maxPoints = e.target.value === '' ? undefined : Number(e.target.value);
+                                                    }))}
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
                             {/* Detailed Certification Criteria */}
                             {extractedData.categories && extractedData.categories.length > 0 && (
                                 <div className="space-y-2">

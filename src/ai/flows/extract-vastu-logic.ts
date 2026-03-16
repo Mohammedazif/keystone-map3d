@@ -16,9 +16,27 @@ const VastuRecommendationSchema = z.object({
   weight: z.number().min(1).max(10).describe("Importance of this rule (1=Low, 10=Critical)"),
 });
 
+const VastuScorecardItemSchema = z.object({
+  id: z.string(),
+  code: z.string(),
+  section: z.string(),
+  title: z.string(),
+  complianceBasis: z.string(),
+  maxMarks: z.number(),
+});
+
+const VastuVerdictBandSchema = z.object({
+  label: z.string(),
+  minScore: z.number(),
+  maxScore: z.number().optional(),
+});
+
 const ExtractVastuOutputSchema = z.object({
   name: z.string().describe("A comprehensive name for this Vastu guidelines set (e.g. 'Residential Vastu 2024')"),
   recommendations: z.array(VastuRecommendationSchema),
+  scorecardItems: z.array(VastuScorecardItemSchema).optional(),
+  verdictBands: z.array(VastuVerdictBandSchema).optional(),
+  totalPossibleScore: z.number().optional(),
   complianceScore: z.number().nullable().optional().describe("Baseline or max possible score if mentioned"),
 });
 
@@ -48,6 +66,11 @@ export const extractVastuLogic = ai.defineFlow(
       2. Directions to avoid.
       3. Importance weight (1-10).
       
+      If the text contains a tabular Vastu scorecard, also extract:
+      1. All scorecard rows with section, code, title, compliance basis, and max marks.
+      2. The total possible score.
+      3. Verdict scale bands with min/max score ranges.
+
       If the text contains general architectural guidelines mixed with Vastu, ONLY extract the Vastu-specific parts (orientation, placement, elements).
 
       Output valid JSON matching this structure:
@@ -62,6 +85,24 @@ export const extractVastuLogic = ai.defineFlow(
             "weight": number
           }
         ],
+        "scorecardItems": [
+          {
+            "id": "b1",
+            "code": "B1",
+            "section": "Main Entrance & Gate Placement",
+            "title": "Main entry gate located in auspicious Vastu zones",
+            "complianceBasis": "In prescribed zone = Full; Nearby zone = Partial; South-West = 0",
+            "maxMarks": 5
+          }
+        ],
+        "verdictBands": [
+          {
+            "label": "VASTU COMPLIANT — Approved",
+            "minScore": 90,
+            "maxScore": 138
+          }
+        ],
+        "totalPossibleScore": 138,
         "complianceScore": number (optional)
       }
     `;

@@ -1476,6 +1476,7 @@ function FeasibilityTab() {
         {
             label: "Bylaw Compliance",
             score: metrics.compliance.bylaws,
+            summary: metrics.compliance.bylawScoreSummary,
             icon: ShieldCheck,
             items: (metrics.compliance.bylawItems || []).filter((i: any) => i.status !== 'na')
         },
@@ -1487,12 +1488,14 @@ function FeasibilityTab() {
                 activeProject.greenCertification[0]
             })` : "Green Building",
             score: metrics.compliance.green,
+            summary: metrics.compliance.greenScoreSummary,
             icon: CheckCircle,
             items: (metrics.compliance.greenItems || []).filter((i: any) => i.status !== 'na')
         },
         ...(activeProject?.vastuCompliant ? [{
             label: "Vastu (Shakti Chakra)",
             score: metrics.compliance.vastu,
+            summary: metrics.compliance.vastuScoreSummary,
             icon: Compass,
             items: (metrics.compliance.vastuItems || []).filter((i: any) => i.status !== 'na'),
             control: (
@@ -1610,11 +1613,21 @@ function FeasibilityTab() {
                                 <span className="text-2xl font-bold">{card.score}</span>
                                 <span className="text-xs text-muted-foreground mb-1">/ 100</span>
                             </div>
+                            {card.summary && (
+                                <div className="text-[11px] text-muted-foreground mb-2">
+                                    {card.summary.totalScore} / {card.summary.maxScore} points
+                                </div>
+                            )}
                             <div className="space-y-1">
                                 {card.items.map((item: any, i: number) => (
                                     <div key={i} className="flex items-center justify-between text-xs gap-2">
                                         <span className="text-muted-foreground truncate">{item.label}</span>
                                         <div className="flex items-center gap-1.5 shrink-0">
+                                            {typeof item.achievedScore === 'number' && typeof item.maxScore === 'number' && (
+                                                <span className="text-[10px] text-muted-foreground">
+                                                    {item.achievedScore}/{item.maxScore}
+                                                </span>
+                                            )}
                                             {item.detail && <span className={`text-[10px] ${item.status === 'pass' ? 'text-green-400' : item.status === 'warn' ? 'text-yellow-400' : 'text-red-400'}`}>{item.detail}</span>}
                                             {getStatusIcon(item.status)}
                                         </div>

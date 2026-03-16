@@ -734,7 +734,9 @@ export function AdminPanel() {
                                         </CardHeader>
                                         <CardContent>
                                             <div className="text-sm text-muted-foreground mb-4">
-                                                {reg.recommendations.length} Guidelines
+                                                {reg.scorecardItems?.length
+                                                    ? `${reg.scorecardItems.length} scorecard items - ${reg.recommendations.length} guidelines`
+                                                    : `${reg.recommendations.length} Guidelines`}
                                             </div>
                                             <div className="space-y-2">
                                                 {reg.recommendations.slice(0, 3).map((rec, idx) => (

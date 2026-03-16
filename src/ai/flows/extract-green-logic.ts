@@ -35,6 +35,11 @@ const ExtractedGreenRegulationSchema = z.object({
             requirements: z.array(z.string()).optional().describe('Detailed text requirements for this credit'),
         }))
     })).optional().describe('Comprehensive list of certification categories and credits'),
+    ratingBands: z.array(z.object({
+        label: z.string(),
+        minPoints: z.number(),
+        maxPoints: z.number().optional(),
+    })).optional().describe('Official certification rating bands such as Certified, Silver, Gold, Platinum'),
     confidence: z.number().min(0).max(1).describe('Confidence score for this extraction (0-1)'),
 });
 
@@ -123,6 +128,10 @@ Task:
    - Extract: "code", "name", "points", "type", "requirements" (for relevant credits only).
 
 4. Identify the Certification Standard (IGBC, GRIHA, LEED).
+5. Extract the official rating bands if present.
+   - Example LEED: Certified 40-49, Silver 50-59, Gold 60-79, Platinum 80+
+   - Example IGBC: Certified 50-59, Silver 60-69, Gold 70-79, Platinum 80+
+   - Example GRIHA: Star ranges based on total points
 
 **Structure**:
 {
@@ -159,6 +168,10 @@ Task:
       ]
     },
     ...
+  ],
+  "ratingBands": [
+    { "label": "Certified", "minPoints": 50, "maxPoints": 59 },
+    { "label": "Silver", "minPoints": 60, "maxPoints": 69 }
   ]
 }
 

@@ -199,6 +199,22 @@ export interface Plot {
   userGFA?: number; // User-defined target GFA override
   developmentStats?: DevelopmentStats;
   roadAccessSides?: string[]; // Detected road directions (N, S, E, W)
+  complianceContext?: PlotComplianceContext;
+}
+
+export interface PlotComplianceContext {
+  siteSlope?: 'north-east-lowest' | 'flat' | 'reverse' | 'unknown';
+  internalCirculation?: 'clockwise' | 'anti-clockwise' | 'unknown';
+  tJunctionCount?: number;
+  idolFacing?: 'east' | 'west' | 'north' | 'south' | 'unknown';
+  commonToiletsZone?: 'se' | 'nw' | 'other' | 'none' | 'unknown';
+  hasToiletInNorthEast?: boolean;
+  hasToiletInBrahmasthan?: boolean;
+  northEastExtension?: 'present' | 'none' | 'cut';
+  southWestExtension?: boolean;
+  extensionRemediesApplied?: boolean;
+  solarFacingRoof?: 'south' | 'other' | 'north' | 'unknown';
+  basementUseInNorthEast?: 'parking-only' | 'other' | 'none' | 'unknown';
 }
 
 
@@ -312,7 +328,7 @@ export interface DevelopmentStats {
   vastuScore?: {
     overall: number;
     rating: 'High' | 'Medium' | 'Low';
-    breakdown: { category: string; score: number; feedback: string }[];
+    breakdown: { category: string; score: number; maxScore?: number; feedback: string }[];
   };
   greenAnalysis?: {
     overall: number;
@@ -339,8 +355,15 @@ export interface GreenRegulationData {
   };
   // Comprehensive data structure
   categories?: CertificationCategory[];
+  ratingBands?: CertificationRatingBand[];
   confidence?: number;
   lastModified?: number;
+}
+
+export interface CertificationRatingBand {
+  label: string; // e.g. "Certified", "Silver", "Gold"
+  minPoints: number;
+  maxPoints?: number;
 }
 
 export interface CertificationCategory {
@@ -362,6 +385,9 @@ export interface VastuRegulationData {
   name: string; // e.g. "Standard Vastu Guidelines"
   source?: string; // e.g. "Vastu Shastra PDF"
   recommendations: VastuRecommendation[];
+  scorecardItems?: VastuScorecardItem[];
+  verdictBands?: VastuVerdictBand[];
+  totalPossibleScore?: number;
   complianceScore?: number;
   lastModified?: number;
 }
@@ -372,6 +398,21 @@ export interface VastuRecommendation {
   avoidDirections: string[]; // e.g. ["SW"]
   description?: string;
   weight?: number; // Importance (1-10)
+}
+
+export interface VastuScorecardItem {
+  id: string;
+  code: string; // e.g. "B1"
+  section: string; // e.g. "Main Entrance & Gate Placement"
+  title: string;
+  complianceBasis: string;
+  maxMarks: number;
+}
+
+export interface VastuVerdictBand {
+  label: string; // e.g. "VASTU COMPLIANT — Approved"
+  minScore: number;
+  maxScore?: number;
 }
 
 // 32-Zone Shakti Chakra Directions
@@ -432,6 +473,9 @@ export interface AdvancedKPIs {
     bylaws: number;
     green: number;
     vastu: number;
+    bylawScoreSummary?: AdditiveScoreSummary;
+    greenScoreSummary?: AdditiveScoreSummary;
+    vastuScoreSummary?: AdditiveScoreSummary;
     // Per-item breakdowns for dashboard display
     bylawItems: ComplianceItem[];
     greenItems: ComplianceItem[];
@@ -439,11 +483,19 @@ export interface AdvancedKPIs {
   };
 }
 
+export interface AdditiveScoreSummary {
+  totalScore: number;
+  maxScore: number;
+  percentage: number;
+}
+
 export interface ComplianceItem {
   label: string;
   status: 'pass' | 'fail' | 'warn' | 'na';
   detail?: string; // e.g. "4.12 / 2.0"
-  weight: number;  // 0-100 contribution to the category score
+  weight: number;  // legacy field, mirrored from maxScore for compatibility
+  maxScore: number;
+  achievedScore: number;
 }
 
 
@@ -573,7 +625,14 @@ export interface RenderingProjectSummary {
   // Utilities on site
   utilities: string[];
   // Compliance
-  compliance: { bylaws: number; green: number; vastu: number }; // 0-100 scores
+  compliance: {
+    bylaws: number;
+    green: number;
+    vastu: number;
+    bylawScoreSummary?: AdditiveScoreSummary;
+    greenScoreSummary?: AdditiveScoreSummary;
+    vastuScoreSummary?: AdditiveScoreSummary;
+  }; // 0-100 scores
   // Custom zones
   zones: {
     buildable: { name: string; area: number; intendedUse: string }[];

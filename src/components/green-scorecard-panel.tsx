@@ -73,10 +73,11 @@ export function GreenScorecardPanel() {
     const creditStatusMap = useGreenStandardChecks(activeProject, activeProject?.simulationResults);
     const [manualOverrides, setManualOverrides] = useState<Record<string, boolean>>({});
 
-    const regulation = regulations && regulations.length > 0 ? regulations[0] : null;
+    const scorecardDataList = useMemo(() => {
+        if (!regulations?.length) return [];
 
-    const scorecardData = useMemo(() => {
-        if (!regulation?.categories) return null;
+        return regulations.map((regulation) => {
+        if (!regulation?.categories?.length) return null;
 
         let totalPoints = 0;
         let achievedPoints = 0;
@@ -99,12 +100,9 @@ export function GreenScorecardPanel() {
                     rule.keywords.some(kw => nameLower.includes(kw))
                 );
 
-                // Prerequisites / mandatory items (0 points) are auto-achieved as standard
-                if (maxPoints === 0) {
-                    status = 'achieved';
-                    isAuto = true;
-                    dataKey = 'standard';
-                } else if (matchedRule) {
+                const isPrerequisite = credit.type === 'mandatory' || credit.type === 'prerequisite' || maxPoints === 0;
+
+                if (matchedRule) {
                     if (matchedRule.checkKey === 'manual_tracking') {
                         isManualOnly = true;
                     } else if (matchedRule.checkKey === 'heat_island') {
@@ -112,6 +110,7 @@ export function GreenScorecardPanel() {
                             status = 'achieved';
                             score = maxPoints;
                             isAuto = true;
+                            dataKey = matchedRule.checkKey;
                         }
                     } else if (matchedRule.checkKey === 'energy_optimization') {
                         // Energy optimization proven by good daylighting OR ventilation simulation
@@ -131,6 +130,10 @@ export function GreenScorecardPanel() {
                         }
                     }
                 } else {
+                    isManualOnly = true;
+                }
+
+                if (isPrerequisite && !isAuto && !isManualOnly) {
                     isManualOnly = true;
                 }
 
@@ -163,46 +166,25 @@ export function GreenScorecardPanel() {
             return { ...cat, credits };
         });
 
-        if (!categories.find((c: any) => c.name.includes('Location'))) {
-            const transitStatus = creditStatusMap['transit_access']?.status === 'achieved';
-            const amenityStatus = creditStatusMap['amenity_proximity']?.status === 'achieved';
-
-            const proxCredits = [
-                {
-                    name: "Access to Public Transport",
-                    type: "credit",
-                    status: transitStatus ? 'achieved' : 'pending',
-                    score: transitStatus ? 2 : 0,
-                    maxPoints: 2,
-                    isAuto: true,
-                    dataKey: 'transit',
-                    code: "LOC-1"
-                },
-                {
-                    name: "Proximity to Amenities",
-                    type: "credit",
-                    status: amenityStatus ? 'achieved' : 'pending',
-                    score: amenityStatus ? 2 : 0,
-                    maxPoints: 2,
-                    isAuto: true,
-                    dataKey: 'amenity',
-                    code: "LOC-2"
-                }
-            ];
-
-            proxCredits.forEach(c => {
-                totalPoints += c.maxPoints;
-                achievedPoints += (c.score as number);
-            });
-
-            categories.push({
-                name: "Location & Connectivity (Proximity)",
-                credits: proxCredits
-            } as any);
-        }
-
-        return { categories, totalPoints, achievedPoints };
-    }, [regulation, creditStatusMap, manualOverrides]);
+        return {
+            id: regulation.id || regulation.certificationType,
+            certificationType: regulation.certificationType,
+            label: getStandardLabel(regulation.name || regulation.certificationType),
+            categories,
+            totalPoints,
+            achievedPoints,
+            ratingBands: regulation.ratingBands || [],
+        };
+        }).filter(Boolean) as Array<{
+            id: string;
+            certificationType: string;
+            label: string;
+            categories: any[];
+            totalPoints: number;
+            achievedPoints: number;
+            ratingBands: { label: string; minPoints: number; maxPoints?: number }[];
+        }>;
+    }, [regulations, creditStatusMap, manualOverrides]);
 
     const handleToggleManual = (overrideKey: string) => {
         setManualOverrides(prev => ({
@@ -240,14 +222,12 @@ export function GreenScorecardPanel() {
     }
 
 
-    if (isLoading && !scorecardData) return (
+    if (isLoading && scorecardDataList.length === 0) return (
         <div className="p-8 flex items-center justify-center text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading Green Regulations...
         </div>
     );
-    if (!scorecardData) return <div className="p-4 text-center text-muted-foreground">No Green Regulation data found for this project.</div>;
-
-    const percentage = scorecardData.totalPoints > 0 ? (scorecardData.achievedPoints / scorecardData.totalPoints) * 100 : 0;
+    if (scorecardDataList.length === 0) return <div className="p-4 text-center text-muted-foreground">No Green Regulation data found for this project.</div>;
 
     return (
         <div className="h-full flex flex-col w-full max-h-[calc(100vh-200px)]">
@@ -259,77 +239,107 @@ export function GreenScorecardPanel() {
                         Green Scorecard
                         {isLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                     </h2>
-                    <Badge variant="outline">{getStandardLabel(activeProject.greenCertification?.[0])}</Badge>
-                </div>
-
-                <div className="space-y-1">
-                    <div className="flex justify-between text-sm font-medium">
-                        <span>Score: {scorecardData.achievedPoints} / {scorecardData.totalPoints}</span>
-                        <span>{percentage.toFixed(0)}%</span>
+                    <div className="flex gap-1 flex-wrap justify-end">
+                        {scorecardDataList.map((scorecard) => (
+                            <Badge key={scorecard.id} variant="outline">{scorecard.certificationType}</Badge>
+                        ))}
                     </div>
-                    <Progress value={percentage} className="h-2" />
+                </div>
+                <div className="mt-2 space-y-2">
+                    {scorecardDataList.map((scorecard) => {
+                        const percentage = scorecard.totalPoints > 0 ? (scorecard.achievedPoints / scorecard.totalPoints) * 100 : 0;
+                        const achievedBand = scorecard.ratingBands.find((band) =>
+                            scorecard.achievedPoints >= band.minPoints &&
+                            (band.maxPoints === undefined || scorecard.achievedPoints <= band.maxPoints)
+                        );
+
+                        return (
+                            <div key={scorecard.id} className="space-y-1">
+                                <div className="flex justify-between text-sm font-medium">
+                                    <span>{scorecard.certificationType}: {scorecard.achievedPoints} / {scorecard.totalPoints}</span>
+                                    <span>{percentage.toFixed(0)}%</span>
+                                </div>
+                                <Progress value={percentage} className="h-2" />
+                                {achievedBand && (
+                                    <div className="text-[11px] text-muted-foreground">
+                                        Rating: {achievedBand.label}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             </div>
 
             {/* Scrollable List */}
             <ScrollArea className="flex-1">
                 <div className="p-4">
-                    <Accordion type="multiple" defaultValue={scorecardData.categories.map((c: any) => c.name)} className="space-y-4">
-                        {scorecardData.categories.map((cat: any, idx: number) => (
-                            <AccordionItem value={cat.name} key={idx} className="border rounded-lg px-3 bg-secondary/10">
-                                <AccordionTrigger className="hover:no-underline py-3">
-                                    <div className="flex items-center gap-2 text-sm font-semibold">
-                                        {cat.name.includes("Location") ? <MapPin className="h-4 w-4 text-orange-500" /> :
-                                            cat.name.includes("Energy") ? <Sun className="h-4 w-4 text-yellow-500" /> :
-                                                cat.name.includes("Water") ? <Wind className="h-4 w-4 text-blue-500" /> :
-                                                    <Circle className="h-3 w-3 text-muted-foreground" />}
-                                        {cat.name}
-                                    </div>
-                                </AccordionTrigger>
-                                <AccordionContent className="pb-3">
-                                    <div className="space-y-1">
-                                        {cat.credits.map((credit: any, cIdx: number) => (
-                                            <div key={cIdx} className="flex items-center gap-2 p-2 rounded-md hover:bg-secondary/20 transition-colors group">
-                                                <div className="shrink-0">
-                                                    {credit.status === 'achieved' ? <CheckCircle2 className="h-4 w-4 text-green-500" /> :
-                                                        credit.status === 'failed' ? <XCircle className="h-4 w-4 text-red-500" /> :
-                                                            <Circle className="h-4 w-4 text-muted-foreground/30" />}
+                    <div className="space-y-6">
+                        {scorecardDataList.map((scorecard) => (
+                            <div key={scorecard.id} className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="text-sm font-semibold">{scorecard.label}</h3>
+                                    <span className="text-xs text-muted-foreground">{scorecard.achievedPoints} / {scorecard.totalPoints}</span>
+                                </div>
+                                <Accordion type="multiple" defaultValue={scorecard.categories.map((c: any) => `${scorecard.id}-${c.name}`)} className="space-y-4">
+                                    {scorecard.categories.map((cat: any, idx: number) => (
+                                        <AccordionItem value={`${scorecard.id}-${cat.name}`} key={`${scorecard.id}-${idx}`} className="border rounded-lg px-3 bg-secondary/10">
+                                            <AccordionTrigger className="hover:no-underline py-3">
+                                                <div className="flex items-center gap-2 text-sm font-semibold">
+                                                    {cat.name.includes("Location") ? <MapPin className="h-4 w-4 text-orange-500" /> :
+                                                        cat.name.includes("Energy") ? <Sun className="h-4 w-4 text-yellow-500" /> :
+                                                            cat.name.includes("Water") ? <Wind className="h-4 w-4 text-blue-500" /> :
+                                                                <Circle className="h-3 w-3 text-muted-foreground" />}
+                                                    {cat.name}
                                                 </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <span className={cn(
-                                                        "text-sm font-medium leading-tight",
-                                                        credit.status === 'achieved' && "text-green-700 dark:text-green-400"
-                                                    )}>
-                                                        {credit.name}
-                                                    </span>
-                                                    {credit.isAuto && !credit.isManualOnly && (
-                                                        <span className="text-[10px] text-muted-foreground ml-1.5">
-                                                            {credit.dataKey === 'standard' ? '· Standard' :
-                                                             credit.dataKey === 'ventilation' || credit.dataKey === 'daylighting' || credit.dataKey === 'energy_optimization' ? '· Simulation' :
-                                                             credit.dataKey === 'transit' || credit.dataKey === 'amenity' ? '· Proximity' :
-                                                             ['green_cover', 'open_space', 'site_planning', 'land_use_planning'].includes(credit.dataKey) ? '· Plot Data' :
-                                                             ['far_compliance', 'ground_coverage', 'parking_compliance'].includes(credit.dataKey) ? '· KPIs' :
-                                                             ['rainwater_harvesting', 'solar_energy', 'water_recycling', 'waste_management', 'ev_charging', 'fire_safety', 'energy_efficiency'].includes(credit.dataKey) ? '· Utilities' : ''}
-                                                        </span>
-                                                    )}
+                                            </AccordionTrigger>
+                                            <AccordionContent className="pb-3">
+                                                <div className="space-y-1">
+                                                    {cat.credits.map((credit: any, cIdx: number) => (
+                                                        <div key={cIdx} className="flex items-center gap-2 p-2 rounded-md hover:bg-secondary/20 transition-colors group">
+                                                            <div className="shrink-0">
+                                                                {credit.status === 'achieved' ? <CheckCircle2 className="h-4 w-4 text-green-500" /> :
+                                                                    credit.status === 'failed' ? <XCircle className="h-4 w-4 text-red-500" /> :
+                                                                        <Circle className="h-4 w-4 text-muted-foreground/30" />}
+                                                            </div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <span className={cn(
+                                                                    "text-sm font-medium leading-tight",
+                                                                    credit.status === 'achieved' && "text-green-700 dark:text-green-400"
+                                                                )}>
+                                                                    {credit.name}
+                                                                </span>
+                                                                {credit.isAuto && !credit.isManualOnly && (
+                                                                    <span className="text-[10px] text-muted-foreground ml-1.5">
+                                                                        {credit.dataKey === 'standard' ? '· Standard' :
+                                                                         credit.dataKey === 'ventilation' || credit.dataKey === 'daylighting' || credit.dataKey === 'energy_optimization' ? '· Simulation' :
+                                                                         credit.dataKey === 'transit' || credit.dataKey === 'amenity' ? '· Proximity' :
+                                                                         ['green_cover', 'open_space', 'site_planning', 'land_use_planning'].includes(credit.dataKey) ? '· Plot Data' :
+                                                                         ['far_compliance', 'ground_coverage', 'parking_compliance'].includes(credit.dataKey) ? '· KPIs' :
+                                                                         ['rainwater_harvesting', 'solar_energy', 'water_recycling', 'waste_management', 'ev_charging', 'fire_safety', 'energy_efficiency'].includes(credit.dataKey) ? '· Utilities' : ''}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex items-center gap-2 shrink-0">
+                                                                <span className="text-xs font-mono text-muted-foreground">
+                                                                    {credit.score}/{credit.maxPoints}
+                                                                </span>
+                                                                <Switch
+                                                                    checked={credit.status === 'achieved'}
+                                                                    onCheckedChange={() => handleToggleManual(credit.overrideKey)}
+                                                                    className="scale-[0.6] origin-right"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                                <div className="flex items-center gap-2 shrink-0">
-                                                    <span className="text-xs font-mono text-muted-foreground">
-                                                        {credit.score}/{credit.maxPoints}
-                                                    </span>
-                                                    <Switch
-                                                        checked={credit.status === 'achieved'}
-                                                        onCheckedChange={() => handleToggleManual(credit.overrideKey)}
-                                                        className="scale-[0.6] origin-right"
-                                                    />
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </AccordionContent>
-                            </AccordionItem>
+                                            </AccordionContent>
+                                        </AccordionItem>
+                                    ))}
+                                </Accordion>
+                            </div>
                         ))}
-                    </Accordion>
+                    </div>
                 </div>
             </ScrollArea>
         </div>

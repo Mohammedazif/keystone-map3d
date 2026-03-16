@@ -214,6 +214,41 @@ export function EditGreenRegulationDialog({ isOpen, onOpenChange, regulation, on
                         </div>
                     </div>
 
+                    {editedData.ratingBands && editedData.ratingBands.length > 0 && (
+                        <div className="space-y-4">
+                            <Label className="text-sm font-semibold">Rating Bands</Label>
+                            <div className="space-y-2">
+                                {editedData.ratingBands.map((band, idx) => (
+                                    <div key={`${band.label}-${idx}`} className="grid grid-cols-[1fr_100px_100px] gap-3">
+                                        <Input
+                                            value={band.label}
+                                            onChange={(e) => setEditedData(produce(editedData, draft => {
+                                                if (!draft.ratingBands) draft.ratingBands = [];
+                                                draft.ratingBands[idx].label = e.target.value;
+                                            }))}
+                                        />
+                                        <Input
+                                            type="number"
+                                            value={band.minPoints}
+                                            onChange={(e) => setEditedData(produce(editedData, draft => {
+                                                if (!draft.ratingBands) draft.ratingBands = [];
+                                                draft.ratingBands[idx].minPoints = Number(e.target.value || 0);
+                                            }))}
+                                        />
+                                        <Input
+                                            type="number"
+                                            value={band.maxPoints ?? ''}
+                                            onChange={(e) => setEditedData(produce(editedData, draft => {
+                                                if (!draft.ratingBands) draft.ratingBands = [];
+                                                draft.ratingBands[idx].maxPoints = e.target.value === '' ? undefined : Number(e.target.value);
+                                            }))}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="flex gap-2 pt-4">
                         <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">
                             Cancel

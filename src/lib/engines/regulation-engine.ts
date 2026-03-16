@@ -5,7 +5,9 @@ import {
     RegulationData,
     GreenRegulationData,
     VastuRegulationData,
-    VASTU_ZONES_32
+    VASTU_ZONES_32,
+    ComplianceItem,
+    AdditiveScoreSummary
 } from '../types';
 import * as turf from '@turf/turf';
 import { getVastuCenter } from '../vastu-utils';
@@ -260,64 +262,218 @@ export class RegulationEngine {
         return (bearing + 360) % 360; // Normalize to 0-360 compass bearing
     }
 
-    private calcWeightedScore(items: any[]): number {
-        let score = 0, totalWeight = 0;
-        items.forEach((item: any) => {
-            if (item.status === 'na' || item.weight === 0) return;
-            totalWeight += item.weight;
-            if (item.status === 'pass') score += item.weight;
-            else if (item.status === 'warn') score += item.weight * 0.5;
+    private getVisibleBuildings() {
+        return this.project.plots.flatMap((plot) => plot.buildings.filter((building) => building.visible !== false));
+    }
+
+    private getAllUtilities() {
+        return this.project.plots.flatMap((plot) => plot.utilityAreas || []);
+    }
+
+    private getAllEntries() {
+        return this.project.plots.flatMap((plot) => plot.entries || []);
+    }
+
+    private getApprovalStatus(key: 'buildingPlan' | 'environmentClearance' | 'fireNoc' | 'utilityConnections') {
+        return this.project.underwriting?.approvals?.[key];
+    }
+
+    private getZoneBearing(plot: any, feature: any): number | null {
+        try {
+            const plotCenter = getVastuCenter(plot.geometry);
+            const featureCenter = feature.centroid || turf.centroid(feature.geometry);
+            return (turf.bearing(plotCenter, featureCenter) + 360) % 360;
+        } catch {
+            return null;
+        }
+    }
+
+    private isBearingInRange(bearing: number, min: number, max: number): boolean {
+        if (min <= max) return bearing >= min && bearing <= max;
+        return bearing >= min || bearing <= max;
+    }
+
+    private getFeaturesInBearingRange(features: any[], plot: any, min: number, max: number, predicate?: (feature: any) => boolean) {
+        return features.filter((feature) => {
+            if (predicate && !predicate(feature)) return false;
+            const bearing = this.getZoneBearing(plot, feature);
+            return bearing !== null && this.isBearingInRange(bearing, min, max);
         });
-        return totalWeight > 0 ? Math.round((score / totalWeight) * 100) : 100;
+    }
+
+    private getLargestBuildingInRange(plot: any, min: number, max: number) {
+        const buildings = this.getFeaturesInBearingRange(
+            plot.buildings.filter((building: any) => building.visible !== false),
+            plot,
+            min,
+            max
+        ) as any[];
+
+        return buildings.sort((a, b) => (b.height || b.area || 0) - (a.height || a.area || 0))[0];
+    }
+
+    private evaluatePlotShape(plot: any): 'pass' | 'warn' | 'fail' {
+        try {
+            const ring = plot.geometry.geometry.coordinates[0] || [];
+            const vertexCount = Math.max(0, ring.length - 1);
+            const bbox = turf.bbox(plot.geometry);
+            const bboxArea = Math.max(0, turf.area(turf.bboxPolygon(bbox)));
+            const plotArea = Math.max(0, turf.area(plot.geometry));
+            const rectangularity = bboxArea > 0 ? plotArea / bboxArea : 0;
+
+            if (vertexCount === 4 && rectangularity > 0.9) return 'pass';
+            if (vertexCount <= 6 && rectangularity > 0.75) return 'warn';
+            return 'fail';
+        } catch {
+            return 'warn';
+        }
+    }
+
+    private createScoreItem(
+        label: string,
+        status: 'pass' | 'fail' | 'warn' | 'na',
+        detail: string,
+        maxScore: number
+    ): ComplianceItem {
+        const achievedScore =
+            status === 'pass' ? maxScore :
+            status === 'warn' ? Math.round(maxScore * 0.5 * 100) / 100 :
+            0;
+
+        return {
+            label,
+            status,
+            detail,
+            weight: maxScore,
+            maxScore,
+            achievedScore,
+        };
+    }
+
+    private calcAdditiveScore(items: ComplianceItem[]): AdditiveScoreSummary {
+        const eligibleItems = items.filter((item) => item.status !== 'na' && item.maxScore > 0);
+        const maxScore = eligibleItems.reduce((sum, item) => sum + item.maxScore, 0);
+        const totalScore = eligibleItems.reduce((sum, item) => sum + item.achievedScore, 0);
+        const percentage = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 100;
+        return { totalScore, maxScore, percentage };
     }
 
     private calculateCompliance(areaMetrics: any, greenMetrics: any) {
-        const bylawItems: any[] = [];
-        const greenItems: any[] = [];
+        const bylawItems: ComplianceItem[] = [];
+        const greenItems: ComplianceItem[] = [];
 
         // ========== BYLAWS ==========
 
-        // FAR (weight: 35)
+        const visibleBuildings = this.getVisibleBuildings();
+        const allUtilities = this.getAllUtilities();
+        const allEntries = this.getAllEntries();
+        const tallestBuilding = visibleBuildings.reduce((tallest, building) => {
+            const height = building.height || (building.numFloors * 3.5);
+            return height > tallest ? height : tallest;
+        }, 0);
+        const roadAccessCount = this.project.plots.reduce((count, plot) => count + (plot.roadAccessSides?.length || 0), 0);
+        const hasRoadUtility = allUtilities.some((utility: any) => String(utility.type || '').toLowerCase() === 'roads');
+        const soilCoverage = visibleBuildings.length > 0 && visibleBuildings.every((building) =>
+            building.soilData?.ph !== null && building.soilData?.ph !== undefined &&
+            building.soilData?.bd !== null && building.soilData?.bd !== undefined
+        );
+        const basePlotArea = this.project.plots.reduce((sum, plot) => sum + (plot.area || 0), 0);
+        if (basePlotArea > 0) {
+            bylawItems.push(this.createScoreItem(
+                'Minimum Plot Size',
+                basePlotArea >= 60 ? 'pass' : basePlotArea >= 30 ? 'warn' : 'fail',
+                `${Math.round(basePlotArea)} sqm`,
+                30
+            ));
+        }
+
+        if (allEntries.length > 0 || roadAccessCount > 0 || hasRoadUtility) {
+            bylawItems.push(this.createScoreItem(
+                'Plot Access / Frontage',
+                allEntries.length > 0 || roadAccessCount > 0 ? 'pass' : 'warn',
+                `${allEntries.length} entries, ${roadAccessCount} road sides`,
+                30
+            ));
+        }
+
+        const buildingPlanStatus = this.getApprovalStatus('buildingPlan');
+        if (buildingPlanStatus) {
+            bylawItems.push(this.createScoreItem(
+                'Building Plan Approval',
+                buildingPlanStatus === 'Approved' ? 'pass' : buildingPlanStatus === 'Pending' ? 'warn' : 'fail',
+                buildingPlanStatus,
+                40
+            ));
+        }
+
+        const envClearanceStatus = this.getApprovalStatus('environmentClearance');
+        if (envClearanceStatus && envClearanceStatus !== 'Not Applicable') {
+            bylawItems.push(this.createScoreItem(
+                'Environmental Clearance',
+                envClearanceStatus === 'Approved' ? 'pass' : 'warn',
+                envClearanceStatus,
+                30
+            ));
+        }
+
+        // FAR
         const maxFAR = this.resolveLimit(
             r => r.geometry?.floor_area_ratio?.value || r.geometry?.max_far?.value || r.geometry?.fsi?.value,
             [p => p.far, p => p.userFAR, p => p.regulation?.geometry?.floor_area_ratio?.value]
-        ) || 2.5;
-        bylawItems.push({
-            label: `FAR (≤${maxFAR})`,
-            status: areaMetrics.achievedFAR <= maxFAR ? 'pass' : 'fail',
-            detail: `${areaMetrics.achievedFAR.toFixed(2)} / ${maxFAR}`,
-            weight: 35
-        });
+        );
+        if (maxFAR !== undefined) {
+            bylawItems.push(this.createScoreItem(
+                `FAR (≤${maxFAR})`,
+                areaMetrics.achievedFAR <= maxFAR ? 'pass' : 'fail',
+                `${areaMetrics.achievedFAR.toFixed(2)} / ${maxFAR}`,
+                80
+            ));
+        }
 
-        // Height (weight: 25)
+        // Height
         const maxHeight = this.resolveLimit(
             r => r.geometry?.max_height?.value,
             [p => p.maxBuildingHeight, p => p.regulation?.geometry?.max_height?.value]
         );
-        let tallest = 0;
-        this.project.plots.forEach(p => p.buildings.forEach(b => {
-            if (b.visible !== false) { const h = b.height || (b.numFloors * 3.5); if (h > tallest) tallest = h; }
-        }));
-        bylawItems.push({
-            label: maxHeight ? `Height (≤${maxHeight}m)` : 'Height',
-            status: maxHeight ? (tallest <= maxHeight ? 'pass' : 'fail') : 'na',
-            detail: maxHeight ? `${tallest.toFixed(1)}m / ${maxHeight}m` : `${tallest.toFixed(1)}m (no limit)`,
-            weight: maxHeight ? 25 : 0
-        });
+        if (maxHeight !== undefined) {
+            bylawItems.push(this.createScoreItem(
+                `Height (≤${maxHeight}m)`,
+                tallestBuilding <= maxHeight ? 'pass' : 'fail',
+                `${tallestBuilding.toFixed(1)}m / ${maxHeight}m`,
+                60
+            ));
+        }
 
-        // Coverage (weight: 20)
+        bylawItems.push(this.createScoreItem(
+            'High-Rise Definition Compliance',
+            tallestBuilding > 15
+                ? (hasRoadUtility ? 'pass' : 'warn')
+                : 'pass',
+            tallestBuilding > 15 ? 'High-rise checks depend on fire access + NOC' : 'Not a high-rise',
+            30
+        ));
+
+        // Coverage
         const maxCov = this.resolveLimit(
             r => r.geometry?.max_ground_coverage?.value,
             [p => p.maxCoverage, p => p.regulation?.geometry?.max_ground_coverage?.value]
         );
-        if (maxCov) {
-            bylawItems.push({
-                label: `Coverage (≤${maxCov}%)`,
-                status: areaMetrics.groundCoveragePct <= maxCov ? 'pass' : 'fail',
-                detail: `${areaMetrics.groundCoveragePct.toFixed(1)}% / ${maxCov}%`,
-                weight: 20
-            });
+        if (maxCov !== undefined) {
+            bylawItems.push(this.createScoreItem(
+                `Coverage (≤${maxCov}%)`,
+                areaMetrics.groundCoveragePct <= maxCov ? 'pass' : 'fail',
+                `${areaMetrics.groundCoveragePct.toFixed(1)}% / ${maxCov}%`,
+                60
+            ));
         }
+
+        const openSpacePct = areaMetrics.totalPlotArea > 0 ? (greenMetrics.openSpace / areaMetrics.totalPlotArea) * 100 : 0;
+        bylawItems.push(this.createScoreItem(
+            'Open Space Ratio',
+            openSpacePct >= 15 ? 'pass' : openSpacePct >= 10 ? 'warn' : 'fail',
+            `${openSpacePct.toFixed(1)}% open space`,
+            40
+        ));
 
         // Setback (weight: 10)
         const reqSetback = this.resolveLimit(r => r.geometry?.setback?.value, [p => p.setback]) || 0;
@@ -336,12 +492,12 @@ export class RegulationEngine {
                     }
                 } catch { /* ignore */ }
             });
-            bylawItems.push({
-                label: `Setback (≥${reqSetback}m)`,
-                status: setbackOk ? 'pass' : 'fail',
-                detail: setbackOk ? 'Compliant' : 'Violation detected',
-                weight: 10
-            });
+            bylawItems.push(this.createScoreItem(
+                `Setback (≥${reqSetback}m)`,
+                setbackOk ? 'pass' : 'fail',
+                setbackOk ? 'Compliant' : 'Violation detected',
+                40
+            ));
         }
 
         // Parking
@@ -354,8 +510,8 @@ export class RegulationEngine {
             });
         });
         if (totalUnits === 0) totalUnits = Math.floor(areaMetrics.totalBuiltUpArea / 100);
-        let parkRatio = this.regulations?.facilities?.parking?.value || 1;
-        const reqParking = Math.ceil(totalUnits * parkRatio);
+        const parkRatio = this.regulations?.facilities?.parking?.value;
+        const reqParking = parkRatio !== undefined ? Math.ceil(totalUnits * parkRatio) : 0;
         let provParking = 0;
         this.project.plots.forEach(p => {
             p.parkingAreas.forEach((pa: any) => { provParking += pa.capacity || Math.floor(pa.area / 30); });
@@ -366,32 +522,80 @@ export class RegulationEngine {
             });
         });
         if (reqParking > 0) {
-            bylawItems.push({
-                label: `Parking (≥${reqParking})`,
-                status: provParking >= reqParking ? 'pass' : provParking >= reqParking * 0.5 ? 'warn' : 'fail',
-                detail: `${provParking} / ${reqParking} slots`,
-                weight: 10
-            });
+            bylawItems.push(this.createScoreItem(
+                `Parking (≥${reqParking})`,
+                provParking >= reqParking ? 'pass' : provParking >= reqParking * 0.5 ? 'warn' : 'fail',
+                `${provParking} / ${reqParking} slots`,
+                50
+            ));
+        }
+
+        if (hasRoadUtility || roadAccessCount > 0) {
+            bylawItems.push(this.createScoreItem(
+                'Internal Road / Fire Access',
+                hasRoadUtility ? 'pass' : 'warn',
+                hasRoadUtility ? 'Road utility defined' : `${roadAccessCount} road access sides`,
+                30
+            ));
+        }
+
+        const fireNocStatus = this.getApprovalStatus('fireNoc');
+        if (tallestBuilding > 15 || fireNocStatus) {
+            bylawItems.push(this.createScoreItem(
+                'Fire NOC',
+                fireNocStatus === 'Approved' ? 'pass' : fireNocStatus === 'Pending' ? 'warn' : 'fail',
+                fireNocStatus || 'Missing',
+                50
+            ));
+        }
+
+        if (visibleBuildings.length > 0) {
+            bylawItems.push(this.createScoreItem(
+                'Soil Investigation Report',
+                soilCoverage ? 'pass' : 'warn',
+                soilCoverage ? 'Soil data available for all buildings' : 'Soil data missing for one or more buildings',
+                50
+            ));
+        }
+
+        const utilityConnectionStatus = this.getApprovalStatus('utilityConnections');
+        if (utilityConnectionStatus && utilityConnectionStatus !== 'Not Applicable') {
+            bylawItems.push(this.createScoreItem(
+                'Utility Connections Approval',
+                utilityConnectionStatus === 'Approved' ? 'pass' : 'warn',
+                utilityConnectionStatus,
+                20
+            ));
+        }
+
+        const reraRegistration = this.project.underwriting?.approvals?.reraRegistration;
+        if (reraRegistration) {
+            bylawItems.push(this.createScoreItem(
+                'RERA Registration',
+                reraRegistration !== 'Pending' ? 'pass' : 'warn',
+                reraRegistration,
+                20
+            ));
         }
 
         // ========== GREEN ==========
 
         const tGreen = this.greenStandards?.constraints?.minGreenCover ? this.greenStandards.constraints.minGreenCover * 100 : 15;
-        greenItems.push({
-            label: `Green Cover (≥${tGreen.toFixed(0)}%)`,
-            status: greenMetrics.greenArea.percentage >= tGreen ? 'pass' : greenMetrics.greenArea.percentage >= tGreen * 0.7 ? 'warn' : 'fail',
-            detail: `${greenMetrics.greenArea.percentage.toFixed(1)}% / ${tGreen.toFixed(0)}%`,
-            weight: 30
-        });
+        greenItems.push(this.createScoreItem(
+            `Green Cover (≥${tGreen.toFixed(0)}%)`,
+            greenMetrics.greenArea.percentage >= tGreen ? 'pass' : greenMetrics.greenArea.percentage >= tGreen * 0.7 ? 'warn' : 'fail',
+            `${greenMetrics.greenArea.percentage.toFixed(1)}% / ${tGreen.toFixed(0)}%`,
+            30
+        ));
 
         const tOpen = this.greenStandards?.constraints?.minOpenSpace ? this.greenStandards.constraints.minOpenSpace * 100 : 30;
         const openPct = areaMetrics.totalPlotArea > 0 ? (greenMetrics.openSpace / areaMetrics.totalPlotArea) * 100 : 0;
-        greenItems.push({
-            label: `Open Space (≥${tOpen.toFixed(0)}%)`,
-            status: openPct >= tOpen ? 'pass' : openPct >= tOpen * 0.7 ? 'warn' : 'fail',
-            detail: `${openPct.toFixed(1)}% / ${tOpen.toFixed(0)}%`,
-            weight: 25
-        });
+        greenItems.push(this.createScoreItem(
+            `Open Space (≥${tOpen.toFixed(0)}%)`,
+            openPct >= tOpen ? 'pass' : openPct >= tOpen * 0.7 ? 'warn' : 'fail',
+            `${openPct.toFixed(1)}% / ${tOpen.toFixed(0)}%`,
+            25
+        ));
 
         let hasRain = false, hasSolar = false, hasSTP = false;
         this.project.plots.forEach(p => {
@@ -405,28 +609,331 @@ export class RegulationEngine {
                 });
             }
         });
-        greenItems.push({ label: 'Rainwater Harvesting', status: hasRain ? 'pass' : 'fail', detail: hasRain ? 'Provided' : 'Not provided', weight: 15 });
-        greenItems.push({ label: 'Solar PV', status: hasSolar ? 'pass' : 'fail', detail: hasSolar ? 'Provided' : 'Not provided', weight: 15 });
-        greenItems.push({ label: 'Water Recycling (STP/WTP)', status: hasSTP ? 'pass' : 'fail', detail: hasSTP ? 'Provided' : 'Not provided', weight: 15 });
+        greenItems.push(this.createScoreItem('Rainwater Harvesting', hasRain ? 'pass' : 'fail', hasRain ? 'Provided' : 'Not provided', 15));
+        greenItems.push(this.createScoreItem('Solar PV', hasSolar ? 'pass' : 'fail', hasSolar ? 'Provided' : 'Not provided', 15));
+        greenItems.push(this.createScoreItem('Water Recycling (STP/WTP)', hasSTP ? 'pass' : 'fail', hasSTP ? 'Provided' : 'Not provided', 15));
 
         // ========== VASTU ==========
         const vastuItems = this.calculateVastuItems();
+        const bylawScoreSummary = this.calcAdditiveScore(bylawItems);
+        const greenScoreSummary = this.calcAdditiveScore(greenItems);
+        const vastuScoreSummary = this.calcAdditiveScore(vastuItems);
 
         return {
-            bylaws: Math.max(0, this.calcWeightedScore(bylawItems)),
-            green: Math.max(0, this.calcWeightedScore(greenItems)),
-            vastu: Math.max(0, this.calcWeightedScore(vastuItems)),
+            bylaws: Math.max(0, bylawScoreSummary.percentage),
+            green: Math.max(0, greenScoreSummary.percentage),
+            vastu: Math.max(0, vastuScoreSummary.percentage),
+            bylawScoreSummary,
+            greenScoreSummary,
+            vastuScoreSummary,
             bylawItems,
             greenItems,
             vastuItems,
         };
     }
 
-    private calculateVastuItems(): any[] {
-        const items: any[] = [];
+    private evaluateVastuScorecardItem(item: any): { status: 'pass' | 'warn' | 'fail' | 'na'; detail: string } {
+        const code = String(item.code || '').toUpperCase();
+        const primaryPlot = this.project.plots[0];
+        if (!primaryPlot?.geometry) return { status: 'na', detail: 'No plot geometry' };
+        const context = primaryPlot.complianceContext;
+
+        const visibleBuildings = primaryPlot.buildings.filter((building: any) => building.visible !== false);
+        const utilities = primaryPlot.utilityAreas || [];
+        const parkingAreas = primaryPlot.parkingAreas || [];
+        const entries = primaryPlot.entries || [];
+        const greenAreas = primaryPlot.greenAreas || [];
+        const roads = primaryPlot.roadAccessSides || [];
+
+        const northeastBuildings = this.getFeaturesInBearingRange(visibleBuildings, primaryPlot, 22, 68);
+        const southwestBuildings = this.getFeaturesInBearingRange(visibleBuildings, primaryPlot, 202, 248);
+        const southeastUtilities = this.getFeaturesInBearingRange(utilities, primaryPlot, 112, 158);
+        const northwestUtilities = this.getFeaturesInBearingRange(utilities, primaryPlot, 292, 338);
+
+        const utilityInZone = (matcher: (value: any) => boolean, min: number, max: number) =>
+            this.getFeaturesInBearingRange(utilities, primaryPlot, min, max, matcher);
+
+        const namedBuildingInZone = (matcher: (value: any) => boolean, min: number, max: number) =>
+            this.getFeaturesInBearingRange(visibleBuildings, primaryPlot, min, max, matcher);
+
+        switch (code) {
+            case 'A1': {
+                const shape = this.evaluatePlotShape(primaryPlot);
+                return { status: shape, detail: shape === 'pass' ? 'Square/rectangular plot' : shape === 'warn' ? 'Minor irregularity' : 'Irregular plot shape' };
+            }
+            case 'A2':
+                if (!context?.siteSlope || context.siteSlope === 'unknown') return { status: 'na', detail: 'Site slope data not provided' };
+                return {
+                    status: context.siteSlope === 'north-east-lowest' ? 'pass' : context.siteSlope === 'flat' ? 'warn' : 'fail',
+                    detail: context.siteSlope === 'north-east-lowest' ? 'NE lowest / SW highest' : context.siteSlope === 'flat' ? 'Flat site' : 'Reverse slope',
+                };
+            case 'A3': {
+                const northEastOpenness = greenAreas.filter((area: any) => this.getZoneBearing(primaryPlot, area) !== null && this.isBearingInRange(this.getZoneBearing(primaryPlot, area)!, 0, 90)).reduce((sum: number, area: any) => sum + area.area, 0);
+                const southWestMass = southwestBuildings.reduce((sum: number, building: any) => sum + building.area, 0);
+                if (northEastOpenness === 0 && southWestMass === 0) return { status: 'na', detail: 'No clear NE/SW zoning data' };
+                return { status: northEastOpenness >= southWestMass ? 'pass' : 'warn', detail: `NE open area ${Math.round(northEastOpenness)} sqm vs SW mass ${Math.round(southWestMass)} sqm` };
+            }
+            case 'B1': {
+                if (entries.length === 0) return { status: 'na', detail: 'No entry gates placed' };
+                const goodEntry = entries.some((entry: any) => {
+                    const bearing = this.getZoneBearing(primaryPlot, { geometry: turf.point(entry.position) });
+                    return bearing !== null && (
+                        this.isBearingInRange(bearing, 330, 30) ||
+                        this.isBearingInRange(bearing, 60, 120) ||
+                        this.isBearingInRange(bearing, 150, 210) ||
+                        this.isBearingInRange(bearing, 240, 300)
+                    );
+                });
+                return { status: goodEntry ? 'pass' : 'warn', detail: goodEntry ? 'Gate placed in an auspicious side zone' : 'Gate not in preferred side zone' };
+            }
+            case 'B2': {
+                if (entries.length === 0) return { status: 'na', detail: 'No entry gates placed' };
+                const swEntry = entries.some((entry: any) => {
+                    const bearing = this.getZoneBearing(primaryPlot, { geometry: turf.point(entry.position) });
+                    return bearing !== null && this.isBearingInRange(bearing, 202, 248);
+                });
+                return { status: swEntry ? 'fail' : 'pass', detail: swEntry ? 'South-West gate detected' : 'No South-West gate' };
+            }
+            case 'B3': {
+                if (entries.length === 0 || roads.length === 0) return { status: 'na', detail: 'Entry or road access data missing' };
+                const aligned = entries.some((entry: any) => {
+                    const name = String(entry.name || '').toUpperCase();
+                    return roads.some((road) => name.includes(road));
+                });
+                return { status: aligned ? 'pass' : 'warn', detail: aligned ? 'Gate aligns with road-facing side' : 'Gate/road alignment not explicit' };
+            }
+            case 'C1': {
+                const good = greenAreas.length > 0 || utilityInZone((u) => String(u.type).toLowerCase().includes('water'), 22, 68).length > 0;
+                return { status: good ? 'pass' : 'warn', detail: good ? 'NE contains green/water uses' : 'NE preferred uses not clearly placed' };
+            }
+            case 'C2': {
+                const tallestSW = this.getLargestBuildingInRange(primaryPlot, 202, 248);
+                if (!tallestSW) return { status: 'na', detail: 'No SW building mass found' };
+                const overallTallest = visibleBuildings.sort((a: any, b: any) => (b.height || 0) - (a.height || 0))[0];
+                return { status: tallestSW?.id === overallTallest?.id ? 'pass' : 'warn', detail: tallestSW?.id === overallTallest?.id ? 'Tallest mass is in SW' : 'Tallest mass not clearly in SW' };
+            }
+            case 'C3': {
+                const good = southeastUtilities.some((utility: any) => ['electrical', 'fire', 'dg set', 'hvac', 'gas'].includes(String(utility.type || '').toLowerCase()));
+                return { status: good ? 'pass' : 'warn', detail: good ? 'SE contains electrical/fire/service utilities' : 'SE service utilities not clearly placed' };
+            }
+            case 'C4': {
+                const northCommercial = namedBuildingInZone((building) => {
+                    const name = String(building.name || '').toLowerCase();
+                    return name.includes('retail') || name.includes('office') || name.includes('club');
+                }, 337, 22);
+                return { status: northCommercial.length > 0 ? 'pass' : 'warn', detail: northCommercial.length > 0 ? 'North-side commercial/community block found' : 'North-side commercial/community block not explicit' };
+            }
+            case 'C5': {
+                const eastBuilding = namedBuildingInZone(() => true, 68, 112);
+                return { status: eastBuilding.length > 0 ? 'pass' : 'warn', detail: eastBuilding.length > 0 ? 'East-side building block found' : 'East-side zoning not explicit' };
+            }
+            case 'C6': {
+                const nwParking = this.getFeaturesInBearingRange(parkingAreas, primaryPlot, 292, 338);
+                return { status: nwParking.length > 0 ? 'pass' : 'warn', detail: nwParking.length > 0 ? 'NW parking/ancillary use found' : 'NW guest/parking use not explicit' };
+            }
+            case 'D1': {
+                const tallestSW = this.getLargestBuildingInRange(primaryPlot, 202, 248);
+                const tallestOverall = visibleBuildings.sort((a: any, b: any) => (b.height || 0) - (a.height || 0))[0];
+                if (!tallestOverall) return { status: 'na', detail: 'No buildings found' };
+                return { status: tallestSW?.id === tallestOverall.id ? 'pass' : 'fail', detail: tallestSW?.id === tallestOverall.id ? 'Tallest building is in SW' : 'Tallest building is not in SW' };
+            }
+            case 'D2': {
+                const lowNE = northeastBuildings.every((building: any) => (building.height || 0) <= (visibleBuildings.reduce((min: number, current: any) => Math.min(min, current.height || 0), Infinity)));
+                return { status: northeastBuildings.length === 0 ? 'warn' : (lowNE ? 'pass' : 'warn'), detail: northeastBuildings.length === 0 ? 'No NE building mass found' : (lowNE ? 'NE has the lowest massing' : 'NE height/open-space balance is mixed') };
+            }
+            case 'D3':
+                return { status: southwestBuildings.length > 0 && northeastBuildings.length >= 0 ? 'warn' : 'na', detail: 'Step-massing trend requires manual review' };
+            case 'E1': {
+                if (roads.length === 0) return { status: 'na', detail: 'No road access sides detected' };
+                const good = roads.some((road) => road === 'N' || road === 'E');
+                return { status: good ? 'pass' : roads.some((road) => road === 'S' || road === 'W') ? 'warn' : 'fail', detail: `Road access from ${roads.join(', ')}` };
+            }
+            case 'E2':
+                if (!context?.internalCirculation || context.internalCirculation === 'unknown') return { status: 'na', detail: 'Internal circulation direction not provided' };
+                return {
+                    status: context.internalCirculation === 'clockwise' ? 'pass' : 'fail',
+                    detail: context.internalCirculation === 'clockwise' ? 'Clockwise circulation' : 'Anti-clockwise circulation',
+                };
+            case 'E3':
+                if (typeof context?.tJunctionCount !== 'number') return { status: 'na', detail: 'T-junction count not provided' };
+                return {
+                    status: context.tJunctionCount === 0 ? 'pass' : context.tJunctionCount === 1 ? 'warn' : 'fail',
+                    detail: `${context.tJunctionCount} T-junction(s) affecting towers`,
+                };
+            case 'F1': {
+                const water = utilityInZone((utility) => {
+                    const type = String(utility.type || '').toLowerCase();
+                    const name = String(utility.name || '').toLowerCase();
+                    return type.includes('water') || name.includes('pool') || name.includes('fountain');
+                }, 22, 68);
+                return { status: water.length > 0 ? 'pass' : 'warn', detail: water.length > 0 ? 'Water utility/body in NE' : 'No NE water body found' };
+            }
+            case 'F2':
+            case 'F4': {
+                const water = utilityInZone((utility) => String(utility.type || '').toLowerCase().includes('water') || String(utility.name || '').toLowerCase().includes('bore'), 0, 112);
+                return { status: water.length > 0 ? 'pass' : 'warn', detail: water.length > 0 ? 'Water source near NE/N/E' : 'No NE/N/E water source found' };
+            }
+            case 'F3': {
+                const westWater = utilityInZone((utility) => String(utility.type || '').toLowerCase().includes('water'), 202, 292);
+                return { status: westWater.length > 0 ? 'pass' : 'warn', detail: westWater.length > 0 ? 'Overhead/utility water mass in SW/West' : 'No SW/West water tank found' };
+            }
+            case 'G1': {
+                const basementZones = this.getFeaturesInBearingRange(parkingAreas, primaryPlot, 180, 292);
+                const badBasementZones = this.getFeaturesInBearingRange(parkingAreas, primaryPlot, 22, 112);
+                if (parkingAreas.length === 0) return { status: 'na', detail: 'No parking areas modeled' };
+                return { status: badBasementZones.length === 0 && basementZones.length > 0 ? 'pass' : badBasementZones.length === 0 ? 'warn' : 'fail', detail: badBasementZones.length === 0 ? 'Parking/basement kept to S/W zones' : 'Parking/basement extends into NE/E zone' };
+            }
+            case 'G2':
+                if (!context?.basementUseInNorthEast || context.basementUseInNorthEast === 'unknown') return { status: 'na', detail: 'NE basement use not provided' };
+                return {
+                    status: context.basementUseInNorthEast === 'none' ? 'pass' : context.basementUseInNorthEast === 'parking-only' ? 'warn' : 'fail',
+                    detail: context.basementUseInNorthEast === 'none' ? 'No NE basement' : context.basementUseInNorthEast === 'parking-only' ? 'NE basement limited to parking/open cuts' : 'NE basement used for non-parking purpose',
+                };
+            case 'H1': {
+                const neGreen = this.getFeaturesInBearingRange(greenAreas, primaryPlot, 22, 68);
+                return { status: neGreen.length > 0 ? 'pass' : 'warn', detail: neGreen.length > 0 ? 'NE has green/open landscape' : 'NE landscape not explicit' };
+            }
+            case 'H2': {
+                const serviceInGoodZones = southeastUtilities.length + northwestUtilities.length;
+                return { status: serviceInGoodZones > 0 ? 'pass' : 'warn', detail: serviceInGoodZones > 0 ? 'Service utilities found in SE/NW' : 'Service utility zoning not explicit' };
+            }
+            case 'I1': {
+                const temple = namedBuildingInZone((building) => String(building.name || '').toLowerCase().includes('temple') || String(building.name || '').toLowerCase().includes('prayer'), 22, 68);
+                return { status: temple.length > 0 ? 'pass' : 'na', detail: temple.length > 0 ? 'Temple/prayer block in NE' : 'Temple/prayer room not modeled' };
+            }
+            case 'I2':
+                if (!context?.idolFacing || context.idolFacing === 'unknown') return { status: 'na', detail: 'Idol orientation not provided' };
+                return {
+                    status: context.idolFacing === 'east' || context.idolFacing === 'west' ? 'pass' : 'fail',
+                    detail: `Idol facing ${context.idolFacing}`,
+                };
+            case 'J1': {
+                const club = namedBuildingInZone((building) => String(building.name || '').toLowerCase().includes('club') || String(building.name || '').toLowerCase().includes('community'), 0, 338);
+                return { status: club.length > 0 ? 'pass' : 'na', detail: club.length > 0 ? 'Club/community block present in a permitted zone' : 'Club/community hall not modeled' };
+            }
+            case 'K1': {
+                const retail = namedBuildingInZone((building) => {
+                    const name = String(building.name || '').toLowerCase();
+                    return name.includes('retail') || name.includes('commercial');
+                }, 0, 112);
+                return { status: retail.length > 0 ? 'pass' : 'warn', detail: retail.length > 0 ? 'Retail/commercial block on North/East side' : 'Retail/commercial block not clearly on North/East side' };
+            }
+            case 'L1':
+            case 'S1': {
+                const electrical = utilityInZone((utility) => ['electrical', 'dg set'].includes(String(utility.type || '').toLowerCase()), 112, 248);
+                return { status: electrical.length > 0 ? 'pass' : 'warn', detail: electrical.length > 0 ? 'Electrical/meter utility on SE/S/W side' : 'Electrical/meter utility not clearly in preferred zone' };
+            }
+            case 'L2': {
+                const generator = utilityInZone((utility) => ['dg set'].includes(String(utility.type || '').toLowerCase()) || String(utility.name || '').toLowerCase().includes('generator'), 112, 338);
+                return { status: generator.length > 0 ? 'pass' : 'warn', detail: generator.length > 0 ? 'Generator utility in SE/NW zone' : 'Generator utility not found in preferred zone' };
+            }
+            case 'L3':
+            case 'N3': {
+                const firePump = utilityInZone((utility) => {
+                    const type = String(utility.type || '').toLowerCase();
+                    const name = String(utility.name || '').toLowerCase();
+                    return type === 'fire' || name.includes('pump');
+                }, 112, 180);
+                return { status: firePump.length > 0 ? 'pass' : 'warn', detail: firePump.length > 0 ? 'Fire pump / pump room in SE/South' : 'Fire pump / pump room not found in preferred zone' };
+            }
+            case 'L4': {
+                const gas = utilityInZone((utility) => String(utility.type || '').toLowerCase() === 'gas' || String(utility.name || '').toLowerCase().includes('lpg'), 112, 158);
+                return { status: gas.length > 0 ? 'pass' : 'na', detail: gas.length > 0 ? 'Gas utility in SE' : 'Gas bank not modeled' };
+            }
+            case 'M1': {
+                const stp = utilityInZone((utility) => ['stp', 'wtp'].includes(String(utility.type || '').toLowerCase()), 112, 338);
+                return { status: stp.length > 0 ? 'pass' : 'warn', detail: stp.length > 0 ? 'STP/WTP in NW/SE/West band' : 'STP/WTP not in preferred zone' };
+            }
+            case 'M2': {
+                const septic = utilityInZone((utility) => String(utility.name || '').toLowerCase().includes('septic'), 248, 338);
+                return { status: septic.length > 0 ? 'pass' : 'na', detail: septic.length > 0 ? 'Septic tank in NW/West' : 'Septic tank not modeled' };
+            }
+            case 'N1':
+                return { status: 'na', detail: 'Lift machine room position not modeled as separate object' };
+            case 'N2': {
+                const chiller = utilityInZone((utility) => {
+                    const type = String(utility.type || '').toLowerCase();
+                    const name = String(utility.name || '').toLowerCase();
+                    return type === 'hvac' || name.includes('chiller') || name.includes('cooling');
+                }, 202, 292);
+                return { status: chiller.length > 0 ? 'pass' : 'warn', detail: chiller.length > 0 ? 'HVAC/chiller in West/SW' : 'HVAC/chiller not in preferred zone' };
+            }
+            case 'O1':
+                if (!context?.commonToiletsZone || context.commonToiletsZone === 'unknown') return { status: 'na', detail: 'Common toilet zone not provided' };
+                return {
+                    status: context.commonToiletsZone === 'se' || context.commonToiletsZone === 'nw' ? 'pass' : context.commonToiletsZone === 'other' ? 'warn' : 'na',
+                    detail: context.commonToiletsZone === 'none' ? 'No common toilets' : `Common toilets in ${context.commonToiletsZone.toUpperCase()} zone`,
+                };
+            case 'O2':
+                if (context?.hasToiletInNorthEast === undefined && context?.hasToiletInBrahmasthan === undefined) return { status: 'na', detail: 'NE/Brahmasthan toilet data not provided' };
+                if (context?.hasToiletInNorthEast || context?.hasToiletInBrahmasthan) {
+                    return { status: 'fail', detail: 'Toilet detected in NE or Brahmasthan' };
+                }
+                return { status: 'pass', detail: 'No toilets in NE or Brahmasthan' };
+            case 'P1':
+            case 'P2': {
+                const center = getVastuCenter(primaryPlot.geometry);
+                const radius = Math.sqrt(turf.area(primaryPlot.geometry) * 0.05 / Math.PI);
+                const zone = turf.buffer(center, radius / 1000, { units: 'kilometers' });
+                const intrusions = zone ? visibleBuildings.filter((building: any) => turf.booleanIntersects(building.geometry as any, zone as any)) : [];
+                const pass = intrusions.length === 0;
+                return { status: pass ? 'pass' : 'fail', detail: pass ? 'Brahmasthan is open' : `${intrusions.length} building mass(es) intersect Brahmasthan` };
+            }
+            case 'Q1':
+                if (!context?.northEastExtension) return { status: 'na', detail: 'NE extension/cut data not provided' };
+                return {
+                    status: context.northEastExtension === 'present' ? 'pass' : context.northEastExtension === 'none' ? 'warn' : 'fail',
+                    detail: context.northEastExtension === 'present' ? 'NE extension present' : context.northEastExtension === 'none' ? 'No NE extension / no cut' : 'NE cut present',
+                };
+            case 'Q2':
+                if (context?.southWestExtension === undefined) return { status: 'na', detail: 'SW extension data not provided' };
+                return {
+                    status: context.southWestExtension ? 'fail' : 'pass',
+                    detail: context.southWestExtension ? 'SW extension present' : 'No SW extension',
+                };
+            case 'Q3':
+                if (context?.extensionRemediesApplied === undefined) return { status: 'na', detail: 'Extension remedy data not provided' };
+                return {
+                    status: context.extensionRemediesApplied ? 'warn' : 'fail',
+                    detail: context.extensionRemediesApplied ? 'Extensions present with remedies applied' : 'Extensions present without remedies',
+                };
+            case 'R1':
+                if (!context?.solarFacingRoof || context.solarFacingRoof === 'unknown') return { status: 'na', detail: 'Solar roof orientation not provided' };
+                return {
+                    status: context.solarFacingRoof === 'south' ? 'pass' : context.solarFacingRoof === 'other' ? 'warn' : 'fail',
+                    detail: `Solar panels oriented to ${context.solarFacingRoof}-facing roof`,
+                };
+            case 'R2': {
+                const rwh = utilityInZone((utility) => String(utility.type || '').toLowerCase().includes('rainwater'), 0, 112);
+                return { status: rwh.length > 0 ? 'pass' : 'warn', detail: rwh.length > 0 ? 'Rainwater harvesting in NE/N/E band' : 'Rainwater harvesting pit not found in preferred zone' };
+            }
+            case 'S2': {
+                const goodParking = this.getFeaturesInBearingRange(parkingAreas, primaryPlot, 202, 338);
+                if (parkingAreas.length === 0) return { status: 'na', detail: 'No parking areas modeled' };
+                return { status: goodParking.length === parkingAreas.length ? 'pass' : goodParking.length > 0 ? 'warn' : 'fail', detail: `${goodParking.length}/${parkingAreas.length} parking areas in NW/S/W` };
+            }
+            default:
+                return { status: 'na', detail: item.complianceBasis || 'No automated rule mapped yet' };
+        }
+    }
+
+    private calculateVastuItems(): ComplianceItem[] {
+        const items: ComplianceItem[] = [];
         if (!this.project.vastuCompliant) {
-            items.push({ label: 'Vastu not enabled', status: 'na', detail: 'Enable in project settings', weight: 0 });
+            items.push(this.createScoreItem('Vastu not enabled', 'na', 'Enable in project settings', 0));
             return items;
+        }
+
+        if (this.vastuRules?.scorecardItems?.length) {
+            return this.vastuRules.scorecardItems.map((item) => {
+                const evaluation = this.evaluateVastuScorecardItem(item);
+                return this.createScoreItem(
+                    `${item.code} ${item.title}`,
+                    evaluation.status,
+                    evaluation.detail,
+                    item.maxMarks
+                );
+            });
         }
 
         // Brahmasthan (weight: 25)
@@ -443,7 +950,7 @@ export class RegulationEngine {
                 });
             } catch { /* */ }
         });
-        items.push({ label: 'Brahmasthan (Center)', status: brahmFree ? 'pass' : 'fail', detail: brahmFree ? 'Center clear' : 'Building in center', weight: 25 });
+        items.push(this.createScoreItem('Brahmasthan (Center)', brahmFree ? 'pass' : 'fail', brahmFree ? 'Center clear' : 'Building in center', 25));
 
         // Helper: find ALL utilities for a category
         const findUtilities = (
@@ -492,14 +999,14 @@ export class RegulationEngine {
             22, 68
         );
         if (waterResult.found) {
-            items.push({
-                label: 'Water Source (NE)',
-                status: waterResult.allInRange ? 'pass' : waterResult.someInRange ? 'warn' : 'fail',
-                detail: `${waterResult.names.join(', ')}: ${waterResult.bearings.join(', ')} (need 22-68°)`,
-                weight: 20
-            });
+            items.push(this.createScoreItem(
+                'Water Source (NE)',
+                waterResult.allInRange ? 'pass' : waterResult.someInRange ? 'warn' : 'fail',
+                `${waterResult.names.join(', ')}: ${waterResult.bearings.join(', ')} (need 22-68°)`,
+                20
+            ));
         } else {
-            items.push({ label: 'Water Source (NE)', status: 'na', detail: 'No water utility', weight: 0 });
+            items.push(this.createScoreItem('Water Source (NE)', 'na', 'No water utility', 0));
         }
 
         // Fire SE (weight: 20)
@@ -513,14 +1020,14 @@ export class RegulationEngine {
             112, 158
         );
         if (fireResult.found) {
-            items.push({
-                label: 'Fire/Energy (SE)',
-                status: fireResult.allInRange ? 'pass' : fireResult.someInRange ? 'warn' : 'fail',
-                detail: `${fireResult.names.join(', ')}: ${fireResult.bearings.join(', ')} (need 112-158°)`,
-                weight: 20
-            });
+            items.push(this.createScoreItem(
+                'Fire/Energy (SE)',
+                fireResult.allInRange ? 'pass' : fireResult.someInRange ? 'warn' : 'fail',
+                `${fireResult.names.join(', ')}: ${fireResult.bearings.join(', ')} (need 112-158°)`,
+                20
+            ));
         } else {
-            items.push({ label: 'Fire/Energy (SE)', status: 'na', detail: 'No fire/HVAC utility', weight: 0 });
+            items.push(this.createScoreItem('Fire/Energy (SE)', 'na', 'No fire/HVAC utility', 0));
         }
 
         // Entry (weight: 15)
@@ -532,7 +1039,7 @@ export class RegulationEngine {
                 entryDetail = good ? 'Entry from N/E/NE ✓' : 'Entry not from N/E/NE';
             }
         });
-        items.push({ label: 'Entry (N/E/NE)', status: entryStatus, detail: entryDetail, weight: entryStatus === 'na' ? 0 : 15 });
+        items.push(this.createScoreItem('Entry (N/E/NE)', entryStatus, entryDetail, entryStatus === 'na' ? 0 : 15));
 
         // Service Placement (weight: 20)
         let svcGood = 0, svcTotal = 0;
@@ -556,7 +1063,7 @@ export class RegulationEngine {
         });
         if (svcTotal > 0) {
             const pct = svcGood / svcTotal;
-            items.push({ label: 'Service Placement', status: pct >= 0.8 ? 'pass' : pct >= 0.5 ? 'warn' : 'fail', detail: `${svcGood}/${svcTotal} correct`, weight: 20 });
+            items.push(this.createScoreItem('Service Placement', pct >= 0.8 ? 'pass' : pct >= 0.5 ? 'warn' : 'fail', `${svcGood}/${svcTotal} correct`, 20));
         }
 
         return items;

@@ -231,6 +231,49 @@ export function UploadVastuDialog({ isOpen, onOpenChange, onExtracted }: UploadV
                                 ))}
                             </div>
 
+                            {extractedData.scorecardItems && extractedData.scorecardItems.length > 0 && (
+                                <div className="space-y-4">
+                                    <h3 className="text-lg font-semibold">Scorecard Items</h3>
+                                    <div className="text-sm text-muted-foreground">
+                                        {extractedData.totalPossibleScore
+                                            ? `Total Possible Score: ${extractedData.totalPossibleScore}`
+                                            : `${extractedData.scorecardItems.length} scorecard items extracted`}
+                                    </div>
+                                    <div className="max-h-[260px] overflow-y-auto rounded-lg border">
+                                        {extractedData.scorecardItems.map((item, idx) => (
+                                            <div
+                                                key={item.id || `${item.code}-${idx}`}
+                                                className="grid grid-cols-[70px_1fr_70px] gap-3 border-b border-border/40 p-3 last:border-b-0"
+                                            >
+                                                <div className="text-xs font-semibold text-muted-foreground">{item.code}</div>
+                                                <div>
+                                                    <div className="text-sm font-medium">{item.title}</div>
+                                                    <div className="text-xs text-muted-foreground">{item.section}</div>
+                                                    <div className="text-xs text-muted-foreground mt-1">{item.complianceBasis}</div>
+                                                </div>
+                                                <div className="text-right text-sm font-semibold">{item.maxMarks}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {extractedData.verdictBands && extractedData.verdictBands.length > 0 && (
+                                <div className="space-y-3">
+                                    <h3 className="text-lg font-semibold">Verdict Scale</h3>
+                                    <div className="space-y-2">
+                                        {extractedData.verdictBands.map((band, idx) => (
+                                            <div key={`${band.label}-${idx}`} className="flex items-center justify-between rounded-md border p-3 text-sm">
+                                                <span>{band.label}</span>
+                                                <span className="text-muted-foreground">
+                                                    {band.minScore}{band.maxScore !== undefined ? ` - ${band.maxScore}` : '+'}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="flex gap-2 pt-4">
                                 <Button variant="outline" onClick={() => setExtractedData(null)} className="flex-1">
                                     Cancel

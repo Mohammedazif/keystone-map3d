@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { Feature, Polygon, MultiPolygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput } from '@/lib/types';
+import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
@@ -628,6 +628,17 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
 // ── Helper: collect rendering project data from current store state ──
 export type DesignParamsForRendering = { landUse: string; unitMix: Record<string, number>; selectedUtilities: string[]; hasPodium: boolean; podiumFloors: number; parkingTypes: string[]; typology: string };
 
+function summarizeAdditiveScore(items: Array<{ maxScore: number; achievedScore: number }>): AdditiveScoreSummary {
+    const totalScore = items.reduce((sum, item) => sum + item.achievedScore, 0);
+    const maxScore = items.reduce((sum, item) => sum + item.maxScore, 0);
+
+    return {
+        totalScore,
+        maxScore,
+        percentage: maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0,
+    };
+}
+
 function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: DesignParamsForRendering): { buildingsInfo: RenderingBuildingInfo[]; plotInfo: RenderingPlotInfo; summary: RenderingProjectSummary } | null {
     // Only use buildings from the selected plot, not all plots
     const allBuildings = selectedPlot.buildings;
@@ -755,33 +766,33 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
     });
     designParams.selectedUtilities.forEach(u => utilSet.add(u));
 
-    const bylawScore = (() => {
-        let score = 0, total = 0;
-        total++; if (selectedPlot.far && achievedFAR <= selectedPlot.far) score++;
-        total++; if (selectedPlot.maxCoverage && groundCoveragePct <= selectedPlot.maxCoverage * 100) score++;
-        total++; if (selectedPlot.maxBuildingHeight) { if (buildingsInfo.every(b => b.height <= (selectedPlot.maxBuildingHeight || 999))) score++; } else score++;
-        total++; if (selectedPlot.setback > 0) score++;
-        return total > 0 ? Math.round((score / total) * 100) : 0;
-    })();
+    const bylawScoreItems = [
+        { maxScore: 35, achievedScore: selectedPlot.far && achievedFAR <= selectedPlot.far ? 35 : 0 },
+        { maxScore: 20, achievedScore: selectedPlot.maxCoverage && groundCoveragePct <= selectedPlot.maxCoverage * 100 ? 20 : 0 },
+        { maxScore: 25, achievedScore: selectedPlot.maxBuildingHeight ? (buildingsInfo.every(b => b.height <= (selectedPlot.maxBuildingHeight || 999)) ? 25 : 0) : 25 },
+        { maxScore: 20, achievedScore: selectedPlot.setback > 0 ? 20 : 0 },
+    ];
+    const bylawScoreSummary = summarizeAdditiveScore(bylawScoreItems);
 
-    const greenScore = (() => {
-        const totalGreen = selectedPlot.greenAreas.length;
-        const checks = [
-            totalGreen > 0,
-            totalPlotArea > 0 && openSpace / totalPlotArea >= 0.25,
-            utilSet.has('STP') || utilSet.has(UtilityType.STP),
-            utilSet.has('Solar PV') || utilSet.has(UtilityType.SolarPV),
-            utilSet.has('Rainwater Harvesting') || utilSet.has(UtilityType.RainwaterHarvesting),
-            utilSet.has('EV Station') || utilSet.has(UtilityType.EVStation),
-        ];
-        const passed = checks.filter(Boolean).length;
-        return Math.round((passed / checks.length) * 100);
-    })();
+    const totalGreen = selectedPlot.greenAreas.length;
+    const greenScoreItems = [
+        { maxScore: 25, achievedScore: totalGreen > 0 ? 25 : 0 },
+        { maxScore: 20, achievedScore: totalPlotArea > 0 && openSpace / totalPlotArea >= 0.25 ? 20 : 0 },
+        { maxScore: 15, achievedScore: utilSet.has('STP') || utilSet.has(UtilityType.STP) ? 15 : 0 },
+        { maxScore: 15, achievedScore: utilSet.has('Solar PV') || utilSet.has(UtilityType.SolarPV) ? 15 : 0 },
+        { maxScore: 15, achievedScore: utilSet.has('Rainwater Harvesting') || utilSet.has(UtilityType.RainwaterHarvesting) ? 15 : 0 },
+        { maxScore: 10, achievedScore: utilSet.has('EV Station') || utilSet.has(UtilityType.EVStation) ? 10 : 0 },
+    ];
+    const greenScoreSummary = summarizeAdditiveScore(greenScoreItems);
 
     const plotsWithBuildings = selectedPlot.buildings.length > 0 ? 1 : 0;
-    const vastuScore = plotsWithBuildings > 0
-        ? Math.round(selectedPlot.developmentStats?.vastuScore?.overall ?? 0)
-        : 0;
+    const vastuScoreSummary: AdditiveScoreSummary | undefined = plotsWithBuildings > 0 && selectedPlot.developmentStats?.vastuScore
+        ? {
+            totalScore: selectedPlot.developmentStats.vastuScore.breakdown.reduce((sum, item) => sum + (item.score || 0), 0),
+            maxScore: selectedPlot.developmentStats.vastuScore.breakdown.reduce((sum, item) => sum + (item.maxScore || 0), 0),
+            percentage: Math.round(selectedPlot.developmentStats.vastuScore.overall ?? 0),
+        }
+        : undefined;
 
     const zonesBuildable = (selectedPlot.buildableAreas || []).map(ba => ({ name: ba.name, area: Math.round(ba.area), intendedUse: ba.intendedUse }));
     const zonesGreen = (selectedPlot.greenAreas || []).map(ga => ({ name: ga.name, area: Math.round(ga.area) }));
@@ -794,7 +805,14 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
         sellableArea: Math.round(sellableArea), openSpace: Math.round(openSpace),
         efficiency: Math.round(efficiency * 100) / 100, totalUnits, parkingSummary,
         utilities: Array.from(utilSet),
-        compliance: { bylaws: bylawScore, green: greenScore, vastu: vastuScore },
+        compliance: {
+            bylaws: bylawScoreSummary.percentage,
+            green: greenScoreSummary.percentage,
+            vastu: vastuScoreSummary?.percentage ?? 0,
+            bylawScoreSummary,
+            greenScoreSummary,
+            vastuScoreSummary,
+        },
         zones: { buildable: zonesBuildable, green: zonesGreen, parking: zonesParking, utility: zonesUtility },
         designStrategy: {
             landUse: designParams.landUse, typology: designParams.typology,

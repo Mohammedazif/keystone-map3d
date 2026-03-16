@@ -4,10 +4,13 @@ import { getVastuCenter } from '@/lib/vastu-utils';
 
 interface VastuScore {
     overallScore: number;
+    totalScore: number;
+    maxScore: number;
     rating: 'High' | 'Medium' | 'Low';
     breakdown: {
         category: string;
         score: number;
+        maxScore: number;
         feedback: string;
     }[];
 }
@@ -23,6 +26,8 @@ export function calculateVastuScore(
     // Default empty result
     const result: VastuScore = {
         overallScore: 0,
+        totalScore: 0,
+        maxScore: 0,
         rating: 'Low',
         breakdown: []
     };
@@ -31,8 +36,8 @@ export function calculateVastuScore(
         return result;
     }
 
-    let totalWeight = 0;
-    let totalWeightedScore = 0;
+    let totalMaxScore = 0;
+    let totalAchievedScore = 0;
 
     // Helper: Get cardinal direction of a point relative to plot centroid
     const getDirection = (target: any, center: any): string => {
@@ -54,8 +59,8 @@ export function calculateVastuScore(
     const plotCenter = getVastuCenter(plot.geometry).geometry.coordinates;
 
     regulation.recommendations.forEach((rec) => {
-        const weight = rec.weight || 5;
-        let score = 0; // 0-100
+        const maxScore = rec.weight || 5;
+        let achievedScore = 0;
         let feedback = '';
 
         switch (rec.category) {
@@ -65,7 +70,7 @@ export function calculateVastuScore(
                 // Currently, let's assume valid 'Roads' infrastructure defines entrance, or default to East/North for testing.
                 // TODO: Implement actual entrance detection. For now, simulate favorable Check.
                 // IF we don't have explicit entrance data, we skip or assume neutral (50).
-                score = 50;
+                achievedScore = maxScore * 0.5;
                 feedback = "Entrance location not explicitly defined.";
                 break;
 
@@ -79,13 +84,13 @@ export function calculateVastuScore(
                     const dir = getDirection(bldgCentroid, plotCenter);
 
                     if (rec.idealDirections.includes(dir)) {
-                        score = 100;
+                        achievedScore = maxScore;
                         feedback = `Main mass in ${dir} (Recommended).`;
                     } else if (rec.avoidDirections.includes(dir)) {
-                        score = 0;
+                        achievedScore = 0;
                         feedback = `Main mass in ${dir} (Avoid).`;
                     } else {
-                        score = 50;
+                        achievedScore = maxScore * 0.5;
                         feedback = `Main mass in ${dir} (Neutral).`;
                     }
                 }
@@ -100,38 +105,42 @@ export function calculateVastuScore(
                     const dir = getDirection(waterCentroid, plotCenter);
 
                     if (rec.idealDirections.includes(dir)) {
-                        score = 100;
+                        achievedScore = maxScore;
                         feedback = `Water body in ${dir} (Excellent).`;
                     } else if (rec.avoidDirections.includes(dir)) {
-                        score = 0;
+                        achievedScore = 0;
                         feedback = `Water body in ${dir} (Avoid).`;
                     } else {
-                        score = 50;
+                        achievedScore = maxScore * 0.5;
                         feedback = `Water body in ${dir} (Neutral).`;
                     }
                 } else {
-                    score = 50; // Neutral if no water body
+                    achievedScore = maxScore * 0.5; // Neutral if no water body
                     feedback = "No water infrastructure found.";
                 }
                 break;
 
             default:
-                score = 50;
+                achievedScore = maxScore * 0.5;
                 feedback = "Criterion not evaluated.";
         }
 
-        totalWeightedScore += score * weight;
-        totalWeight += weight;
+        totalAchievedScore += achievedScore;
+        totalMaxScore += maxScore;
 
         result.breakdown.push({
             category: rec.category,
-            score,
+            score: Math.round(achievedScore * 100) / 100,
+            maxScore,
             feedback
         });
     });
 
-    if (totalWeight > 0) {
-        result.overallScore = Math.round(totalWeightedScore / totalWeight);
+    result.totalScore = Math.round(totalAchievedScore * 100) / 100;
+    result.maxScore = totalMaxScore;
+
+    if (totalMaxScore > 0) {
+        result.overallScore = Math.round((totalAchievedScore / totalMaxScore) * 100);
     }
 
     if (result.overallScore >= 80) result.rating = 'High';
