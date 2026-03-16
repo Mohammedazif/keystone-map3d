@@ -36,29 +36,22 @@ function BuildingProperties() {
 
     const regulation = selectedPlot.regulation;
 
+    // const handleRotate = (angle: number) => {
+    //     if (angle === 0) return;
+    //     actions.rotateBuilding(selectedPlot.id, selectedBuilding.id, angle);
+    // };
     const handleRotate = (angle: number) => {
         if (angle === 0) return;
-        actions.rotateBuilding(selectedPlot.id, selectedBuilding.id, angle);
+
+        actions.rotateBuilding(
+            selectedPlot.id,
+            selectedBuilding.id,
+            angle
+        );
     };
 
-    // Restore rotation handler: resets geometry, centroid, and alignmentRotation
     const handleRestoreRotation = () => {
-        if (selectedBuilding.originalGeometry && selectedBuilding.originalCentroid) {
-            actions.updateBuilding(selectedBuilding.id, {
-                geometry: selectedBuilding.originalGeometry,
-                centroid: selectedBuilding.originalCentroid,
-                alignmentRotation: 0
-            });
-        } else if (selectedBuilding.geometry && selectedBuilding.centroid) {
-            // Fallback: set current as original for future restores
-            actions.updateBuilding(selectedBuilding.id, {
-                originalGeometry: JSON.parse(JSON.stringify(selectedBuilding.geometry)),
-                originalCentroid: JSON.parse(JSON.stringify(selectedBuilding.centroid)),
-                alignmentRotation: 0
-            });
-        } else {
-            actions.updateBuilding(selectedBuilding.id, { alignmentRotation: 0 });
-        }
+        actions.restoreBuilding(selectedPlot.id, selectedBuilding.id);
     };
 
     const handleFloorCountChange = (newCount: number | '') => {
@@ -150,7 +143,7 @@ function BuildingProperties() {
                         <ArrowDownToLine className="h-3.5 w-3.5 mr-1.5" /> Basement
                     </Button>
                 )}
-                <Popover open={rotateOpen} onOpenChange={setRotateOpen}>
+                {false && <Popover open={rotateOpen} onOpenChange={setRotateOpen}>
                     <PopoverTrigger asChild>
                         <Button variant="outline" size="sm" className="h-7 text-xs">
                             <RotateCw className="h-3.5 w-3.5 mr-1.5" /> Rotate
@@ -192,7 +185,7 @@ function BuildingProperties() {
                             </Button>
                         </div>
                     </PopoverContent>
-                </Popover>
+                </Popover>}
                 <p className='text-[10px] text-muted-foreground ml-auto'>
                     Height: <span className='font-semibold text-foreground'>{selectedBuilding.height.toFixed(1)}m</span>
                 </p>
