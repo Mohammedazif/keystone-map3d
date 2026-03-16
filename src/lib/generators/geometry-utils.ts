@@ -184,7 +184,7 @@ export function applyPeripheralClearZone(
             return { buildableArea: null, parkingZone: null, roadZone: null };
         }
 
-        const buildablePoly = turf.unkinkPolygon(buildable).features.reduce((largest, current) => {
+        const buildablePoly = turf.unkinkPolygon(buildable).features.reduce((largest: Feature<Polygon>, current: Feature<Polygon>) => {
             return turf.area(current) > turf.area(largest) ? current : largest;
         }).geometry;
 
@@ -196,7 +196,7 @@ export function applyPeripheralClearZone(
 
         let parkingInner = parkingInnerRaw;
         if (parkingInner) {
-            const piPoly = turf.unkinkPolygon(parkingInner).features.reduce((largest, current) => {
+            const piPoly = turf.unkinkPolygon(parkingInner).features.reduce((largest: Feature<Polygon>, current: Feature<Polygon>) => {
                 return turf.area(current) > turf.area(largest) ? current : largest;
             }).geometry;
             parkingInner = turf.polygon(piPoly.coordinates);

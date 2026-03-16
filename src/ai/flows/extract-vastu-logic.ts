@@ -3,6 +3,29 @@ import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
 import { generateStructuredWithFallback } from '@/ai/model-fallback';
 
+
+// Server-side fallback: if AI doesn't extract scorecard items, ensure we return a sensible default set
+export async function extractVastuLogicWithFallback(input: z.infer<typeof ExtractVastuInputSchema>) {
+  const out = await extractVastuLogic(input as any);
+  try {
+    const parsed = out as any;
+    if (!parsed.scorecardItems || parsed.scorecardItems.length === 0) {
+      const defaults = [
+        { id: 'A1', code: 'A1', section: 'Plot Shape', title: 'Plot shape regularity', complianceBasis: 'Rectangular plots preferred', maxMarks: 10 },
+        { id: 'B1', code: 'B1', section: 'Entrance', title: 'Main entry gate placement', complianceBasis: 'Gate in auspicious side zone', maxMarks: 10 },
+        { id: 'P1', code: 'P1', section: 'Brahmasthan', title: 'Brahmasthan open', complianceBasis: 'Center should be free', maxMarks: 15 },
+        { id: 'F1', code: 'F1', section: 'Water', title: 'NE water placement', complianceBasis: 'Water in NE preferred', maxMarks: 10 },
+        { id: 'G1', code: 'G1', section: 'Parking', title: 'Parking placement', complianceBasis: 'Parking in NW/S/W preferred', maxMarks: 10 },
+        { id: 'H1', code: 'H1', section: 'Landscape', title: 'NE landscaping', complianceBasis: 'Green/open NE', maxMarks: 8 },
+      ];
+      parsed.scorecardItems = defaults;
+      parsed.totalPossibleScore = (parsed.totalPossibleScore || 0) + defaults.reduce((s: number, it: any) => s + (it.maxMarks || 0), 0);
+    }
+    return parsed;
+  } catch (e) {
+    return out;
+  }
+}
 const ExtractVastuInputSchema = z.object({
   documentText: z.string(),
   fileName: z.string().optional(),

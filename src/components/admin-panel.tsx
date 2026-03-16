@@ -31,8 +31,7 @@ import {
 import { Skeleton } from './ui/skeleton';
 import { produce } from 'immer';
 import { UploadRegulationDialog } from './upload-regulation-dialog';
-import { UploadGreenRegulationDialog } from './upload-green-regulation-dialog';
-import { EditGreenRegulationDialog } from './edit-green-regulation-dialog';
+// AdminAttachVastu removed; use default checklist JSON instead when needed
 import { UploadVastuDialog } from './upload-vastu-dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { UnitTemplatesPanel } from './unit-templates-panel';
@@ -40,6 +39,8 @@ import { CostRevenuePanel } from './cost-revenue-panel';
 import { TimeEstimationPanel } from './time-estimation-panel';
 import { PlanningParamsPanel } from './planning-params-panel';
 import { NationalCodePanel } from './national-code-panel';
+import { useBuildingStore } from '@/hooks/use-building-store';
+import ultimateVastuChecklist from '@/data/ultimate-vastu-checklist.json';
 
 const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type'> = {
     geometry: {
@@ -104,7 +105,19 @@ export function AdminPanel() {
 
             const vastuSnapshot = await getDocs(vastuRegulationsCollection);
             const vastuData = vastuSnapshot.docs.map(doc => doc.data() as VastuRegulationData);
-            setVastuRegulations(vastuData);
+            if (!vastuData || vastuData.length === 0) {
+                // No Vastu in Firestore — use bundled ultimate checklist for immediate admin preview
+                const checklist = (ultimateVastuChecklist as any) as VastuRegulationData;
+                setVastuRegulations([checklist]);
+                // Also load into the store for active project attachment/engine use
+                try {
+                    useBuildingStore.getState().actions.loadUltimateVastuChecklist();
+                } catch (e) {
+                    console.warn('[AdminPanel] could not call loadUltimateVastuChecklist', e);
+                }
+            } else {
+                setVastuRegulations(vastuData);
+            }
 
         } catch (error) {
             console.error("Error fetching regulations:", error);
@@ -586,9 +599,6 @@ export function AdminPanel() {
                         <TabsContent value="green">
                             <div className="flex justify-between items-center mb-6">
                                 <h2 className="text-xl font-semibold">Green Building Regulations</h2>
-                                <Button variant="outline" onClick={() => setIsUploadGreenDialogOpen(true)}>
-                                    <Leaf className="mr-2 h-4 w-4" /> Upload Green Document
-                                </Button>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -717,12 +727,20 @@ export function AdminPanel() {
                         <TabsContent value="vastu">
                             <div className="flex justify-between items-center mb-6">
                                 <h2 className="text-xl font-semibold">Vastu Shastra Guidelines</h2>
-                                <Button variant="outline" onClick={() => setIsUploadVastuDialogOpen(true)}>
-                                    <Compass className="mr-2 h-4 w-4" /> Upload Vastu PDF
-                                </Button>
+                                <div className="flex gap-2">
+                                    <Button variant="outline" onClick={() => setIsUploadVastuDialogOpen(true)}>
+                                        <Compass className="mr-2 h-4 w-4" /> Upload Vastu PDF
+                                    </Button>
+                                    <Button variant="ghost" onClick={() => useBuildingStore.getState().actions.loadUltimateVastuChecklist()}>
+                                        Load Ultimate Checklist
+                                    </Button>
+                                </div>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                                <div className="col-span-full mb-4">
+                                    {/* AdminAttachVastu removed; use default checklist JSON when needed */}
+                                </div>
                                 {vastuRegulations.map(reg => (
                                     <Card key={reg.id || reg.name} className="relative group border-border/50">
                                         <CardHeader>
@@ -804,23 +822,12 @@ export function AdminPanel() {
                 onOpenChange={setIsUploadDialogOpen}
                 onExtracted={handleExtractedRegulation}
             />
-            <UploadGreenRegulationDialog
-                isOpen={isUploadGreenDialogOpen}
-                onOpenChange={setIsUploadGreenDialogOpen}
-                onExtracted={handleSaveGreenRegulation}
-            />
             <UploadVastuDialog
                 isOpen={isUploadVastuDialogOpen}
                 onOpenChange={setIsUploadVastuDialogOpen}
                 onExtracted={handleSaveVastuRegulation}
             />
-            <EditGreenRegulationDialog
-                key={selectedGreenRegulation?.id || 'new'}
-                isOpen={isEditGreenDialogOpen}
-                onOpenChange={setIsEditGreenDialogOpen}
-                regulation={selectedGreenRegulation}
-                onSave={handleSaveGreenRegulation}
-            />
+            {/* Green upload/edit dialogs removed per request */}
         </div>
     );
 }

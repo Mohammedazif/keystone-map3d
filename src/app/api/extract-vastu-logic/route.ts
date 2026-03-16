@@ -1,7 +1,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { extractTextFromFile } from '@/lib/pdf-service';
-import { extractVastuLogic } from '@/ai/flows/extract-vastu-logic';
+import { extractVastuLogicWithFallback } from '@/ai/flows/extract-vastu-logic';
 
 export async function POST(request: NextRequest) {
     try {
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
         }
 
         // 2. AI Extraction Flow
-        const extractedData = await extractVastuLogic({
+        const extractedData = await extractVastuLogicWithFallback({
             documentText,
             fileName: file.name,
         });

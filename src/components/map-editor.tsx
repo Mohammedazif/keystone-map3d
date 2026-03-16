@@ -3,7 +3,7 @@ import { planarDimensions, planarArea } from '@/lib/generators/geometry-utils';
 import { BUILDING_MATERIALS, hslToRgb } from '@/lib/color-utils';
 import { useToast } from '@/hooks/use-toast';
 import { BuildingIntendedUse, GreenRegulationData, UtilityType, Building, Core, Unit, Plot, GreenArea, ParkingArea, BuildableArea, UtilityArea, SelectableObjectType } from '@/lib/types';
-import { Feature, Polygon, Point, LineString, FeatureCollection } from 'geojson';
+import { Feature, Polygon, Point, LineString, FeatureCollection, MultiPolygon } from 'geojson';
 import * as turf from '@turf/turf';
 import mapboxgl, { GeoJSONSource, LngLatLike, Map, Marker } from 'mapbox-gl';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
@@ -81,12 +81,12 @@ const createBuildingFrontMarker = (
     if (!intersections.features.length) return null;
 
     const hit = intersections.features
-      .map((feature) => ({
+      .map((feature: Feature) => ({
         point: feature,
-        distance: turf.distance(center, feature.geometry.coordinates as [number, number], { units: 'meters' }),
+        distance: turf.distance(center as any, (feature.geometry as any).coordinates as [number, number], { units: 'meters' }),
       }))
-      .filter(({ distance }) => distance > 0.1)
-      .sort((a, b) => a.distance - b.distance)[0];
+      .filter((item: { distance: number }) => item.distance > 0.1)
+      .sort((a: { distance: number }, b: { distance: number }) => a.distance - b.distance)[0];
 
     if (!hit) return null;
 

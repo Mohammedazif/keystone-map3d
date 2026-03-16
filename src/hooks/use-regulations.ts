@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { Project, RegulationData, GreenRegulationData, VastuRegulationData } from '@/lib/types';
+import { useBuildingStore } from '@/hooks/use-building-store';
+import ultimateVastu from '@/data/ultimate-vastu-checklist.json';
 
 interface UseRegulationsReturn {
     regulations: RegulationData | null;
@@ -16,7 +18,11 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
     const [vastuRules, setVastuRules] = useState<VastuRegulationData | null>(null);
     const [isLoading, setIsLoading] = useState(false);
 
+    // Subscribe to building store project-level overrides (so admin actions in the store reflect here)
+    const storeProject = useBuildingStore(state => project ? state.projects.find(p => p.id === project.id) : null);
+
     useEffect(() => {
+
         if (!project) return;
 
         const fetchData = async () => {
@@ -137,14 +143,21 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
                     }
                 }
 
-                // 3. Fetch Vastu Regulations
-                if (project.vastuCompliant) {
+                // 3. Fetch Vastu Regulations (attempt regardless of project flag)
+                try {
                     console.log(`Fetching Vastu Regulations`);
                     const q = query(collection(db, 'vastuRegulations')); // Could filter by Type if needed
                     const snapshot = await getDocs(q);
                     if (!snapshot.empty) {
                         setVastuRules(snapshot.docs[0].data() as VastuRegulationData);
+                    } else {
+                        // No Vastu rules in Firestore — fall back to the bundled ultimate checklist
+                        console.warn('No Vastu rules found in DB — falling back to bundled ultimate checklist');
+                        setVastuRules(ultimateVastu as unknown as VastuRegulationData);
                     }
+                } catch (err) {
+                    console.error('Error fetching vastu regulations, applying bundled fallback', err);
+                    setVastuRules(ultimateVastu as unknown as VastuRegulationData);
                 }
 
             } catch (error) {
@@ -164,6 +177,26 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
         // Use stringified certifications to prevent infinite loops on array reference change
         JSON.stringify(project?.greenCertification)
     ]);
+
+    // If the building store has an attached vastuRules on the active project, prefer that so admin-loaded checklists take effect immediately
+    useEffect(() => {
+        try {
+            if (storeProject && (storeProject as any).vastuRules) {
+                setVastuRules((storeProject as any).vastuRules as VastuRegulationData);
+            }
+        } catch (e) {
+            // ignore
+        }
+    }, [storeProject]);
+
+    // If the building store has an attached greenStandards on the active project, prefer that so admin uploads apply immediately
+    useEffect(() => {
+        try {
+            if (storeProject && (storeProject as any).greenStandards) {
+                setGreenStandards((storeProject as any).greenStandards as GreenRegulationData);
+            }
+        } catch (e) { /* ignore */ }
+    }, [storeProject]);
 
     return { regulations, greenStandards, vastuRules, isLoading };
 }

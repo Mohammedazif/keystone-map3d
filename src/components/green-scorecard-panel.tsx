@@ -233,16 +233,23 @@ export function GreenScorecardPanel() {
         <div className="h-full flex flex-col w-full max-h-[calc(100vh-200px)]">
             {/* Header */}
             <div className="px-3 py-2 border-b shrink-0">
-                <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between">
                     <h2 className="text-xs font-semibold flex items-center gap-1.5">
                         <Leaf className="h-3.5 w-3.5 text-green-500" />
                         Green Scorecard
                         {isLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                     </h2>
-                    <div className="flex gap-1 flex-wrap justify-end">
+                    <div className="flex gap-2 flex-wrap items-center justify-end">
                         {scorecardDataList.map((scorecard) => (
                             <Badge key={scorecard.id} variant="outline">{scorecard.certificationType}</Badge>
                         ))}
+                        {regulations && regulations.length > 0 && (
+                            <div className="text-xs text-muted-foreground ml-2">
+                                {regulations.map(r => (
+                                    <div key={r.id}>{r.name || r.certificationType}</div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 </div>
                 <div className="mt-2 space-y-2">

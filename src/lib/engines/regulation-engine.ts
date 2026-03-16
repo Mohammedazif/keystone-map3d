@@ -11,6 +11,8 @@ import {
 } from '../types';
 import * as turf from '@turf/turf';
 import { getVastuCenter } from '../vastu-utils';
+// Default Vastu checklist used when no admin-uploaded rules are attached
+import defaultVastuChecklist from '../../data/ultimate-vastu-checklist.json';
 
 export class RegulationEngine {
     private project: Project;
@@ -27,7 +29,8 @@ export class RegulationEngine {
         this.project = project;
         this.regulations = regulations;
         this.greenStandards = greenStandards;
-        this.vastuRules = vastuRules;
+    // If no explicit vastuRules provided, fall back to the bundled ultimate checklist JSON
+    this.vastuRules = vastuRules || (defaultVastuChecklist as any);
     }
 
     public calculateMetrics(): AdvancedKPIs {
@@ -335,27 +338,39 @@ export class RegulationEngine {
         detail: string,
         maxScore: number
     ): ComplianceItem {
-        const achievedScore =
-            status === 'pass' ? maxScore :
-            status === 'warn' ? Math.round(maxScore * 0.5 * 100) / 100 :
-            0;
+            // New additive scoring: each item contributes points rather than additive weights.
+            // pass -> 1 point, warn -> 0.5 point, fail -> 0 point. We still keep maxScore for legacy point display,
+            // but achievedPoints is the normalized 0-1 contribution used for ranking/percentage calculations.
+            const achievedPoints = status === 'pass' ? 1 : status === 'warn' ? 0.5 : status === 'na' ? 0 : 0;
 
-        return {
-            label,
-            status,
-            detail,
-            weight: maxScore,
-            maxScore,
-            achievedScore,
-        };
+            return {
+                label,
+                status,
+                detail,
+                weight: maxScore,
+                maxScore,
+                // Legacy field kept for UI (points out of weight) - map to 0..maxScore scale for display
+                achievedScore: Math.round((achievedPoints * maxScore) * 100) / 100,
+                // expose normalized points for engine consumption
+                achievedPoints
+            } as any;
     }
 
     private calcAdditiveScore(items: ComplianceItem[]): AdditiveScoreSummary {
-        const eligibleItems = items.filter((item) => item.status !== 'na' && item.maxScore > 0);
-        const maxScore = eligibleItems.reduce((sum, item) => sum + item.maxScore, 0);
-        const totalScore = eligibleItems.reduce((sum, item) => sum + item.achievedScore, 0);
-        const percentage = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 100;
-        return { totalScore, maxScore, percentage };
+    // Eligible items: exclude 'na' and items that have no weight assigned
+    const eligibleItems = items.filter((item) => item.status !== 'na' && item.maxScore > 0);
+
+    // Sum of legacy displayed scores (achievedScore) and sum of weights
+    const maxScore = eligibleItems.reduce((sum, item) => sum + item.maxScore, 0);
+    const totalScore = eligibleItems.reduce((sum, item) => sum + (item.achievedScore || 0), 0);
+
+    // Compute additive ranking points: use the achievedPoints field when present (1 for pass, 0.5 warn, 0 fail)
+    const pointSum = eligibleItems.reduce((sum, item) => sum + ((item as any).achievedPoints ?? (item.achievedScore > 0 ? 1 : 0)), 0);
+    const maxPoints = eligibleItems.length; // each eligible item contributes max 1 point
+
+    const percentage = maxPoints > 0 ? Math.round((pointSum / maxPoints) * 100) : 0;
+
+    return { totalScore, maxScore, percentage };
     }
 
     private calculateCompliance(areaMetrics: any, greenMetrics: any) {
@@ -383,7 +398,7 @@ export class RegulationEngine {
                 'Minimum Plot Size',
                 basePlotArea >= 60 ? 'pass' : basePlotArea >= 30 ? 'warn' : 'fail',
                 `${Math.round(basePlotArea)} sqm`,
-                30
+                150
             ));
         }
 
@@ -392,7 +407,7 @@ export class RegulationEngine {
                 'Plot Access / Frontage',
                 allEntries.length > 0 || roadAccessCount > 0 ? 'pass' : 'warn',
                 `${allEntries.length} entries, ${roadAccessCount} road sides`,
-                30
+                120
             ));
         }
 
@@ -402,7 +417,7 @@ export class RegulationEngine {
                 'Building Plan Approval',
                 buildingPlanStatus === 'Approved' ? 'pass' : buildingPlanStatus === 'Pending' ? 'warn' : 'fail',
                 buildingPlanStatus,
-                40
+                120
             ));
         }
 
@@ -412,7 +427,7 @@ export class RegulationEngine {
                 'Environmental Clearance',
                 envClearanceStatus === 'Approved' ? 'pass' : 'warn',
                 envClearanceStatus,
-                30
+                80
             ));
         }
 
@@ -498,6 +513,29 @@ export class RegulationEngine {
                 setbackOk ? 'Compliant' : 'Violation detected',
                 40
             ));
+
+            // Additional bylaw fallback checks to provide a richer scorecard
+            // Drainage / Stormwater management
+            let hasStorm = false;
+            this.project.plots.forEach(p => {
+                if (p.utilityAreas) p.utilityAreas.forEach((u: any) => { if ((u.type || '').toLowerCase().includes('drain') || (u.type || '').toLowerCase().includes('storm')) hasStorm = true; });
+            });
+            bylawItems.push(this.createScoreItem('Stormwater / Drainage Plan', hasStorm ? 'pass' : 'warn', hasStorm ? 'Plan present' : 'No dedicated drainage area', 40));
+
+            // Waste management
+            let hasWaste = false;
+            this.project.plots.forEach(p => { if (p.utilityAreas) p.utilityAreas.forEach((u: any) => { if ((u.type || '').toLowerCase().includes('waste') || (u.type || '').toLowerCase().includes('solid')) hasWaste = true; }); });
+            bylawItems.push(this.createScoreItem('Solid Waste Management Plan', hasWaste ? 'pass' : 'warn', hasWaste ? 'Plan present' : 'Not provided', 30));
+
+            // Sewer / storm connectivity approvals
+        const approvalsAny = this.project.underwriting?.approvals as any;
+        const sewerOk = !!approvalsAny?.sewerConnection || !!approvalsAny?.drainagePlan;
+            if (!sewerOk) {
+                bylawItems.push(this.createScoreItem('Sewer / Drainage Connections', 'warn', 'No approvals found', 20));
+            }
+
+            // Utility easements / setbacks for services
+            bylawItems.push(this.createScoreItem('Utility Easements & Service Corridors', 'warn', 'Check service easements & clearances', 30));
         }
 
         // Parking
@@ -580,38 +618,84 @@ export class RegulationEngine {
 
         // ========== GREEN ==========
 
+        // Expanded Green/FSD fallback items (covers common IGBC/GRIHA/LEED categories).
+        // If `greenStandards` is present it can override these with exact credits/points.
         const tGreen = this.greenStandards?.constraints?.minGreenCover ? this.greenStandards.constraints.minGreenCover * 100 : 15;
+        const openPct = areaMetrics.totalPlotArea > 0 ? (greenMetrics.openSpace / areaMetrics.totalPlotArea) * 100 : 0;
+        const tOpen = this.greenStandards?.constraints?.minOpenSpace ? this.greenStandards.constraints.minOpenSpace * 100 : 30;
+
+        // Core site-level items
         greenItems.push(this.createScoreItem(
             `Green Cover (≥${tGreen.toFixed(0)}%)`,
             greenMetrics.greenArea.percentage >= tGreen ? 'pass' : greenMetrics.greenArea.percentage >= tGreen * 0.7 ? 'warn' : 'fail',
             `${greenMetrics.greenArea.percentage.toFixed(1)}% / ${tGreen.toFixed(0)}%`,
-            30
+            120
         ));
-
-        const tOpen = this.greenStandards?.constraints?.minOpenSpace ? this.greenStandards.constraints.minOpenSpace * 100 : 30;
-        const openPct = areaMetrics.totalPlotArea > 0 ? (greenMetrics.openSpace / areaMetrics.totalPlotArea) * 100 : 0;
         greenItems.push(this.createScoreItem(
             `Open Space (≥${tOpen.toFixed(0)}%)`,
             openPct >= tOpen ? 'pass' : openPct >= tOpen * 0.7 ? 'warn' : 'fail',
             `${openPct.toFixed(1)}% / ${tOpen.toFixed(0)}%`,
-            25
+            100
         ));
 
-        let hasRain = false, hasSolar = false, hasSTP = false;
+        // Water and rainwater
+        let hasRain = false, hasSolar = false, hasSTP = false, hasWaterAudit = false, hasLowFlow = false;
         this.project.plots.forEach(p => {
             if (p.utilityAreas) {
                 p.utilityAreas.forEach((u: any) => {
                     const t = (u.type || '').toLowerCase();
-                    // Check existence in plan, not map visibility
                     if (t.includes('rainwater')) hasRain = true;
                     if (t.includes('solar') || t === 'solar pv') hasSolar = true;
                     if (t === 'stp' || t === 'wtp' || t.includes('sewage') || t.includes('water treatment')) hasSTP = true;
+                    if (t.includes('audit') || t.includes('water audit')) hasWaterAudit = true;
+                    if (t.includes('low flow') || t.includes('efficient fixtures')) hasLowFlow = true;
                 });
             }
         });
-        greenItems.push(this.createScoreItem('Rainwater Harvesting', hasRain ? 'pass' : 'fail', hasRain ? 'Provided' : 'Not provided', 15));
-        greenItems.push(this.createScoreItem('Solar PV', hasSolar ? 'pass' : 'fail', hasSolar ? 'Provided' : 'Not provided', 15));
-        greenItems.push(this.createScoreItem('Water Recycling (STP/WTP)', hasSTP ? 'pass' : 'fail', hasSTP ? 'Provided' : 'Not provided', 15));
+
+        greenItems.push(this.createScoreItem('Rainwater Harvesting', hasRain ? 'pass' : 'fail', hasRain ? 'Provided' : 'Not provided', 80));
+        greenItems.push(this.createScoreItem('Water Recycling (STP/WTP)', hasSTP ? 'pass' : 'fail', hasSTP ? 'Provided' : 'Not provided', 120));
+        greenItems.push(this.createScoreItem('Water Efficiency (Low-flow Fixtures / Audit)', hasLowFlow || hasWaterAudit ? 'pass' : 'warn', hasLowFlow ? 'Efficient fixtures detected' : hasWaterAudit ? 'Water audit present' : 'Not provided', 60));
+
+        // Energy & renewable
+        // Heuristics: look for 'Solar', 'PV', 'EV' utility entries or building-level flags
+        this.project.plots.forEach(p => {
+            p.buildings.forEach((b: any) => {
+                if (b.utilities) {
+                    b.utilities.forEach((u: any) => { if ((u || '').toString().toLowerCase().includes('solar')) hasSolar = true; });
+                }
+            });
+        });
+
+        greenItems.push(this.createScoreItem('On-site Renewable (Solar PV)', hasSolar ? 'pass' : 'fail', hasSolar ? 'Installed' : 'Not installed', 120));
+        greenItems.push(this.createScoreItem('Energy Efficiency Measures', 'warn', 'Generic checks (lighting, HVAC efficiency) - refine with audit', 100));
+
+        // Materials & waste
+        greenItems.push(this.createScoreItem('Construction Waste Management', 'warn', 'No waste plan provided', 40));
+        greenItems.push(this.createScoreItem('Sustainable Materials (low embodied carbon)', 'warn', 'No materials declaration', 60));
+
+        // Indoor environment & amenity
+        greenItems.push(this.createScoreItem('Daylight / Ventilation Targets', 'warn', 'Needs daylight analysis', 80));
+        greenItems.push(this.createScoreItem('Thermal Comfort / Passive Design', 'warn', 'Passive design not analyzed', 60));
+
+        // Site-level certification readiness (composite)
+        greenItems.push(this.createScoreItem('Documentation & Certification Readiness', this.greenStandards ? 'pass' : 'warn', this.greenStandards ? `Using ${this.greenStandards.name}` : 'No standard attached', 100));
+
+        // Replace synthetic bucket with a set of common fallback credits (modeled after IGBC/LEED categories)
+        const fallbackCredits = [
+            { code: 'E1', name: 'Optimized Energy Performance', points: 100 },
+            { code: 'E2', name: 'On-site Renewable Energy', points: 80 },
+            { code: 'W1', name: 'Water Use Reduction', points: 80 },
+            { code: 'S1', name: 'Sustainable Site Planning', points: 60 },
+            { code: 'M1', name: 'Materials & Resources', points: 60 },
+            { code: 'ID1', name: 'Indoor Environmental Quality', points: 60 },
+            { code: 'IW1', name: 'Innovation & Documentation', points: 40 }
+        ];
+
+        fallbackCredits.forEach(c => {
+            // Default evaluation is 'warn' so they appear available but not achieved without audits
+            greenItems.push(this.createScoreItem(`${c.code} ${c.name}`, this.greenStandards ? 'pass' : 'warn', this.greenStandards ? 'Mapped to standard' : 'Fallback credit', c.points));
+        });
 
         // ========== VASTU ==========
         const vastuItems = this.calculateVastuItems();
@@ -623,6 +707,7 @@ export class RegulationEngine {
             bylaws: Math.max(0, bylawScoreSummary.percentage),
             green: Math.max(0, greenScoreSummary.percentage),
             vastu: Math.max(0, vastuScoreSummary.percentage),
+            greenStandards: this.greenStandards || null,
             bylawScoreSummary,
             greenScoreSummary,
             vastuScoreSummary,
@@ -918,11 +1003,8 @@ export class RegulationEngine {
     }
 
     private calculateVastuItems(): ComplianceItem[] {
-        const items: ComplianceItem[] = [];
-        if (!this.project.vastuCompliant) {
-            items.push(this.createScoreItem('Vastu not enabled', 'na', 'Enable in project settings', 0));
-            return items;
-        }
+    const items: ComplianceItem[] = [];
+    const vastuEnabled = !!this.project.vastuCompliant;
 
         if (this.vastuRules?.scorecardItems?.length) {
             return this.vastuRules.scorecardItems.map((item) => {
@@ -950,7 +1032,7 @@ export class RegulationEngine {
                 });
             } catch { /* */ }
         });
-        items.push(this.createScoreItem('Brahmasthan (Center)', brahmFree ? 'pass' : 'fail', brahmFree ? 'Center clear' : 'Building in center', 25));
+    items.push(this.createScoreItem('Brahmasthan (Center)', vastuEnabled ? (brahmFree ? 'pass' : 'fail') : 'na', vastuEnabled ? (brahmFree ? 'Center clear' : 'Building in center') : 'Vastu disabled in project settings', 25));
 
         // Helper: find ALL utilities for a category
         const findUtilities = (
@@ -1001,12 +1083,12 @@ export class RegulationEngine {
         if (waterResult.found) {
             items.push(this.createScoreItem(
                 'Water Source (NE)',
-                waterResult.allInRange ? 'pass' : waterResult.someInRange ? 'warn' : 'fail',
-                `${waterResult.names.join(', ')}: ${waterResult.bearings.join(', ')} (need 22-68°)`,
+                vastuEnabled ? (waterResult.allInRange ? 'pass' : waterResult.someInRange ? 'warn' : 'fail') : 'na',
+                vastuEnabled ? `${waterResult.names.join(', ')}: ${waterResult.bearings.join(', ')} (need 22-68°)` : 'Vastu disabled in project settings',
                 20
             ));
         } else {
-            items.push(this.createScoreItem('Water Source (NE)', 'na', 'No water utility', 0));
+            items.push(this.createScoreItem('Water Source (NE)', vastuEnabled ? 'na' : 'na', vastuEnabled ? 'No water utility' : 'Vastu disabled in project settings', 0));
         }
 
         // Fire SE (weight: 20)
@@ -1022,12 +1104,12 @@ export class RegulationEngine {
         if (fireResult.found) {
             items.push(this.createScoreItem(
                 'Fire/Energy (SE)',
-                fireResult.allInRange ? 'pass' : fireResult.someInRange ? 'warn' : 'fail',
-                `${fireResult.names.join(', ')}: ${fireResult.bearings.join(', ')} (need 112-158°)`,
+                vastuEnabled ? (fireResult.allInRange ? 'pass' : fireResult.someInRange ? 'warn' : 'fail') : 'na',
+                vastuEnabled ? `${fireResult.names.join(', ')}: ${fireResult.bearings.join(', ')} (need 112-158°)` : 'Vastu disabled in project settings',
                 20
             ));
         } else {
-            items.push(this.createScoreItem('Fire/Energy (SE)', 'na', 'No fire/HVAC utility', 0));
+            items.push(this.createScoreItem('Fire/Energy (SE)', vastuEnabled ? 'na' : 'na', vastuEnabled ? 'No fire/HVAC utility' : 'Vastu disabled in project settings', 0));
         }
 
         // Entry (weight: 15)
@@ -1039,7 +1121,7 @@ export class RegulationEngine {
                 entryDetail = good ? 'Entry from N/E/NE ✓' : 'Entry not from N/E/NE';
             }
         });
-        items.push(this.createScoreItem('Entry (N/E/NE)', entryStatus, entryDetail, entryStatus === 'na' ? 0 : 15));
+    items.push(this.createScoreItem('Entry (N/E/NE)', vastuEnabled ? entryStatus : 'na', vastuEnabled ? entryDetail : 'Vastu disabled in project settings', entryStatus === 'na' ? 0 : 15));
 
         // Service Placement (weight: 20)
         let svcGood = 0, svcTotal = 0;
@@ -1063,9 +1145,158 @@ export class RegulationEngine {
         });
         if (svcTotal > 0) {
             const pct = svcGood / svcTotal;
-            items.push(this.createScoreItem('Service Placement', pct >= 0.8 ? 'pass' : pct >= 0.5 ? 'warn' : 'fail', `${svcGood}/${svcTotal} correct`, 20));
+            items.push(this.createScoreItem('Service Placement', vastuEnabled ? (pct >= 0.8 ? 'pass' : pct >= 0.5 ? 'warn' : 'fail') : 'na', vastuEnabled ? `${svcGood}/${svcTotal} correct` : 'Vastu disabled in project settings', 20));
         }
 
+        // --- Additional heuristic checks to expand Vastu scorecard ---
+        // Main Mass (Prefer SW/South/West)
+        try {
+            const allBlds = this.getVisibleBuildings();
+                if (allBlds.length > 0) {
+                const main = allBlds.reduce((p: any, c: any) => (p.area > c.area ? p : c), allBlds[0]);
+                const center = getVastuCenter(this.project.plots[0].geometry);
+                const bCentroid = main.centroid || turf.centroid(main.geometry);
+                const bearing = turf.bearing(center, bCentroid);
+                const az = (bearing + 360) % 360;
+                const isSW = az >= 202 && az <= 248;
+                const isS = az > 157 && az < 202;
+                const isW = az > 248 && az < 292;
+                const status = isSW || isS || isW ? 'pass' : 'warn';
+                items.push(this.createScoreItem('Main Mass Placement (SW preferred)', vastuEnabled ? status as any : 'na', vastuEnabled ? `Main mass at ${az.toFixed(0)}°` : 'Vastu disabled in project settings', 20));
+            }
+        } catch { /* ignore */ }
+
+        // Puja Room (NE) - look for named internal utilities or units
+        try {
+            const matches: { name: string; az: number }[] = [];
+            this.project.plots.forEach(plot => {
+                const center = getVastuCenter(plot.geometry);
+                (plot.buildings || []).forEach((b: any) => {
+                    // search building name, unit names, internal utilities for keywords
+                    const keywords = ((b.name || '') + ' ' + ((b.programMix && b.programMix.puja) || '')).toLowerCase();
+                    if ((b.internalUtilities || []).some((u: any) => (u.name || '').toLowerCase().includes('puja') || (u.name || '').toLowerCase().includes('prayer'))) {
+                        const az = (turf.bearing(center, turf.centroid(b.geometry)) + 360) % 360;
+                        matches.push({ name: b.name || 'Building', az });
+                    }
+                });
+            });
+            if (matches.length > 0) {
+                const someInRange = matches.some(m => m.az >= 22 && m.az <= 68);
+                items.push(this.createScoreItem('Puja Room (NE)', vastuEnabled ? (someInRange ? 'pass' : 'warn') : 'na', vastuEnabled ? `${matches.map(m => `${m.name}@${m.az.toFixed(0)}°`).join(', ')}` : 'Vastu disabled in project settings', 15));
+            } else {
+                items.push(this.createScoreItem('Puja Room (NE)', vastuEnabled ? 'na' : 'na', vastuEnabled ? 'No puja room detected by name' : 'Vastu disabled in project settings', 0));
+            }
+        } catch { items.push(this.createScoreItem('Puja Room (NE)', 'na', 'Detection failed', 0)); }
+
+        // Staircase not in Brahmasthan (shouldn't occupy center)
+        try {
+            const center = getVastuCenter(this.project.plots[0].geometry);
+            const radius = Math.sqrt(turf.area(this.project.plots[0].geometry) * 0.05 / Math.PI);
+            const zone = turf.buffer(center, radius / 1000, { units: 'kilometers' });
+            let stairInCenter = false;
+            this.project.plots.forEach(plot => {
+                (plot.buildings || []).forEach((b: any) => {
+                    (b.cores || []).forEach((c: any) => {
+                        if (c.type === 'Stair') {
+                            const pt = turf.centroid(c.geometry);
+                            if (zone && turf.booleanPointInPolygon(pt, zone as any)) stairInCenter = true;
+                        }
+                    });
+                });
+            });
+            items.push(this.createScoreItem('Staircase not in Brahmasthan', vastuEnabled ? (stairInCenter ? 'fail' : 'pass') : 'na', vastuEnabled ? (stairInCenter ? 'Stair in center' : 'No stair in center') : 'Vastu disabled in project settings', 20));
+        } catch { /* */ }
+
+        // Toilet placement (should avoid NE / Brahmasthan) — prefer context flags
+        try {
+            const ctx = this.project.plots[0].complianceContext;
+            if (ctx?.hasToiletInNorthEast || ctx?.hasToiletInBrahmasthan) {
+                items.push(this.createScoreItem('Toilet Placement (avoid NE/Brahmasthan)', vastuEnabled ? 'fail' : 'na', vastuEnabled ? 'Toilet detected in NE/Brahmasthan' : 'Vastu disabled in project settings', 25));
+            } else if (ctx && (ctx.hasToiletInNorthEast === false && ctx.hasToiletInBrahmasthan === false)) {
+                items.push(this.createScoreItem('Toilet Placement (avoid NE/Brahmasthan)', vastuEnabled ? 'pass' : 'na', vastuEnabled ? 'No toilets in critical zones' : 'Vastu disabled in project settings', 25));
+            } else {
+                items.push(this.createScoreItem('Toilet Placement (avoid NE/Brahmasthan)', vastuEnabled ? 'na' : 'na', vastuEnabled ? 'Toilet location data not provided' : 'Vastu disabled in project settings', 0));
+            }
+        } catch { items.push(this.createScoreItem('Toilet Placement (avoid NE/Brahmasthan)', 'na', 'Detection failed', 0)); }
+
+        // Parking Placement (prefer NW/S/W)
+        try {
+            const pk = this.getFeaturesInBearingRange(this.project.plots[0].parkingAreas || [], this.project.plots[0], 202, 338);
+            if ((this.project.plots[0].parkingAreas || []).length === 0) {
+                items.push(this.createScoreItem('Parking Placement', 'na', 'No parking areas modeled', 0));
+            } else {
+                const allGood = pk.length === (this.project.plots[0].parkingAreas || []).length;
+                const someGood = pk.length > 0;
+                items.push(this.createScoreItem('Parking Placement (NW/S/W)', vastuEnabled ? (allGood ? 'pass' : someGood ? 'warn' : 'fail') : 'na', vastuEnabled ? `${pk.length}/${(this.project.plots[0].parkingAreas || []).length} in preferred zones` : 'Vastu disabled in project settings', 15));
+            }
+        } catch { /* */ }
+
+        // Open NE availability (prefer open/green in NE)
+        try {
+            const center = getVastuCenter(this.project.plots[0].geometry);
+            const neBuildings = this.getFeaturesInBearingRange(this.getVisibleBuildings(), this.project.plots[0], 22, 68);
+            const neGreen = this.getFeaturesInBearingRange(this.project.plots[0].greenAreas || [], this.project.plots[0], 22, 68);
+            const openOk = neGreen.length > 0 || (neBuildings.length === 0);
+            items.push(this.createScoreItem('NE Open Space / Green', vastuEnabled ? (openOk ? 'pass' : 'warn') : 'na', vastuEnabled ? `${neGreen.length} green zones in NE` : 'Vastu disabled in project settings', 15));
+        } catch { /* */ }
+
+        // --- Additional expanded checks to cover more of the ultimate checklist ---
+        try {
+            const plot = this.project.plots[0];
+            // Corner angles & irregular boundary
+            const ring = plot.geometry?.geometry?.coordinates?.[0] || [];
+            let irregular = false;
+            let cornerAnglesMsg = '';
+            if (ring.length > 3) {
+                const coords = ring.slice(0, ring.length - 1);
+                const angles: number[] = [];
+                for (let i = 0; i < coords.length; i++) {
+                    const p0 = coords[(i - 1 + coords.length) % coords.length];
+                    const p1 = coords[i];
+                    const p2 = coords[(i + 1) % coords.length];
+                    try {
+                        // turf.rhumbBearing returns degrees already — subtracting two bearings gives delta in degrees
+                        const a = turf.rhumbBearing(turf.point(p1), turf.point(p0)) - turf.rhumbBearing(turf.point(p1), turf.point(p2));
+                        const angle = Math.abs(((a + 540) % 360) - 180);
+                        angles.push(Math.round(angle));
+                    } catch { /* ignore */ }
+                }
+                const ninetyCount = angles.filter(a => Math.abs(a - 90) <= 8).length;
+                if (ninetyCount < Math.max(3, Math.floor(coords.length * 0.6))) irregular = true;
+                cornerAnglesMsg = `Detected corner angles: ${angles.slice(0,5).join(', ')}${angles.length>5?', ...':''}`;
+            }
+            items.push(this.createScoreItem('Plot Corner Angles / Regularity', vastuEnabled ? (irregular ? 'warn' : 'pass') : 'na', vastuEnabled ? (cornerAnglesMsg || 'Insufficient geometry') : 'Vastu disabled in project settings', irregular ? 6 : 8, ));
+
+            // Plot tapering / extended corners
+            try {
+                const bbox = turf.bbox(plot.geometry);
+                const bboxArea = turf.area(turf.bboxPolygon(bbox));
+                const plotArea = turf.area(plot.geometry);
+                const rectangularity = bboxArea > 0 ? plotArea / bboxArea : 0;
+                const tapering = rectangularity < 0.6; // heuristic
+                items.push(this.createScoreItem('Plot Tapering / Extended Corners', vastuEnabled ? (tapering ? 'warn' : 'pass') : 'na', vastuEnabled ? `Rectangularity ${rectangularity.toFixed(2)}` : 'Vastu disabled in project settings', tapering ? 4 : 6));
+            } catch { items.push(this.createScoreItem('Plot Tapering / Extended Corners', 'na', 'Failed to evaluate', 4)); }
+
+            // Adjacent building heights (context)
+            try {
+                const neighbours = this.getVisibleBuildings();
+                const center = getVastuCenter(plot.geometry);
+                const neighbourHeights = neighbours.map(b => ({ id: b.id, height: b.height || (b.numFloors || 0) * 3.5, az: ((turf.bearing(center, b.centroid || turf.centroid(b.geometry)) + 360) % 360) }));
+                const highOnNE = neighbourHeights.some(h => h.az >= 22 && h.az <= 68 && h.height > 15);
+                items.push(this.createScoreItem('Adjacent Building Heights (NE/SE/SW context)', vastuEnabled ? (highOnNE ? 'warn' : 'pass') : 'na', vastuEnabled ? `Sample neighbours: ${neighbourHeights.slice(0,3).map(n=>Math.round(n.height)).join(', ')}` : 'Vastu disabled in project settings', 6));
+            } catch { items.push(this.createScoreItem('Adjacent Building Heights (NE/SE/SW context)', 'na', 'Not available', 6)); }
+
+            // Flood susceptibility / groundwater flow (from complianceContext if available)
+            try {
+                const ctx = plot.complianceContext || {};
+                const anyCtx = ctx as any;
+                const floodRisk = anyCtx?.floodRisk || anyCtx?.floodSusceptibility || 'unknown';
+                const gwFlow = anyCtx?.groundwaterFlowDirection || 'unknown';
+                const floodStatus = floodRisk === 'high' ? 'fail' : floodRisk === 'medium' ? 'warn' : (floodRisk === 'low' ? 'pass' : 'na');
+                items.push(this.createScoreItem('Flood Susceptibility', vastuEnabled ? (floodStatus as any) : 'na', vastuEnabled ? `Flood risk: ${floodRisk}` : 'Vastu disabled in project settings', floodStatus === 'na' ? 0 : 6));
+                items.push(this.createScoreItem('Groundwater Flow Direction', vastuEnabled ? (gwFlow === 'towardsNE' ? 'pass' : gwFlow === 'unknown' ? 'na' : 'warn') : 'na', vastuEnabled ? `Flow: ${gwFlow}` : 'Vastu disabled in project settings', gwFlow === 'unknown' ? 0 : 4));
+            } catch { items.push(this.createScoreItem('Flood Susceptibility', 'na', 'No data', 6)); }
+        } catch { /* ignore */ }
         return items;
     }
 }

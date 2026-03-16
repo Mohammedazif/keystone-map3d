@@ -279,6 +279,40 @@ Return ONLY the JSON object.`;
             if (!parsed.certificationType) parsed.certificationType = 'Green Building';
             if (!parsed.name) parsed.name = input.fileName;
 
+            // Normalize analysisThresholds: ensure each threshold is either null or an object with numeric min and target
+            if (parsed.analysisThresholds) {
+                const normalize = (t: any) => {
+                    if (t === null || t === undefined) return null;
+                    // If t is an object, try to coerce min/target to numbers
+                    let min = t.min;
+                    let target = t.target;
+
+                    if (typeof min === 'string') {
+                        const n = parseFloat(min.replace(/[^0-9.-]/g, ''));
+                        min = isNaN(n) ? null : n;
+                    }
+                    if (typeof target === 'string') {
+                        const n = parseFloat(target.replace(/[^0-9.-]/g, ''));
+                        target = isNaN(n) ? null : n;
+                    }
+
+                    if (typeof min !== 'number' || typeof target !== 'number' || isNaN(min) || isNaN(target)) {
+                        return null;
+                    }
+
+                    return { min, target };
+                };
+
+                parsed.analysisThresholds.sunHours = normalize(parsed.analysisThresholds.sunHours);
+                parsed.analysisThresholds.daylightFactor = normalize(parsed.analysisThresholds.daylightFactor);
+                parsed.analysisThresholds.windSpeed = normalize(parsed.analysisThresholds.windSpeed);
+
+                // If all three are null, set analysisThresholds to null to match schema anyOf
+                if (!parsed.analysisThresholds.sunHours && !parsed.analysisThresholds.daylightFactor && !parsed.analysisThresholds.windSpeed) {
+                    parsed.analysisThresholds = null;
+                }
+            }
+
             return parsed as z.infer<typeof ExtractedGreenRegulationSchema>;
         } catch (e) {
             console.warn('[ExtractGreenLogic] Failed to parse AI response, using fallback:', e);

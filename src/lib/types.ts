@@ -472,6 +472,9 @@ export interface AdvancedKPIs {
   compliance: {
     bylaws: number;
     green: number;
+  // If a project used an admin-selected green regulation (IGBC/GRIHA/LEED),
+  // surface that structured data to consumers (optional).
+  greenStandards?: GreenRegulationData | null;
     vastu: number;
     bylawScoreSummary?: AdditiveScoreSummary;
     greenScoreSummary?: AdditiveScoreSummary;
@@ -496,6 +499,7 @@ export interface ComplianceItem {
   weight: number;  // legacy field, mirrored from maxScore for compatibility
   maxScore: number;
   achievedScore: number;
+  achievedPoints?: number; // Normalized 0..1 point (1=pass, 0.5=warn, 0=fail)
 }
 
 

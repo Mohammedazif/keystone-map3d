@@ -13,7 +13,6 @@ import crypto from 'crypto';
 import { createRequire } from 'module';
 
 import { createWorker } from 'tesseract.js';
-import pdfImgConvert from 'pdf-img-convert';
 
 const require = createRequire(import.meta.url);
 const pdf = require('pdf-parse');
@@ -28,7 +27,16 @@ const INDEX_NAME = 'compliance-rag';
 async function performOCR(filePath: string): Promise<string> {
     console.log(`[OCR] Parsing images from ${path.basename(filePath)}...`);
     try {
-        const outputImages = await pdfImgConvert.convert(filePath);
+        let outputImages: Uint8Array[] = [];
+        try {
+            // dynamic import to avoid build-time typecheck failure when optional dependency missing
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const pdfImgConvert = require('pdf-img-convert');
+            outputImages = await pdfImgConvert.convert(filePath);
+        } catch (err) {
+            console.warn('[OCR] pdf-img-convert not available, cannot perform image conversion:', err);
+            return '';
+        }
         console.log(`[OCR] Converted to ${outputImages.length} images. Initializing Tesseract...`);
 
         // Limit to first 50 pages to avoid excessive processing

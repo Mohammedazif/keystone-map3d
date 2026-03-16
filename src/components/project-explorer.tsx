@@ -33,6 +33,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { Project } from '@/lib/types';
+import { useDevelopmentMetrics } from '@/hooks/use-development-metrics';
 
 
 function PlotItem({ plot }: { plot: import('@/lib/types').Plot }) {
@@ -284,7 +285,8 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
 
     const activeProject = useBuildingStore(s => s.projects.find(p => p.id === s.activeProjectId));
     const { regulations } = useGreenRegulations(activeProject as unknown as Project);
-
+    const metrics = useDevelopmentMetrics(activeProject as any);
+    const currentCert = activeProject?.greenCertification?.[0] || null;
     const handleRegulationChange = (value: string) => {
         if (activeProject) {
             actions.updateProject(activeProject.id, { greenCertification: [value as any] });
@@ -311,6 +313,30 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
                         >
                             <Ghost className="h-3.5 w-3.5" />
                         </Button>
+                    </div>
+                    {/* Certification toggles (IGBC / GRIHA / LEED) — updates project greenCertification */}
+                    <div className="mt-2 flex items-center gap-2">
+                        {['IGBC', 'GRIHA', 'LEED'].map(cert => {
+                            const isSelected = currentCert && currentCert.toLowerCase().includes(cert.toLowerCase());
+                            return (
+                                <div key={cert} className="flex items-center gap-2">
+                                    <Button
+                                        size="sm"
+                                        variant={isSelected ? 'default' : 'outline'}
+                                        onClick={() => {
+                                            if (!activeProject) return;
+                                            if (isSelected) actions.updateProject(activeProject.id, { greenCertification: [] });
+                                            else actions.updateProject(activeProject.id, { greenCertification: [cert as any] });
+                                        }}
+                                    >
+                                        {cert}
+                                    </Button>
+                                    {isSelected && (
+                                        <div className="text-xs text-muted-foreground">Score: <span className="font-bold ml-1">{metrics?.compliance?.green ?? '--'}</span></div>
+                                    )}
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
                 <div className={cn("flex-1 overflow-hidden", embedded ? "" : "p-0")}>

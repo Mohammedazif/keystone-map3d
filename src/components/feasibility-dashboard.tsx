@@ -1469,6 +1469,25 @@ function FeasibilityTab() {
     const maxFAR = regulations?.geometry?.floor_area_ratio?.value || activeProject?.feasibilityParams?.efficiencyTarget || 2.5;
     const minGreenCover = greenStandards?.constraints?.minGreenCover ? greenStandards.constraints.minGreenCover * 100 : 15;
     const minOpenSpace = greenStandards?.constraints?.minOpenSpace ? greenStandards.constraints.minOpenSpace * 100 : 30;
+    // Compute selected certification and its recommended max ground coverage (percent)
+    const selectedCertRaw = activeProject?.greenCertification?.[0];
+    const certLabel = selectedCertRaw ? (
+        selectedCertRaw.toLowerCase().includes('griha') ? 'GRIHA' :
+        selectedCertRaw.toLowerCase().includes('leed') ? 'LEED' :
+        selectedCertRaw.toLowerCase().includes('igbc') ? 'IGBC' : selectedCertRaw
+    ) : null;
+
+    let certMaxCoverage: number | null = null;
+    if (certLabel && greenStandards?.constraints) {
+        if (greenStandards.constraints.maxGroundCoverage) certMaxCoverage = greenStandards.constraints.maxGroundCoverage * 100;
+        else if (greenStandards.constraints.minOpenSpace) certMaxCoverage = (1 - greenStandards.constraints.minOpenSpace) * 100;
+    }
+    // Fallback sensible defaults when no constraints present
+    if (certMaxCoverage == null && certLabel) {
+        if (certLabel === 'LEED') certMaxCoverage = 70;
+        else if (certLabel === 'GRIHA') certMaxCoverage = 75;
+        else if (certLabel === 'IGBC') certMaxCoverage = 80;
+    }
     const maxHeight = regulations?.geometry?.max_height?.value;
     const maxCoverage = regulations?.geometry?.max_ground_coverage?.value;
 
@@ -1497,7 +1516,8 @@ function FeasibilityTab() {
             score: metrics.compliance.vastu,
             summary: metrics.compliance.vastuScoreSummary,
             icon: Compass,
-            items: (metrics.compliance.vastuItems || []).filter((i: any) => i.status !== 'na'),
+            // Include full vastu scorecard (show 'na' items too) so admin can see full diagnostics
+            items: (metrics.compliance.vastuItems || []),
             control: (
                 <div className="space-y-2 mt-2 pt-2 border-t border-border/50">
                     <div className="flex items-center space-x-2">
@@ -1507,6 +1527,17 @@ function FeasibilityTab() {
                             onCheckedChange={toggleVastuCompass}
                         />
                         <Label htmlFor="vastu-compass" className="text-xs">Show Shakti Chakra Overlay</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => actions.loadUltimateVastuChecklist()}>
+                            Load Ultimate Vastu Checklist
+                        </Button>
+                        <div className="text-xs text-muted-foreground">If Vastu is not attached or only minimal items are shown, load the full checklist for a detailed scorecard.</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => actions.toggleVastuCompass(!uiState.showVastuCompass)}>
+                            {uiState.showVastuCompass ? 'Hide' : 'Show'} Compass Overlay
+                        </Button>
                     </div>
                     {/* <Button
                         size="sm"
@@ -1603,36 +1634,151 @@ function FeasibilityTab() {
                 {complianceCards.map((card, idx) => (
                     <Card key={idx} className="bg-secondary/20 border-border/50">
                         <CardHeader className="p-3 pb-2 flex flex-row items-center justify-between space-y-0">
-                            <CardTitle className="text-sm font-medium flex items-center gap-2">
-                                <card.icon className="h-4 w-4" /> {card.label}
-                            </CardTitle>
+                            <div>
+                                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                                    <card.icon className="h-4 w-4" /> {card.label}
+                                </CardTitle>
+                                {/* If green standards are present, show the name */}
+                                {card.label.toLowerCase().includes('green') && (
+                                    <div className="flex items-center gap-2 mt-1">
+                                        {metrics.compliance?.greenStandards && (
+                                            <div className="text-[11px] text-muted-foreground">{metrics.compliance.greenStandards.name || metrics.compliance.greenStandards.certificationType}</div>
+                                        )}
+                                        {certLabel && certMaxCoverage != null && (
+                                            <div className="ml-2 inline-flex items-center gap-2 text-[11px]">
+                                                <Badge variant="outline" className="text-xs font-mono">{certLabel}</Badge>
+                                                <div className="text-[11px] text-muted-foreground">Max Coverage: <span className="font-bold ml-1">{Math.round(certMaxCoverage)}%</span></div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                             <div className={`h-3 w-3 rounded-full ${getTrafficLight(card.score)}`} />
                         </CardHeader>
                         <CardContent className="p-3 pt-0">
-                            <div className="flex items-end gap-2 mb-2">
-                                <span className="text-2xl font-bold">{card.score}</span>
-                                <span className="text-xs text-muted-foreground mb-1">/ 100</span>
-                            </div>
-                            {card.summary && (
-                                <div className="text-[11px] text-muted-foreground mb-2">
-                                    {card.summary.totalScore} / {card.summary.maxScore} points
+                            <div className="flex flex-col items-end gap-1 mb-2">
+                                <div className="flex items-end gap-2">
+                                    <span className="text-2xl font-bold">{card.score}</span>
+                                    <span className="text-xs text-muted-foreground mb-1">/ 100</span>
                                 </div>
-                            )}
-                            <div className="space-y-1">
-                                {card.items.map((item: any, i: number) => (
-                                    <div key={i} className="flex items-center justify-between text-xs gap-2">
-                                        <span className="text-muted-foreground truncate">{item.label}</span>
-                                        <div className="flex items-center gap-1.5 shrink-0">
-                                            {typeof item.achievedScore === 'number' && typeof item.maxScore === 'number' && (
-                                                <span className="text-[10px] text-muted-foreground">
-                                                    {item.achievedScore}/{item.maxScore}
-                                                </span>
-                                            )}
-                                            {item.detail && <span className={`text-[10px] ${item.status === 'pass' ? 'text-green-400' : item.status === 'warn' ? 'text-yellow-400' : 'text-red-400'}`}>{item.detail}</span>}
-                                            {getStatusIcon(item.status)}
-                                        </div>
+                                {card.summary && (
+                                    <div className="text-sm font-semibold text-muted-foreground">
+                                        {card.summary.totalScore} / {card.summary.maxScore} points
                                     </div>
-                                ))}
+                                )}
+                            </div>
+                            <div className="space-y-1">
+                                {card.label.toLowerCase().includes('vastu') ? (
+                                    // Flatten any grouped items and render each Vastu scorecard entry one-by-one
+                                    (() => {
+                                        // Normalize various incoming shapes: arrays, grouped objects with .items, or single items
+                                        const raw = card.items || [];
+                                        const flat: any[] = [];
+                                        raw.forEach((ri: any) => {
+                                            if (!ri) return;
+                                            // If an object with .items array (grouped), push each child
+                                            if (Array.isArray(ri)) {
+                                                ri.forEach(x => flat.push(x));
+                                            } else if (ri.items && Array.isArray(ri.items)) {
+                                                ri.items.forEach((x: any) => flat.push(x));
+                                            } else {
+                                                flat.push(ri);
+                                            }
+                                        });
+
+                                        return (
+                                            <div className="space-y-2">
+                                                {flat.map((item: any, i: number) => {
+                                                    const rawLabel = String(item.label || item.code || item.title || '');
+                                                    const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
+                                                    const code = m ? m[1] : (item.code || null);
+                                                    const title = m ? m[2] : (item.title || item.label || rawLabel);
+
+                                                    return (
+                                                        <div key={i} className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    {code && <Badge variant="secondary" className="text-[11px] font-mono px-1.5 py-0.5">{code}</Badge>}
+                                                                    <div className="text-sm font-medium truncate">{title}</div>
+                                                                </div>
+                                                                {item.detail && <div className="text-xs text-muted-foreground mt-0.5">{item.detail}</div>}
+                                                            </div>
+                                                            <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
+                                                                {typeof item.achievedScore === 'number' && typeof item.maxScore === 'number' ? (
+                                                                    (() => {
+                                                                        const pct = item.maxScore > 0 ? Math.round((item.achievedScore / item.maxScore) * 100) : 0;
+                                                                        return (
+                                                                            <div className="flex flex-col items-end">
+                                                                                <div className="text-lg font-bold tabular-nums">{pct}</div>
+                                                                                <div className="text-xs text-muted-foreground">/ 100</div>
+                                                                                <div className="text-[11px] text-muted-foreground mt-1">{item.achievedScore} / {item.maxScore} points</div>
+                                                                            </div>
+                                                                        );
+                                                                    })()
+                                                                ) : (
+                                                                    <div className="text-[11px] text-muted-foreground">{item.status === 'na' ? 'Not evaluated' : item.status}</div>
+                                                                )}
+                                                                <div className="flex items-center gap-1 mt-1">{getStatusIcon(item.status)}</div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        );
+                                    })()
+                                ) : (
+                                    (() => {
+                                        // Normalize and flatten items to support grouped shapes
+                                        const raw = card.items || [];
+                                        const flat: any[] = [];
+                                        raw.forEach((ri: any) => {
+                                            if (!ri) return;
+                                            if (Array.isArray(ri)) ri.forEach(x => flat.push(x));
+                                            else if (ri.items && Array.isArray(ri.items)) ri.items.forEach((x: any) => flat.push(x));
+                                            else flat.push(ri);
+                                        });
+
+                                        return (
+                                            <div className="space-y-2">
+                                                {flat.map((item: any, i: number) => {
+                                                    const rawLabel = String(item.label || item.code || item.title || '');
+                                                    const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
+                                                    const code = m ? m[1] : (item.code || null);
+                                                    const title = m ? m[2] : (item.title || item.label || rawLabel);
+
+                                                    return (
+                                                        <div key={i} className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    {code && <Badge variant="outline" className="text-[11px] font-mono px-1.5 py-0.5">{code}</Badge>}
+                                                                    <div className="text-sm font-medium truncate">{title}</div>
+                                                                </div>
+                                                                {item.detail && <div className="text-xs text-muted-foreground mt-0.5">{item.detail}</div>}
+                                                            </div>
+                                                            <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
+                                                                {typeof item.achievedScore === 'number' && typeof item.maxScore === 'number' ? (
+                                                                    (() => {
+                                                                        const pct = item.maxScore > 0 ? Math.round((item.achievedScore / item.maxScore) * 100) : 0;
+                                                                        return (
+                                                                            <div className="flex flex-col items-end">
+                                                                                <div className="text-lg font-bold tabular-nums">{pct}</div>
+                                                                                <div className="text-xs text-muted-foreground">/ 100</div>
+                                                                                <div className="text-[11px] text-muted-foreground mt-1">{item.achievedScore} / {item.maxScore} points</div>
+                                                                            </div>
+                                                                        );
+                                                                    })()
+                                                                ) : (
+                                                                    <div className="text-[11px] text-muted-foreground">{item.status === 'na' ? 'Not evaluated' : item.status}</div>
+                                                                )}
+                                                                <div className="flex items-center gap-1 mt-1">{getStatusIcon(item.status)}</div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        );
+                                    })()
+                                )}
                             </div>
                             {card.control}
                         </CardContent>

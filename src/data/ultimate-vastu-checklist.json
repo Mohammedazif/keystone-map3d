@@ -1,0 +1,100 @@
+{
+  "name": "Ultimate Vastu Compliance Checklist",
+  "version": "2026-03",
+  "totalPossibleScore": 138,
+  "verdictBands": [
+    { "label": "VASTU COMPLIANT — Approved", "minScore": 90, "maxScore": 138 },
+    { "label": "CONDITIONAL APPROVAL — Minor rectifications needed", "minScore": 70, "maxScore": 89 },
+    { "label": "MAJOR RECTIFICATIONS REQUIRED before approval", "minScore": 50, "maxScore": 69 },
+    { "label": "REJECTED — Redesign and resubmit", "minScore": 0, "maxScore": 49 }
+  ],
+  "idealZoneMap": {
+    "North-East": "Water (parks, lakes, temple)",
+    "South-East": "Fire (electrical, kitchens)",
+    "South-West": "Earth (tall buildings)",
+    "North-West": "Air (parking, guests, services)",
+    "Center": "Space (courtyard)"
+  },
+  "layers": [
+    { "id": 1, "title": "SITE GEOMETRY", "items": ["Plot shape","Rectangular proportion","Plot symmetry","Corner angles","Irregular boundaries","Missing corners","Extended corners","Plot tapering","Plot orientation","Internal voids"] },
+    { "id": 2, "title": "SITE TOPOGRAPHY", "items": ["Site slope direction","SW vs NE height diff","Natural drainage","Highest contour","Lowest contour","Terrain irregularities","Flood susceptibility","Ground water flow"] },
+    { "id": 3, "title": "SITE CONTEXT", "items": ["External road direction","Road level vs plot","T-junction/Y-junction exposure","Road from NE","Road from SW","Adjacent building heights","Nearby water bodies","Temple/religious nearby","Cemetery/negative uses nearby"] },
+    { "id": 4, "title": "SITE ACCESS", "items": ["Main entrance location","Number of gates","Gate symmetry","Secondary entrances","Service entry","Emergency exits","Gate orientation to roads"] },
+    { "id": 5, "title": "INTERNAL ROAD NETWORK", "items": ["Main spine direction","Circulation orientation","Clockwise vs anticlockwise","T-junctions hitting buildings","Dead-end roads","Road width hierarchy","Road slope","Parking entry placement"] },
+    { "id": 6, "title": "MASTER PLAN ZONING", "items": ["NE zoning","SW zoning","SE zoning","NW zoning","Commercial placement","Residential placement","Institutional placement","Amenity placement","Landscape distribution"] },
+    { "id": 7, "title": "BUILDING MASSING", "items": ["Height gradient","Tallest building location","Density gradient","Building shadow direction","Alignment with cardinal directions","Tower spacing"] },
+    { "id": 8, "title": "WATER ELEMENTS", "items": ["Borewell location","UG water tank","Swimming pool","Artificial water bodies","RWH pits","Drainage direction"] },
+    { "id": 9, "title": "UTILITIES & SERVICES", "items": ["Electrical substation","Generator room","Fire pump","STP placement","Garbage zone","Chiller plant","Gas/LPG storage","Pump rooms"] },
+    { "id": 10, "title": "ENERGY & CENTRAL SPACE", "items": ["Brahmasthan location","Built vs open at Brahmasthan","Courtyard presence","Temple location","Community space","Solar orientation"] }
+  ],
+  "scorecardItems": [
+    { "id": "A1", "code": "A1", "section": "SITE SHAPE & SLOPE", "title": "Plot shape is square or rectangular (no irregular/triangular plots)", "complianceBasis": "Square/Rectangle = Full marks; Minor irregularity = Partial; Highly irregular = 0", "maxMarks": 4 },
+    { "id": "A2", "code": "A2", "section": "SITE SHAPE & SLOPE", "title": "Site slope: North-East lowest, South-West highest", "complianceBasis": "Correct slope = Full; Reverse slope = 0; Flat = Partial", "maxMarks": 4 },
+    { "id": "A3", "code": "A3", "section": "SITE SHAPE & SLOPE", "title": "North & East sides are lower and more open than South & West sides", "complianceBasis": "Fully compliant = Full marks", "maxMarks": 2 },
+
+    { "id": "B1", "code": "B1", "section": "MAIN ENTRANCE & GATE PLACEMENT", "title": "Main entry gate located in auspicious Vastu zones", "complianceBasis": "In prescribed zone = Full; Nearby zone = Partial; South-West = 0", "maxMarks": 5 },
+    { "id": "B2", "code": "B2", "section": "MAIN ENTRANCE & GATE PLACEMENT", "title": "No entrance in South-West zone", "complianceBasis": "No SW entrance = Full marks; SW entrance = 0", "maxMarks": 3 },
+    { "id": "B3", "code": "B3", "section": "MAIN ENTRANCE & GATE PLACEMENT", "title": "Entry gate aligned where highlighted zone meets the road", "complianceBasis": "Correctly aligned = Full marks", "maxMarks": 2 },
+
+    { "id": "C1", "code": "C1", "section": "ZONING OF LAND USES", "title": "North-East zone uses (water, lawns, temples, low-rise)", "complianceBasis": "Fully compliant = Full; Partial = 2; Non-compliant = 0", "maxMarks": 4 },
+    { "id": "C2", "code": "C2", "section": "ZONING OF LAND USES", "title": "South-West zone heavy buildings & owner functions", "complianceBasis": "Fully compliant = Full; Partial = 2; Non-compliant = 0", "maxMarks": 4 },
+    { "id": "C3", "code": "C3", "section": "ZONING OF LAND USES", "title": "South-East zone: Kitchen/restaurant, generator, electrical rooms, fire services", "complianceBasis": "Fully compliant = Full; Partial = 1; Non-compliant = 0", "maxMarks": 3 },
+    { "id": "C4", "code": "C4", "section": "ZONING OF LAND USES", "title": "North zone: Retail, offices, club house (no high-rise residential)", "complianceBasis": "Fully compliant = Full; Partial = 1; Non-compliant = 0", "maxMarks": 3 },
+    { "id": "C5", "code": "C5", "section": "ZONING OF LAND USES", "title": "East zone: Residential towers, offices, retail (no factories/garbage)", "complianceBasis": "Fully compliant = Full; Partial = 1; Non-compliant = 0", "maxMarks": 3 },
+    { "id": "C6", "code": "C6", "section": "ZONING OF LAND USES", "title": "North-West zone: Guest houses, parking, banquet halls (no owner residence/heavy towers)", "complianceBasis": "Fully compliant = Full; Partial = 1; Non-compliant = 0", "maxMarks": 3 },
+
+    { "id": "D1", "code": "D1", "section": "BUILDING HEIGHT & MASSING", "title": "South-West zone has tallest & heaviest buildings", "complianceBasis": "Tallest in SW = Full; Reversed = 0", "maxMarks": 4 },
+    { "id": "D2", "code": "D2", "section": "BUILDING HEIGHT & MASSING", "title": "North-East zone has lowest height and maximum open space", "complianceBasis": "Lowest in NE = Full; Non-compliant = 0", "maxMarks": 3 },
+    { "id": "D3", "code": "D3", "section": "BUILDING HEIGHT & MASSING", "title": "Step-like increase in height from NE to SW (terrace-garden massing)", "complianceBasis": "Gradual step = Full; Abrupt = Partial; Inverted = 0", "maxMarks": 3 },
+
+    { "id": "E1", "code": "E1", "section": "ROADS & INTERNAL CIRCULATION", "title": "Main approach road from East or North", "complianceBasis": "East/North = Full; Other = Partial; SW = 0", "maxMarks": 3 },
+    { "id": "E2", "code": "E2", "section": "ROADS & INTERNAL CIRCULATION", "title": "Internal circulation is clockwise", "complianceBasis": "Clockwise = Full; Anti-clockwise = 0", "maxMarks": 2 },
+    { "id": "E3", "code": "E3", "section": "ROADS & INTERNAL CIRCULATION", "title": "No T-junction directly hitting any tower", "complianceBasis": "No T-junctions = Full; Each T-junction = -1", "maxMarks": 1 },
+
+    { "id": "F1", "code": "F1", "section": "WATER BODIES & UTILITIES", "title": "Swimming pool / fountains / water bodies strictly in North-East", "complianceBasis": "NE = Full; North/East = Partial; SW/SE/S = 0", "maxMarks": 3 },
+    { "id": "F2", "code": "F2", "section": "WATER BODIES & UTILITIES", "title": "Underground water tank / sump in North-East", "complianceBasis": "NE = Full; East/North = Partial; SW/W/S = 0", "maxMarks": 3 },
+    { "id": "F3", "code": "F3", "section": "WATER BODIES & UTILITIES", "title": "Overhead water tank in South-West or West", "complianceBasis": "SW/West = Full; South = Partial; NE/East/North = 0", "maxMarks": 3 },
+    { "id": "F4", "code": "F4", "section": "WATER BODIES & UTILITIES", "title": "Borewell / tubewell in North-East or East", "complianceBasis": "NE/East = Full; North = Partial; SW/SE/Centre = 0", "maxMarks": 3 },
+
+    { "id": "G1", "code": "G1", "section": "BASEMENT", "title": "Basement allowed only in South, West & South-West", "complianceBasis": "Only S/W/SW = Full; Mixed = Partial; NE basement = 0", "maxMarks": 4 },
+    { "id": "G2", "code": "G2", "section": "BASEMENT", "title": "If basement unavoidable in NE, only used for parking with maximum open cut-outs", "complianceBasis": "Parking only + open cuts = Partial; Any other use in NE basement = 0", "maxMarks": 2 },
+
+    { "id": "H1", "code": "H1", "section": "OPEN SPACES & LANDSCAPE", "title": "Maximum open lawns, gardens in North-East", "complianceBasis": "NE open = Full; Other = Partial; NE built-up = 0", "maxMarks": 4 },
+    { "id": "H2", "code": "H2", "section": "OPEN SPACES & LANDSCAPE", "title": "Service areas, garbage rooms, transformers in South-East or North-West (not NE)", "complianceBasis": "SE/NW = Full; West = Partial; NE/East = 0", "maxMarks": 2 },
+
+    { "id": "I1", "code": "I1", "section": "TEMPLE / PRAYER ROOM", "title": "Temple / prayer room in North-East zone", "complianceBasis": "NE = Full; Other = Partial", "maxMarks": 2 },
+    { "id": "I2", "code": "I2", "section": "TEMPLE / PRAYER ROOM", "title": "Idol facing East or West", "complianceBasis": "East/West = Full; Other direction = 0", "maxMarks": 2 },
+
+    { "id": "J1", "code": "J1", "section": "CLUB HOUSE / COMMUNITY HALL", "title": "Club house located in North-East or North (Acceptable: North-West)", "complianceBasis": "NE/North = Full; NW = Partial; SW/SE/S = 0", "maxMarks": 4 },
+
+    { "id": "K1", "code": "K1", "section": "COMMERCIAL / RETAIL BLOCK", "title": "Commercial / retail block on North or East side of the site", "complianceBasis": "North/East = Full; Partial elsewhere = 2; SW corner = 0", "maxMarks": 4 },
+
+    { "id": "L1", "code": "L1", "section": "UTILITIES — FIRE & ELECTRICAL", "title": "Electrical room / main panel / transformers in South-East zone", "complianceBasis": "SE = Full; East of SE = Partial; NE/Centre = 0", "maxMarks": 2 },
+    { "id": "L2", "code": "L2", "section": "UTILITIES — FIRE & ELECTRICAL", "title": "Generator room / DG sets in South-East (Acceptable: North-West)", "complianceBasis": "SE = Full; NW = Partial; NE = 0", "maxMarks": 2 },
+    { "id": "L3", "code": "L3", "section": "UTILITIES — FIRE & ELECTRICAL", "title": "Fire pump room / fire tanks in South-East (Acceptable: South)", "complianceBasis": "SE/South = Full; NE = 0", "maxMarks": 2 },
+    { "id": "L4", "code": "L4", "section": "UTILITIES — FIRE & ELECTRICAL", "title": "Gas bank / LPG cylinders in South-East only", "complianceBasis": "SE = Full; Anywhere else = 0", "maxMarks": 2 },
+
+    { "id": "M1", "code": "M1", "section": "UTILITIES — WASTE & DRAINAGE", "title": "Sewage Treatment Plant (STP) in North-West or South-East", "complianceBasis": "NW/SE = Full; West = Partial; NE/North/East = 0", "maxMarks": 3 },
+    { "id": "M2", "code": "M2", "section": "UTILITIES — WASTE & DRAINAGE", "title": "Septic tank in North-West (Acceptable: West)", "complianceBasis": "NW = Full; West = Partial; NE/SW = 0", "maxMarks": 3 },
+
+    { "id": "N1", "code": "N1", "section": "UTILITIES — MECHANICAL & SERVICES", "title": "Lift machine room / lift shaft in South-West or South (Acceptable: West)", "complianceBasis": "SW/South = Full; West = Partial; NE = 0", "maxMarks": 2 },
+    { "id": "N2", "code": "N2", "section": "UTILITIES — MECHANICAL & SERVICES", "title": "Air-conditioning chiller plant / cooling towers in West or South-West", "complianceBasis": "West/SW = Full; South = Partial; NE/East = 0", "maxMarks": 2 },
+    { "id": "N3", "code": "N3", "section": "UTILITIES — MECHANICAL & SERVICES", "title": "Pumps / motors (water or fire) in South-East or South", "complianceBasis": "SE/South = Full; NE = 0", "maxMarks": 2 },
+
+    { "id": "O1", "code": "O1", "section": "TOILETS & UTILITIES IN COMMON AREAS", "title": "Common toilets in South-East or North-West", "complianceBasis": "SE/NW = Full; Partial elsewhere = 2; NE/Centre = 0", "maxMarks": 2 },
+    { "id": "O2", "code": "O2", "section": "TOILETS & UTILITIES IN COMMON AREAS", "title": "No toilet in North-East or Brahmasthan (geometric centre)", "complianceBasis": "No NE/Centre toilets = Full; Each violation = -1", "maxMarks": 2 },
+
+    { "id": "P1", "code": "P1", "section": "BRAHMASTHAN (CENTRE)", "title": "Geometric centre is open space or small courtyard only", "complianceBasis": "Open = Full; Partial structure = 2; Heavy structure = 0", "maxMarks": 4 },
+    { "id": "P2", "code": "P2", "section": "BRAHMASTHAN (CENTRE)", "title": "No construction or heavy structure in the exact centre", "complianceBasis": "No construction = Full; Any structure = 0", "maxMarks": 2 },
+
+    { "id": "Q1", "code": "Q1", "section": "CUT & EXTENSIONS", "title": "North-East extension present (auspicious) or no cuts in NE", "complianceBasis": "NE extension = Full; No extension = Partial; Cut in NE = 0", "maxMarks": 3 },
+    { "id": "Q2", "code": "Q2", "section": "CUT & EXTENSIONS", "title": "No South-West extension", "complianceBasis": "No SW extension = Full; SW extension = 0", "maxMarks": 3 },
+    { "id": "Q3", "code": "Q3", "section": "CUT & EXTENSIONS", "title": "SE/NW extension remedies applied (if any)", "complianceBasis": "No extension = Full; Extension with remedy = Partial; No remedy = 0", "maxMarks": 2 },
+
+    { "id": "R1", "code": "R1", "section": "SUSTAINABLE & ENERGY UTILITIES", "title": "Solar panels on South-facing roof", "complianceBasis": "South-facing = Full; Other = Partial; North-facing = 0", "maxMarks": 2 },
+    { "id": "R2", "code": "R2", "section": "SUSTAINABLE & ENERGY UTILITIES", "title": "Rainwater harvesting pits in North-East or along North/East boundary", "complianceBasis": "NE/North/East = Full; SW = 0", "maxMarks": 2 },
+
+    { "id": "S1", "code": "S1", "section": "METER ROOMS & PARKING", "title": "Meter rooms (electrical) on South-East or along South/West walls", "complianceBasis": "SE/South/West walls = Full; North/East walls = 0", "maxMarks": 2 },
+    { "id": "S2", "code": "S2", "section": "METER ROOMS & PARKING", "title": "Parking (basement or open) in North-West, South, or West", "complianceBasis": "NW/South/West = Full; Heavy basement in NE = 0", "maxMarks": 2 }
+  ]
+}

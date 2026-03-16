@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { Feature, Polygon, MultiPolygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary } from '@/lib/types';
+import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, VastuRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
@@ -24,6 +24,7 @@ import { db } from '@/lib/firebase';
 import { calculateVastuScore } from '@/lib/engines/vastu-engine';
 import { calculateGreenAnalysis } from '@/lib/engines/green-analysis-engine';
 import { ComplianceEngine } from '@/lib/engines/compliance-engine';
+import ultimateVastuChecklist from '@/data/ultimate-vastu-checklist.json';
 import { collection, doc, getDocs, setDoc, deleteDoc, writeBatch, getDoc, query, where } from 'firebase/firestore';
 import useAuthStore from './use-auth-store';
 
@@ -82,6 +83,7 @@ interface BuildingState {
     mapLocation: string | null;
     mapCommand: { type: 'flyTo'; center: [number, number]; zoom?: number } | null;
     greenRegulations: GreenRegulationData[]; // Global Green Regulations cache
+    vastuRegulations: VastuRegulationData[]; // Global Vastu Guidelines cache
 
     actions: any;
 }
@@ -629,14 +631,23 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
 export type DesignParamsForRendering = { landUse: string; unitMix: Record<string, number>; selectedUtilities: string[]; hasPodium: boolean; podiumFloors: number; parkingTypes: string[]; typology: string };
 
 function summarizeAdditiveScore(items: Array<{ maxScore: number; achievedScore: number }>): AdditiveScoreSummary {
-    const totalScore = items.reduce((sum, item) => sum + item.achievedScore, 0);
-    const maxScore = items.reduce((sum, item) => sum + item.maxScore, 0);
+    const eligible = items.filter(i => i.maxScore > 0);
+    const totalScore = eligible.reduce((sum, item) => sum + item.achievedScore, 0);
+    const maxScore = eligible.reduce((sum, item) => sum + item.maxScore, 0);
 
-    return {
-        totalScore,
-        maxScore,
-        percentage: maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0,
-    };
+    // Convert achievedScore -> points: if achievedScore equals maxScore -> 1 point,
+    // if it's half of maxScore -> 0.5 point, else 0. This keeps compatibility with items created by the engine.
+    const pointSum = eligible.reduce((sum, item) => {
+        const pts = item.maxScore > 0 ? (item.achievedScore / item.maxScore) : 0;
+        // Cap to 1 and treat 0.5 fractions naturally
+        const normalized = Math.min(1, Math.max(0, pts));
+        return sum + normalized;
+    }, 0);
+
+    const maxPoints = eligible.length;
+    const percentage = maxPoints > 0 ? Math.round((pointSum / maxPoints) * 100) : 0;
+
+    return { totalScore, maxScore, percentage };
 }
 
 function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: DesignParamsForRendering): { buildingsInfo: RenderingBuildingInfo[]; plotInfo: RenderingPlotInfo; summary: RenderingProjectSummary } | null {
@@ -877,6 +888,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     tempScenarios: null,
     isGeneratingScenarios: false,
     greenRegulations: [],
+    vastuRegulations: [],
 
     mapLocation: null,
     actions: {
@@ -973,21 +985,20 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 };
 
                 // When creating a building, store original geometry/centroid
+                // Use immer's produce to safely mutate a draft (the live snapshot may be frozen)
                 // (If you have a building creation function, add this logic there)
-                // For loaded projects, ensure originals are set
-                set(state => {
-                    for (const plot of state.plots) {
+                set(produce((draft: BuildingState) => {
+                    for (const plot of draft.plots) {
                         for (const building of plot.buildings) {
-                            if (!building.originalGeometry && building.geometry) {
-                                building.originalGeometry = JSON.parse(JSON.stringify(building.geometry));
+                            if (building.originalGeometry === undefined && building.geometry) {
+                                building.originalGeometry = deepClone(building.geometry);
                             }
-                            if (!building.originalCentroid && building.centroid) {
-                                building.originalCentroid = JSON.parse(JSON.stringify(building.centroid));
+                            if (building.originalCentroid === undefined && building.centroid) {
+                                building.originalCentroid = deepClone(building.centroid);
                             }
                         }
                     }
-                    return state;
-                });
+                }));
 
                 // Save to Firestore (User Scoped)
                 // Sanitize undefined values (Firestore doesn't allow undefined)
@@ -1302,6 +1313,68 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }));
             get().actions.saveCurrentProject();
         },
+
+            attachGreenStandards: (data: GreenRegulationData) => {
+                set(produce((draft: BuildingState) => {
+                    if (!draft.activeProjectId) return;
+                    const project = draft.projects.find(p => p.id === draft.activeProjectId);
+                    if (!project) return;
+                    // Attach to project metadata
+                    project.greenCertification = project.greenCertification || [];
+                    if (!project.greenCertification.includes(data.certificationType)) project.greenCertification.push(data.certificationType);
+                    // Store structured standard locally
+                    draft.greenRegulations = draft.greenRegulations || [];
+                    // assign an id if missing
+                    if (!data.id) data.id = `manual-${Date.now()}`;
+                    // replace or push
+                    const idx = draft.greenRegulations.findIndex(g => g.id === data.id);
+                    if (idx >= 0) draft.greenRegulations[idx] = data;
+                    else draft.greenRegulations.push(data);
+
+                    // Also attach to project as a transient field for immediate UI consumption
+                    (project as any).greenStandards = data;
+                }));
+            },
+            attachVastuRules: (data: VastuRegulationData) => {
+                set(produce((draft: BuildingState) => {
+                    if (!draft.activeProjectId) return;
+                    const project = draft.projects.find(p => p.id === draft.activeProjectId);
+                    if (!project) return;
+                    // store vastu rules locally
+                    draft.vastuRegulations = draft.vastuRegulations || [];
+                    if (!data.id) data.id = `manual-vastu-${Date.now()}`;
+                    const idx = draft.vastuRegulations.findIndex(v => v.id === data.id);
+                    if (idx >= 0) draft.vastuRegulations[idx] = data;
+                    else draft.vastuRegulations.push(data);
+                    // attach transiently to project
+                    (project as any).vastuRules = data;
+            // Bump lastModified to force metrics/hooks to recalculate immediately
+            try { (project as any).lastModified = new Date().toISOString(); } catch (e) { /* ignore */ }
+                }));
+            },
+            loadUltimateVastuChecklist: () => {
+                set(produce((draft: BuildingState) => {
+                    try {
+                        const data = (ultimateVastuChecklist as any) as VastuRegulationData;
+                        // ensure an id so it can be saved/updated later
+                        if (!data.id) data.id = `ultimate-vastu-${Date.now()}`;
+                        draft.vastuRegulations = draft.vastuRegulations || [];
+                        const idx = draft.vastuRegulations.findIndex(v => v.id === data.id);
+                        if (idx >= 0) draft.vastuRegulations[idx] = data;
+                        else draft.vastuRegulations.push(data);
+
+                        // attach to active project if present
+                        if (draft.activeProjectId) {
+                            const project = draft.projects.find(p => p.id === draft.activeProjectId);
+                            if (project) (project as any).vastuRules = data;
+                // Also update lastModified so dependent hooks recalc immediately
+                try { (project as any).lastModified = new Date().toISOString(); } catch (e) { /* ignore */ }
+                        }
+                    } catch (e) {
+                        console.error('[loadUltimateVastuChecklist] Failed to load checklist', e);
+                    }
+                }));
+            },
 
         generateScenarios: async (plotId: string, params: AlgoParams) => {
             const { plots } = get();
@@ -4546,7 +4619,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     geometry: null,
                     centroid: null,
                     activePlotId: null,
-                }
+                },
             });
         },
         selectObject: (id: string | null, type: SelectableObjectType | null) => {
@@ -5401,10 +5474,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                             // Let's try to get Vastu regulation.
                             // We need to implement a way to select Vastu reg. For now, pass null.
                             if (activePlot) {
-                                // We need a helper to run this inside produce, or run it outside.
-                                // It's better to run pure logic outside. But we are inside produce.
-                                // We'll assume the function is pure and imported.
-                                const result = calculateVastuScore(activePlot as any, newBuildings, null); // Cast to avoid Immer Draft issues
+                                // Prefer a project-attached Vastu ruleset, fall back to global store cache or bundled checklist
+                                const stateNow = get();
+                                const projectVastu = (activeProject as any)?.vastuRules || (stateNow.vastuRegulations && stateNow.vastuRegulations[0]) || (ultimateVastuChecklist as any);
+                                const result = calculateVastuScore(activePlot as any, newBuildings, projectVastu as any); // Cast to avoid Immer Draft issues
 
                                 if (!activePlot.developmentStats) {
                                     activePlot.developmentStats = calculateDevelopmentStats(activePlot as any, DEFAULT_FEASIBILITY_PARAMS);

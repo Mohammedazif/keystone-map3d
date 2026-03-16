@@ -23,6 +23,8 @@ export function UploadVastuDialog({ isOpen, onOpenChange, onExtracted }: UploadV
     const [isUploading, setIsUploading] = useState(false);
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [extractedData, setExtractedData] = useState<VastuRegulationData | null>(null);
+    const [pasteMode, setPasteMode] = useState(false);
+    const [pasteText, setPasteText] = useState('');
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -62,6 +64,48 @@ export function UploadVastuDialog({ isOpen, onOpenChange, onExtracted }: UploadV
         } finally {
             setIsUploading(false);
         }
+    };
+
+    const handlePaste = () => {
+        if (!pasteText) {
+            toast({ variant: 'destructive', title: 'Error', description: 'No JSON provided' });
+            return;
+        }
+        try {
+            const parsed = JSON.parse(pasteText);
+            // Basic sanity: must have recommendations or scorecardItems
+            if (!parsed || (!parsed.recommendations && !parsed.scorecardItems)) {
+                toast({ variant: 'destructive', title: 'Invalid Vastu JSON', description: 'Expected recommendations or scorecardItems' });
+                return;
+            }
+            setExtractedData(parsed as VastuRegulationData);
+            toast({ title: 'Pasted', description: `Parsed ${parsed.recommendations?.length || 0} recommendations.` });
+        } catch (e: any) {
+            toast({ variant: 'destructive', title: 'Invalid JSON', description: e.message });
+        }
+    };
+
+    const defaultScorecardItems: any[] = [
+        { id: 'A1', code: 'A1', section: 'Plot Shape', title: 'Plot shape regularity', complianceBasis: 'Rectangular plots preferred', maxMarks: 10 },
+        { id: 'A2', code: 'A2', section: 'Site Slope', title: 'Site slope and drainage', complianceBasis: 'NE low is preferred', maxMarks: 10 },
+        { id: 'B1', code: 'B1', section: 'Entrance', title: 'Main entry gate placement', complianceBasis: 'Gate in auspicious side zone', maxMarks: 10 },
+        { id: 'B2', code: 'B2', section: 'Entrance', title: 'Avoid SW gates', complianceBasis: 'SW gate discouraged', maxMarks: 10 },
+        { id: 'C1', code: 'C1', section: 'NE Zoning', title: 'NE openness / green', complianceBasis: 'NE open preferred', maxMarks: 10 },
+        { id: 'P1', code: 'P1', section: 'Brahmasthan', title: 'Brahmasthan open', complianceBasis: 'Center should be free', maxMarks: 15 },
+        { id: 'F1', code: 'F1', section: 'Water', title: 'NE water placement', complianceBasis: 'Water in NE preferred', maxMarks: 10 },
+        { id: 'G1', code: 'G1', section: 'Parking', title: 'Parking placement', complianceBasis: 'Parking in NW/S/W preferred', maxMarks: 10 },
+        { id: 'H1', code: 'H1', section: 'Landscape', title: 'NE landscaping', complianceBasis: 'Green/open NE', maxMarks: 8 },
+        { id: 'M1', code: 'M1', section: 'Utilities', title: 'STP/WTP placement', complianceBasis: 'STP in NW/SE/West', maxMarks: 8 },
+    ];
+
+    const expandScorecard = () => {
+        if (!extractedData) return;
+        const existing = extractedData.scorecardItems || [];
+        const existingCodes = new Set(existing.map((i: any) => String(i.code || i.id).toUpperCase()));
+        const toAdd = defaultScorecardItems.filter(i => !existingCodes.has(String(i.code).toUpperCase()));
+        const merged = [...existing, ...toAdd];
+        setExtractedData({ ...extractedData, scorecardItems: merged, totalPossibleScore: (extractedData.totalPossibleScore || 0) + toAdd.reduce((s, it) => s + (it.maxMarks || it.maxMarks === 0 ? it.maxMarks : 0), 0) });
+        toast({ title: 'Expanded', description: `Added ${toAdd.length} default scorecard items` });
     };
 
     const handleSave = () => {
@@ -113,44 +157,68 @@ export function UploadVastuDialog({ isOpen, onOpenChange, onExtracted }: UploadV
                 <div className="space-y-6">
                     {!extractedData ? (
                         <div className="space-y-4">
-                            <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                                <Upload className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-                                <input
-                                    type="file"
-                                    accept=".pdf,.docx,.txt"
-                                    onChange={handleFileSelect}
-                                    className="hidden"
-                                    id="vastu-file"
-                                />
-                                <label htmlFor="vastu-file" className="cursor-pointer">
-                                    <Button variant="outline" asChild>
-                                        <span>
-                                            <FileText className="mr-2 h-4 w-4" />
-                                            {selectedFile ? 'Change File' : 'Select File'}
-                                        </span>
-                                    </Button>
-                                </label>
-                                {selectedFile && (
-                                    <p className="mt-4 text-sm text-muted-foreground">
-                                        Selected: {selectedFile.name}
-                                    </p>
-                                )}
+                            <div className="flex gap-2 justify-end">
+                                <Button size="sm" variant={pasteMode ? 'secondary' : 'outline'} onClick={() => setPasteMode(!pasteMode)}>
+                                    {pasteMode ? 'File Upload Mode' : 'Paste JSON'}
+                                </Button>
                             </div>
+                            {pasteMode ? (
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Paste Vastu JSON</label>
+                                    <textarea
+                                        rows={8}
+                                        className="w-full rounded-md border p-2 text-sm"
+                                        value={pasteText}
+                                        onChange={(e) => setPasteText(e.target.value)}
+                                        placeholder='Paste Vastu JSON (recommendations or scorecardItems) here'
+                                    />
+                                    <div className="flex gap-2">
+                                        <Button onClick={handlePaste} disabled={!pasteText} className="flex-1">Parse & Load</Button>
+                                        <Button variant="ghost" onClick={() => { setPasteText(''); setPasteMode(false); }}>Cancel</Button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                    <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+                                        <Upload className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                                        <input
+                                            type="file"
+                                            accept=".pdf,.docx,.txt"
+                                            onChange={handleFileSelect}
+                                            className="hidden"
+                                            id="vastu-file"
+                                        />
+                                        <label htmlFor="vastu-file" className="cursor-pointer">
+                                            <Button variant="outline" asChild>
+                                                <span>
+                                                    <FileText className="mr-2 h-4 w-4" />
+                                                    {selectedFile ? 'Change File' : 'Select File'}
+                                                </span>
+                                            </Button>
+                                        </label>
+                                        {selectedFile && (
+                                            <p className="mt-4 text-sm text-muted-foreground">
+                                                Selected: {selectedFile.name}
+                                            </p>
+                                        )}
+                                    </div>
 
-                            <Button
-                                onClick={handleUpload}
-                                disabled={!selectedFile || isUploading}
-                                className="w-full"
-                            >
-                                {isUploading ? (
-                                    <>
-                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        Extracting...
-                                    </>
-                                ) : (
-                                    'Extract Vastu Logic'
-                                )}
-                            </Button>
+                                    <Button
+                                        onClick={handleUpload}
+                                        disabled={!selectedFile || isUploading}
+                                        className="w-full"
+                                    >
+                                        {isUploading ? (
+                                            <>
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                Extracting...
+                                            </>
+                                        ) : (
+                                            'Extract Vastu Logic'
+                                        )}
+                                    </Button>
+                                </div>
+                            )}
                         </div>
                     ) : (
                         <div className='space-y-6'>
@@ -172,9 +240,14 @@ export function UploadVastuDialog({ isOpen, onOpenChange, onExtracted }: UploadV
                             <div className="space-y-4">
                                 <div className="flex justify-between items-center">
                                     <h3 className="text-lg font-semibold">Recommendations</h3>
-                                    <Button size="sm" variant="secondary" onClick={addRecommendation}>
-                                        <Plus className="h-4 w-4 mr-2" /> Add Rule
-                                    </Button>
+                                    <div className="flex items-center gap-2">
+                                        <Button size="sm" variant="secondary" onClick={addRecommendation}>
+                                            <Plus className="h-4 w-4 mr-2" /> Add Rule
+                                        </Button>
+                                        <Button size="sm" variant="outline" onClick={expandScorecard}>
+                                            Expand Scorecard
+                                        </Button>
+                                    </div>
                                 </div>
 
                                 {extractedData.recommendations.map((rec, idx) => (
