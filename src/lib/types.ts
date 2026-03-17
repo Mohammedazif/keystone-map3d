@@ -984,6 +984,8 @@ export interface SimulationResults {
   // Utility costs
   utility_costs: UtilityCostBreakdown[];
   total_utility_cost: number;
+  total_utility_cost_min?: number;
+  total_utility_cost_max?: number;
 
   // S-curve bands
   scurve_p10: number[];

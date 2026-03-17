@@ -341,9 +341,11 @@ interface UtilityCostsProps {
         maxAmount?: number;
     }[];
     total: number;
+    totalMin?: number;
+    totalMax?: number;
 }
 
-export function UtilityCostsTable({ items, total }: UtilityCostsProps) {
+export function UtilityCostsTable({ items, total, totalMin, totalMax }: UtilityCostsProps) {
     const fmt = (v: number) => v >= 10000000 
         ? `₹${(v / 10000000).toFixed(2)} Cr` 
         : `₹${(v / 100000).toFixed(1)} L`;
@@ -388,14 +390,20 @@ export function UtilityCostsTable({ items, total }: UtilityCostsProps) {
                                         {fmt(item.amount)}
                                     </span>
                                 )}
-                                <span className="text-[9px] text-muted-foreground/60 mt-0.5">Est. {fmt(item.amount)}</span>
+                                <span className="text-[9px] text-muted-foreground/60 mt-0.5">
+                                    Est. {fmt(item.minAmount && item.maxAmount ? (item.minAmount + item.maxAmount) / 2 : item.amount)}
+                                </span>
                             </div>
                         </div>
                     );
                 })}
                 <div className="flex justify-between items-center text-xs pt-2 mt-1 border-t border-border/20 font-semibold">
                     <span>Total Utilities Estimate</span>
-                    <span className="text-amber-400 text-sm">₹{(total / 10000000).toFixed(2)} Cr</span>
+                    {totalMin && totalMax ? (
+                        <span className="text-amber-400 text-sm">₹{(totalMin / 10000000).toFixed(2)} Cr – ₹{(totalMax / 10000000).toFixed(2)} Cr</span>
+                    ) : (
+                        <span className="text-amber-400 text-sm">₹{(total / 10000000).toFixed(2)} Cr</span>
+                    )}
                 </div>
             </div>
         </div>

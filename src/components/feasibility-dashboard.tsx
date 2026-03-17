@@ -1234,7 +1234,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
 
             {/* Utility Costs */}
             {sim && sim.utility_costs.length > 0 && (
-                <UtilityCostsTable items={sim.utility_costs} total={sim.total_utility_cost} />
+                <UtilityCostsTable items={sim.utility_costs} total={sim.total_utility_cost} totalMin={sim.total_utility_cost_min} totalMax={sim.total_utility_cost_max} />
             )}
 
             {/* Total Project Cost */}

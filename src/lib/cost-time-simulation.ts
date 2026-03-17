@@ -295,7 +295,7 @@ interface UtilityInput {
     surfaceParkingArea?: number;
 }
 
-function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdown[]; total: number } {
+function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdown[]; total: number; totalMin: number; totalMax: number } {
     const uc = input.costParam.utility_costs;
     const items: UtilityCostBreakdown[] = [];
 
@@ -516,7 +516,9 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
     }
 
     const total = items.reduce((s, it) => s + it.amount, 0);
-    return { items, total };
+    const totalMin = items.reduce((s, it) => s + (it.minAmount ?? it.amount), 0);
+    const totalMax = items.reduce((s, it) => s + (it.maxAmount ?? it.amount), 0);
+    return { items, total, totalMin, totalMax };
 }
 
 // ─── PHASE DIVISION ──────────────────────────────────────────────────────────
@@ -807,14 +809,15 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
         surfaceParkingArea: input.surfaceParkingArea,
     });
 
-    // Simulate utility costs with ±20% triangular uncertainty per iteration
-    // so that utility variance is reflected in the P10-P90 band
+    // Simulate utility costs with range-based uncertainty per iteration
+    // Use the user-defined min/max utility totals to drive the distribution
     const utilityBase = utilities.total;
+    const utilityMin = utilities.totalMin;
+    const utilityMax = utilities.totalMax;
     const totalCostRaw = costSim.rawTotals.map(total => {
-        const utilityMultiplier = utilityBase > 0
-            ? triSample(0.80, 1.0, 1.20)
-            : 0;
-        return total + utilityBase * utilityMultiplier;
+        if (utilityBase <= 0) return total;
+        // Sample between the user-defined min and max utility totals
+        return total + triSample(utilityMin, utilityBase, utilityMax);
     });
     const totalCostSorted = [...totalCostRaw].sort((a, b) => a - b);
     const totalCostP10 = percentile(totalCostSorted, 10);
@@ -889,9 +892,9 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
         cost_sensitivity: utilityBase > 0
             ? [...costSim.sensitivity, {
                 label: 'Utilities',
-                low: costSim.mean + utilityBase * 0.80,
-                high: costSim.mean + utilityBase * 1.20,
-                range: utilityBase * 0.40,
+                low: costSim.mean + utilityMin,
+                high: costSim.mean + utilityMax,
+                range: utilityMax - utilityMin,
             }].sort((a, b) => b.range - a.range)
             : costSim.sensitivity,
 
@@ -908,6 +911,8 @@ export function runFullSimulation(input: RunSimulationInput): SimulationResults 
 
         utility_costs: utilities.items,
         total_utility_cost: utilities.total,
+        total_utility_cost_min: utilities.totalMin,
+        total_utility_cost_max: utilities.totalMax,
 
         scurve_p10: sCurves.p10,
         scurve_p50: sCurves.p50,
