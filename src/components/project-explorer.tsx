@@ -333,6 +333,7 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
                             <Ghost className="h-3.5 w-3.5" />
                         </Button>
                     </div>
+<<<<<<< HEAD
                     {/* Selected certification (read-only) — show chosen cert and score; allow clearing */}
                     <div className="mt-2">
                         <div className="text-xs text-muted-foreground">Green Certification</div>
@@ -350,6 +351,9 @@ export function ProjectExplorer({ className, embedded = false }: { className?: s
                             <div className="mt-1 text-xs text-muted-foreground">None selected</div>
                         )}
                     </div>
+=======
+                    {/* Green Certification display removed per UI requirement */}
+>>>>>>> 18de5d2 (Restore stable scoring and UI before rendering fixes)
                 </div>
                 <div className={cn("flex-1 overflow-hidden", embedded ? "" : "p-0")}>
                     <ScrollArea className="h-full">

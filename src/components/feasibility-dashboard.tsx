@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
 import { useBuildingStore, useSelectedBuilding, useProjectData, useSelectedPlot } from '@/hooks/use-building-store';
-import { AreaChart, Scale, Building, Car, CheckCircle, AlertTriangle, ShieldCheck, DollarSign, LocateFixed, ChevronUp, ChevronDown, Compass, DoorOpen, Clock, TrendingUp, BarChart2, Zap, Settings2, Maximize2, Minimize2, Calculator } from 'lucide-react';
+import { AreaChart, Scale, Building, Car, CheckCircle, AlertTriangle, ShieldCheck, DollarSign, LocateFixed, ChevronUp, ChevronDown, Compass, DoorOpen, Clock, TrendingUp, BarChart2, Zap, Settings2, Maximize2, Minimize2, Calculator, Star } from 'lucide-react';
 import { useDevelopmentMetrics } from '@/hooks/use-development-metrics';
 import { useRegulations } from '@/hooks/use-regulations';
 import { useProjectEstimates } from '@/hooks/use-project-estimates';
@@ -1578,6 +1578,8 @@ function FeasibilityTab() {
     const generationParams = useBuildingStore(state => state.generationParams);
     const [isGeneratingGates, setIsGeneratingGates] = useState(false);
     const [gatesGenerated, setGatesGenerated] = useState(false);
+    // Vastu incremental loading state (UI-only)
+    const [vastuVisibleCount, setVastuVisibleCount] = useState(10);
 
     const handleSuggestVastuGates = () => {
         if (!plots || plots.length === 0) return;
@@ -1643,14 +1645,16 @@ function FeasibilityTab() {
                 activeProject.greenCertification[0].toLowerCase().includes('igbc') ? 'IGBC' :
                 activeProject.greenCertification[0]
             })` : "Green Building",
-            score: metrics.compliance.green,
+            // UI: prefer the summary percentage if available (presentation-only). Do not change engine logic.
+            score: (metrics.compliance.greenScoreSummary && typeof metrics.compliance.greenScoreSummary.percentage === 'number') ? metrics.compliance.greenScoreSummary.percentage : metrics.compliance.green,
             summary: metrics.compliance.greenScoreSummary,
             icon: CheckCircle,
             items: (metrics.compliance.greenItems || []).filter((i: any) => i.status !== 'na')
         },
         ...(activeProject?.vastuCompliant ? [{
             label: "Vastu (Shakti Chakra)",
-            score: metrics.compliance.vastu,
+            // UI: use the summary percentage for display when available
+            score: (metrics.compliance.vastuScoreSummary && typeof metrics.compliance.vastuScoreSummary.percentage === 'number') ? metrics.compliance.vastuScoreSummary.percentage : metrics.compliance.vastu,
             summary: metrics.compliance.vastuScoreSummary,
             icon: Compass,
             // Include full vastu scorecard (show 'na' items too) so admin can see full diagnostics
@@ -1665,32 +1669,6 @@ function FeasibilityTab() {
                         />
                         <Label htmlFor="vastu-compass" className="text-xs">Show Shakti Chakra Overlay</Label>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <Button size="sm" variant="outline" onClick={() => actions.loadUltimateVastuChecklist()}>
-                            Load Ultimate Vastu Checklist
-                        </Button>
-                        <div className="text-xs text-muted-foreground">If Vastu is not attached or only minimal items are shown, load the full checklist for a detailed scorecard.</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Button size="sm" variant="ghost" onClick={() => actions.toggleVastuCompass(!uiState.showVastuCompass)}>
-                            {uiState.showVastuCompass ? 'Hide' : 'Show'} Compass Overlay
-                        </Button>
-                    </div>
-                    {/* <Button
-                        size="sm"
-                        variant="outline"
-                        className="w-full text-xs gap-1.5 border-amber-500/50 text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30"
-                        onClick={handleSuggestVastuGates}
-                        disabled={isGeneratingGates}
-                    >
-                        <DoorOpen className="h-3.5 w-3.5" />
-                        {gatesGenerated ? '✓ Vastu Gates Applied' : 'Suggest Vastu Gates (N3/N4, E3/E4, S3/S4, W3/W4)'}
-                    </Button>
-                    {gatesGenerated && (
-                        <p className="text-xs text-muted-foreground text-center">
-                            Gates placed at N3/N4, E3/E4, S3/S4, W3/W4 boundaries
-                        </p>
-                    )} */}
                 </div>
             )
         }] : []),
@@ -1710,6 +1688,55 @@ function FeasibilityTab() {
         if (score >= 80) return "bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.6)]";
         if (score >= 50) return "bg-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.6)]";
         return "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]";
+    };
+
+    const getCertLabelForScore = (score: number, cert?: string) => {
+        if (!cert) return null;
+        const s = Math.round(score || 0);
+        const c = cert.toLowerCase();
+        if (c.includes('griha')) return null; // GRIHA handled as stars
+        // IGBC / LEED mapping
+        if (s < 40) return 'Not Certified';
+        if (s < 50) return 'Certified';
+        if (s < 60) return 'Silver';
+        if (s < 80) return 'Gold';
+        return 'Platinum';
+    };
+
+    const getGrihaStars = (score: number) => {
+        const s = Math.round(score || 0);
+        if (s <= 60) return '★';
+        if (s <= 70) return '★★';
+        if (s <= 80) return '★★★';
+        if (s <= 90) return '★★★★';
+        return '★★★★★';
+    };
+
+    const getVastuGrade = (score: number) => {
+        const s = Math.round(score || 0);
+        if (s < 50) return 'Poor';
+        if (s < 70) return 'Average';
+        if (s < 85) return 'Good';
+        return 'Excellent';
+    };
+
+    const getLabelColorClass = (label: string, type: 'cert' | 'vastu') => {
+        if (type === 'cert') {
+            const l = (label || '').toLowerCase();
+            if (l.includes('not')) return 'text-red-500';
+            if (l.includes('cert') && !l.includes('silver')) return 'text-yellow-500';
+            if (l.includes('silver')) return 'text-emerald-500';
+            if (l.includes('gold')) return 'text-blue-500';
+            if (l.includes('platinum')) return 'text-purple-600';
+            return 'text-muted-foreground';
+        }
+        // vastu
+        const v = (label || '').toLowerCase();
+        if (v.includes('poor')) return 'text-red-500';
+        if (v.includes('average')) return 'text-yellow-500';
+        if (v.includes('good')) return 'text-emerald-500';
+        if (v.includes('excellent')) return 'text-blue-500';
+        return 'text-muted-foreground';
     };
 
     const getStatusIcon = (status: string) => {
@@ -1772,100 +1799,46 @@ function FeasibilityTab() {
                     <Card key={idx} className="bg-secondary/20 border-border/50">
                         <CardHeader className="p-3 pb-2 flex flex-row items-center justify-between space-y-0">
                             <div>
-                                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                                <CardTitle className="text-base font-semibold flex items-center gap-2">
                                     <card.icon className="h-4 w-4" /> {card.label}
                                 </CardTitle>
-                                {/* If green standards are present, show the name */}
-                                {card.label.toLowerCase().includes('green') && (
-                                    <div className="flex items-center gap-2 mt-1">
-                                        {metrics.compliance?.greenStandards && (
-                                            <div className="text-[11px] text-muted-foreground">{metrics.compliance.greenStandards.name || metrics.compliance.greenStandards.certificationType}</div>
-                                        )}
-                                        {certLabel && certMaxCoverage != null && (
-                                            <div className="ml-2 inline-flex items-center gap-2 text-[11px]">
-                                                <Badge variant="outline" className="text-xs font-mono">{certLabel}</Badge>
-                                                <div className="text-[11px] text-muted-foreground">Max Coverage: <span className="font-bold ml-1">{Math.round(certMaxCoverage)}%</span></div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
+                                {/* Certification / Grade label under the title */}
+                                <div className="mt-1">
+                                    {card.label.toLowerCase().includes('green') && certLabel && (
+                                        <div className={`text-sm font-bold ${getLabelColorClass(certLabel, 'cert')}`}>
+                                            {certLabel.toLowerCase().includes('griha') ? (
+                                                // render star icons for GRIHA
+                                                <span className="inline-flex items-center gap-1">
+                                                    {(() => {
+                                                        const s = Math.round(card.score || 0);
+                                                        const stars = (s <= 60) ? 1 : (s <= 70) ? 2 : (s <= 80) ? 3 : (s <= 90) ? 4 : 5;
+                                                        return Array.from({ length: stars }).map((_, i) => (
+                                                            <Star key={i} className="h-4 w-4 text-yellow-400" />
+                                                        ));
+                                                    })()}
+                                                </span>
+                                            ) : (
+                                                <div className="text-sm font-bold">{getCertLabelForScore(Math.round(card.score ?? 0), certLabel)}</div>
+                                            )}
+                                        </div>
+                                    )}
+                                    {card.label.toLowerCase().includes('vastu') && (
+                                        <div className={`text-sm font-bold ${getLabelColorClass(getVastuGrade(Math.round(card.score || 0)), 'vastu')}`}>
+                                            {getVastuGrade(Math.round(card.score || 0))}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
-                            <div className={`h-3 w-3 rounded-full ${getTrafficLight(card.score)}`} />
+                            <div className="flex items-center gap-4">
+                                <div className={`h-3 w-3 rounded-full ${getTrafficLight(card.score)}`} />
+                                <div className="text-lg font-semibold">{Math.round(card.score ?? 0)} <span className="text-xs text-muted-foreground">/ 100</span></div>
+                            </div>
                         </CardHeader>
                         <CardContent className="p-3 pt-0">
-                            <div className="flex flex-col items-end gap-1 mb-2">
-                                <div className="flex items-end gap-2">
-                                    <span className="text-2xl font-bold">{card.score}</span>
-                                    <span className="text-xs text-muted-foreground mb-1">/ 100</span>
-                                </div>
-                                {card.summary && (
-                                    <div className="text-sm font-semibold text-muted-foreground">
-                                        {card.summary.totalScore} / {card.summary.maxScore} points
-                                    </div>
-                                )}
-                            </div>
                             <div className="space-y-1">
-                                {card.label.toLowerCase().includes('vastu') ? (
-                                    // Flatten any grouped items and render each Vastu scorecard entry one-by-one
-                                    (() => {
-                                        // Normalize various incoming shapes: arrays, grouped objects with .items, or single items
-                                        const raw = card.items || [];
-                                        const flat: any[] = [];
-                                        raw.forEach((ri: any) => {
-                                            if (!ri) return;
-                                            // If an object with .items array (grouped), push each child
-                                            if (Array.isArray(ri)) {
-                                                ri.forEach(x => flat.push(x));
-                                            } else if (ri.items && Array.isArray(ri.items)) {
-                                                ri.items.forEach((x: any) => flat.push(x));
-                                            } else {
-                                                flat.push(ri);
-                                            }
-                                        });
-
-                                        return (
-                                            <div className="space-y-2">
-                                                {flat.map((item: any, i: number) => {
-                                                    const rawLabel = String(item.label || item.code || item.title || '');
-                                                    const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
-                                                    const code = m ? m[1] : (item.code || null);
-                                                    const title = m ? m[2] : (item.title || item.label || rawLabel);
-
-                                                    return (
-                                                        <div key={i} className="flex items-start justify-between gap-3">
-                                                            <div className="min-w-0">
-                                                                <div className="flex items-center gap-2">
-                                                                    {code && <Badge variant="secondary" className="text-[11px] font-mono px-1.5 py-0.5">{code}</Badge>}
-                                                                    <div className="text-sm font-medium truncate">{title}</div>
-                                                                </div>
-                                                                {item.detail && <div className="text-xs text-muted-foreground mt-0.5">{item.detail}</div>}
-                                                            </div>
-                                                            <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
-                                                                {typeof item.achievedScore === 'number' && typeof item.maxScore === 'number' ? (
-                                                                    (() => {
-                                                                        const pct = item.maxScore > 0 ? Math.round((item.achievedScore / item.maxScore) * 100) : 0;
-                                                                        return (
-                                                                            <div className="flex flex-col items-end">
-                                                                                <div className="text-lg font-bold tabular-nums">{pct}</div>
-                                                                                <div className="text-xs text-muted-foreground">/ 100</div>
-                                                                                <div className="text-[11px] text-muted-foreground mt-1">{item.achievedScore} / {item.maxScore} points</div>
-                                                                            </div>
-                                                                        );
-                                                                    })()
-                                                                ) : (
-                                                                    <div className="text-[11px] text-muted-foreground">{item.status === 'na' ? 'Not evaluated' : item.status}</div>
-                                                                )}
-                                                                <div className="flex items-center gap-1 mt-1">{getStatusIcon(item.status)}</div>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        );
-                                    })()
-                                ) : (
-                                    (() => {
-                                        // Normalize and flatten items to support grouped shapes
+                                {/* Render a flat list for all card items. Each item shows label, status/value text, and status icon only. */}
+                                <div className="space-y-2">
+                                    {(() => {
                                         const raw = card.items || [];
                                         const flat: any[] = [];
                                         raw.forEach((ri: any) => {
@@ -1874,47 +1847,43 @@ function FeasibilityTab() {
                                             else if (ri.items && Array.isArray(ri.items)) ri.items.forEach((x: any) => flat.push(x));
                                             else flat.push(ri);
                                         });
+                                        return flat.map((item: any, i: number) => {
+                                            const rawLabel = String(item.label || item.code || item.title || '');
+                                            const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
+                                            const code = m ? m[1] : (item.code || null);
+                                            const title = m ? m[2] : (item.title || item.label || rawLabel);
 
-                                        return (
-                                            <div className="space-y-2">
-                                                {flat.map((item: any, i: number) => {
-                                                    const rawLabel = String(item.label || item.code || item.title || '');
-                                                    const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
-                                                    const code = m ? m[1] : (item.code || null);
-                                                    const title = m ? m[2] : (item.title || item.label || rawLabel);
+                                            // Determine status text: prefer an explicit value field otherwise fallback to status
+                                            const statusText = item.value !== undefined ? String(item.value) : (item.status === 'na' ? 'Not evaluated' : item.status);
 
-                                                    return (
-                                                        <div key={i} className="flex items-start justify-between gap-3">
-                                                            <div className="min-w-0">
-                                                                <div className="flex items-center gap-2">
-                                                                    {code && <Badge variant="outline" className="text-[11px] font-mono px-1.5 py-0.5">{code}</Badge>}
-                                                                    <div className="text-sm font-medium truncate">{title}</div>
-                                                                </div>
-                                                                {item.detail && <div className="text-xs text-muted-foreground mt-0.5">{item.detail}</div>}
-                                                            </div>
-                                                            <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
-                                                                {typeof item.achievedScore === 'number' && typeof item.maxScore === 'number' ? (
-                                                                    (() => {
-                                                                        const pct = item.maxScore > 0 ? Math.round((item.achievedScore / item.maxScore) * 100) : 0;
-                                                                        return (
-                                                                            <div className="flex flex-col items-end">
-                                                                                <div className="text-lg font-bold tabular-nums">{pct}</div>
-                                                                                <div className="text-xs text-muted-foreground">/ 100</div>
-                                                                                <div className="text-[11px] text-muted-foreground mt-1">{item.achievedScore} / {item.maxScore} points</div>
-                                                                            </div>
-                                                                        );
-                                                                    })()
-                                                                ) : (
-                                                                    <div className="text-[11px] text-muted-foreground">{item.status === 'na' ? 'Not evaluated' : item.status}</div>
-                                                                )}
-                                                                <div className="flex items-center gap-1 mt-1">{getStatusIcon(item.status)}</div>
-                                                            </div>
+                                            return (
+                                                <div key={i} className="flex items-center justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2">
+                                                            {code && <Badge variant="outline" className="text-[11px] font-mono px-1.5 py-0.5">{code}</Badge>}
+                                                            <div className="text-sm font-medium truncate">{title}</div>
                                                         </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        );
-                                    })()
+                                                        {item.detail && <div className="text-xs text-muted-foreground mt-0.5">{item.detail}</div>}
+                                                    </div>
+                                                    <div className="text-right flex-shrink-0 flex items-center gap-3">
+                                                        <div className="text-sm text-muted-foreground">{statusText}</div>
+                                                        <div className="flex items-center gap-1">{getStatusIcon(item.status)}</div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        });
+                                    })()}
+                                </div>
+                                {/* Vastu Load More button */}
+                                {card.label.toLowerCase().includes('vastu') && (
+                                    <div className="pt-2 text-center">
+                                        {/* If more local items exist, incrementally reveal; otherwise load full checklist */}
+                                        {((card.items || []).length > (vastuVisibleCount || 0)) ? (
+                                            <Button size="sm" variant="outline" onClick={() => setVastuVisibleCount((c) => (c || 0) + 10)}>Load More</Button>
+                                        ) : (
+                                            <Button size="sm" variant="ghost" onClick={() => actions.loadUltimateVastuChecklist()}>Load More</Button>
+                                        )}
+                                    </div>
                                 )}
                             </div>
                             {card.control}
