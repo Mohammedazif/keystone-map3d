@@ -88,6 +88,19 @@ function getStandardName(raw: string | undefined): string {
     return String(raw).split(' ')[0];
 }
 
+/** Normalize certification IDs to short display labels (e.g. 'LEED', 'IGBC', 'GRIHA') */
+function getCertificationLabel(cert: string | string[] | undefined): string {
+    if (!cert) return '';
+    // support arrays (project stores greenCertification as an array)
+    const raw = Array.isArray(cert) ? cert[0] : cert;
+    if (!raw) return '';
+    const c = String(raw).toLowerCase();
+    if (c.includes('leed')) return 'LEED';
+    if (c.includes('igbc')) return 'IGBC';
+    if (c.includes('griha')) return 'GRIHA';
+    return String(raw).toUpperCase();
+}
+
 export function GreenScorecardPanel() {
     const activeProject = useProjectData();
     const { regulations, isLoading } = useGreenRegulations(activeProject as unknown as Project);
@@ -208,7 +221,7 @@ export function GreenScorecardPanel() {
                 </div>
                                 <div className="mt-2">
                                                         {/* Certification label from project */}
-                                                        <div className="text-sm text-muted-foreground mb-1"><strong>Certification:</strong> {certification || 'GRIHA'}</div>
+                                                        <div className="text-sm text-muted-foreground mb-1"><strong>Certification:</strong> {getCertificationLabel(certification) || 'GRIHA'}</div>
 
                                                         {/* Header: show only overallScore / totalPoints from analysis */}
                                                         <div className="text-sm font-medium">{analysis.overallScore} / {analysis.maxScore || 100}</div>
