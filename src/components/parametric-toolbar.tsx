@@ -128,10 +128,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         hospitality: 0
     });
 
-    const [unitMixConfig, setUnitMixConfig] = useState({
-        '2BHK': 30,
-        '3BHK': 35,
-        '4BHK': 35
+    const [unitAreaConfig, setUnitAreaConfig] = useState({
+        '2BHK': 140,
+        '3BHK': 185,
+        '4BHK': 245
     });
 
     const [shuffleUnits, setShuffleUnits] = useState(false);
@@ -170,14 +170,14 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     useEffect(() => {
         actions.setRenderingDesignParams({
             landUse,
-            unitMix: unitMixConfig,
+            unitMix: unitAreaConfig,
             selectedUtilities,
             hasPodium,
             podiumFloors,
             parkingTypes: selectedParking.filter(p => p !== 'none'),
             typology: selectedTypologies[0] || 'point',
         });
-    }, [landUse, unitMixConfig, selectedUtilities, hasPodium, podiumFloors, selectedParking, selectedTypologies, actions]);
+    }, [landUse, unitAreaConfig, selectedUtilities, hasPodium, podiumFloors, selectedParking, selectedTypologies, actions]);
 
     // Derive the truly selected plot based on user selection
     const selectedPlot = selectedObjectId?.type === 'Plot'
@@ -396,10 +396,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             podiumFloors,
             upperFloorReduction,
             unitMix: [
-                { name: '2BHK', mixRatio: unitMixConfig['2BHK'] / 100, area: 140 },
-                { name: '3BHK', mixRatio: unitMixConfig['3BHK'] / 100, area: 185 },
-                { name: '4BHK', mixRatio: unitMixConfig['4BHK'] / 100, area: 245 }
-            ].filter(u => u.mixRatio > 0),
+                { name: '2BHK', mixRatio: 1, area: unitAreaConfig['2BHK'] },
+                { name: '3BHK', mixRatio: 1, area: unitAreaConfig['3BHK'] },
+                { name: '4BHK', mixRatio: 1, area: unitAreaConfig['4BHK'] }
+            ].filter(u => u.area > 0),
             shuffleUnits,
             exactTypologyAllocation
         };
@@ -592,47 +592,54 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                             */}
 
                             {/* Unit Mix Allocation (Residential / Mixed Only) - Exact Typology is now the default */}
-                            {/* (landUse === 'residential' || landUse === 'mixed') && (
+                            {(landUse === 'residential' || landUse === 'mixed') && (
                                 <div className="p-3 bg-muted/20 border rounded-lg space-y-3">
                                     <div className="flex justify-between items-center">
-                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Unit Mix Allocation</Label>
-                                        <Badge
-                                            variant="outline"
-                                            className={cn("text-[9px] h-4",
-                                                (unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']) !== 100
-                                                    ? "text-red-500 border-red-200"
-                                                    : "text-green-600 border-green-200"
-                                            )}
-                                        >
-                                            Total: {unitMixConfig['2BHK'] + unitMixConfig['3BHK'] + unitMixConfig['4BHK']}%
-                                        </Badge>
+                                        <Label className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider">Unit Areas (sqm)</Label>
                                     </div>
 
                                     <div className="space-y-3 pl-1">
-                                        {Object.entries(unitMixConfig).map(([type, value]) => (
-                                            <div key={type} className="space-y-1">
-                                                <div className="flex justify-between text-[10px]">
-                                                    <span className="text-muted-foreground">{type}</span>
-                                                    <span>{value}%</span>
+                                        {Object.entries(unitAreaConfig).map(([type, value]) => (
+                                            <div key={type} className="flex items-center justify-between gap-4">
+                                                <div className="flex items-center gap-2 w-1/3">
+                                                    <div className={cn(
+                                                        "w-2 h-2 rounded-full",
+                                                        type === '2BHK' && "bg-[#1E90FF]",
+                                                        type === '3BHK' && "bg-[#DA70D6]",
+                                                        type === '4BHK' && "bg-[#FFD700]"
+                                                    )} />
+                                                    <span className="text-[10px] font-medium text-muted-foreground">{type}</span>
                                                 </div>
-                                                <Slider
-                                                    value={[value]}
-                                                    max={100}
-                                                    step={5}
-                                                    onValueChange={([val]) => setUnitMixConfig(prev => ({ ...prev, [type]: val }))}
-                                                    className={cn(
-                                                        "[&_.relative]:h-1.5 [&_span]:h-3 [&_span]:w-3",
-                                                        type === '2BHK' && "[&_.absolute]:bg-[#1E90FF]",
-                                                        type === '3BHK' && "[&_.absolute]:bg-[#DA70D6]",
-                                                        type === '4BHK' && "[&_.absolute]:bg-[#FFD700]"
-                                                    )}
-                                                />
+                                                <div className="flex-1 flex items-center gap-2">
+                                                    <Slider
+                                                        value={[value]}
+                                                        min={50}
+                                                        max={500}
+                                                        step={5}
+                                                        onValueChange={([val]) => setUnitAreaConfig(prev => ({ ...prev, [type]: val }))}
+                                                        className={cn(
+                                                            "[&_.relative]:h-1.5 [&_span]:h-3 [&_span]:w-3",
+                                                            type === '2BHK' && "[&_.absolute]:bg-[#1E90FF]",
+                                                            type === '3BHK' && "[&_.absolute]:bg-[#DA70D6]",
+                                                            type === '4BHK' && "[&_.absolute]:bg-[#FFD700]"
+                                                        )}
+                                                    />
+                                                    <div className="flex items-center gap-1 shrink-0 w-16">
+                                                        <input
+                                                            type="number"
+                                                            value={value}
+                                                            onChange={(e) => setUnitAreaConfig(prev => ({ ...prev, [type]: Number(e.target.value) || 0 }))}
+                                                            className="w-[42px] h-6 rounded border bg-background px-1 text-[10px] text-right focus:outline-none focus:ring-1 focus:ring-primary"
+                                                        />
+                                                        <span className="text-[9px] text-muted-foreground">m²</span>
+                                                    </div>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
 
-                                    Shuffle Toggle
-                                    <div className="flex items-center justify-between pt-1 border-t border-border/30">
+                                    {/* Shuffle Toggle */}
+                                    {/* <div className="flex items-center justify-between pt-1 border-t border-border/30">
                                         <Label className="text-[10px] text-muted-foreground cursor-pointer" onClick={() => setShuffleUnits(!shuffleUnits)}>
                                             Shuffle Unit Order
                                         </Label>
@@ -642,10 +649,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             onChange={(e) => setShuffleUnits(e.target.checked)}
                                             className="h-3 w-3 accent-primary"
                                         />
-                                    </div>
+                                    </div> */}
 
-                                    Exact Typology Allocation Toggle
-                                    <div className="flex items-center justify-between pt-1">
+                                    {/* Exact Typology Allocation Toggle */}
+                                    {/* <div className="flex items-center justify-between pt-1">
                                         <div>
                                             <Label className="text-[10px] text-muted-foreground cursor-pointer" onClick={() => setExactTypologyAllocation(!exactTypologyAllocation)}>
                                                 Exact Typology Sizes
@@ -660,9 +667,9 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             onChange={(e) => setExactTypologyAllocation(e.target.checked)}
                                             className="h-3 w-3 accent-primary"
                                         />
-                                    </div>
+                                    </div> */}
                                 </div>
-                            ) */}
+                            )}
 
                             {/* Podium / Stepped Massing Controls (Residential) */}
                             {landUse === 'residential' && (

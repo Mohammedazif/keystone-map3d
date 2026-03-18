@@ -2775,11 +2775,16 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         alignmentRotation: alignRot,
                         shuffleUnits: params.shuffleUnits,
                         exactTypologyAllocation: params.exactTypologyAllocation,
-                        selectedUtilities: params.selectedUtilities || activeProject?.feasibilityParams?.selectedUtilities
+                        selectedUtilities: params.selectedUtilities || activeProject?.feasibilityParams?.selectedUtilities,
+                        // Road-side ground floor units are removed for residential buildings
+                        groundFloorRoadSideReduction: intendedUse === BuildingIntendedUse.Residential,
+                        roadAccessSides: plotStub.roadAccessSides,
+                        plotCentroid: turf.centroid(plotStub.geometry).geometry.coordinates as [number, number],
                     });
                     const layout: any = {
                         cores: freshLayout.cores,
                         units: freshLayout.units,
+                        groundFloorUnits: freshLayout.groundFloorUnits,
                         utilities: freshLayout.utilities || f.properties?.internalUtilities || []
                     };
 
@@ -2964,7 +2969,12 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const units: Unit[] = [];
                         floors.forEach(floor => {
                             if ((floor.level !== undefined && floor.level < 0) || floor.type === 'Parking' || floor.type === 'Utility') return;
-                            (baseLayout.units || []).forEach((u: Unit) => units.push({ ...u, id: `${floor.id}-u-${u.id}`, floorId: floor.id }));
+                            // Ground floor (level 0): use groundFloorUnits (road-facing strip removed)
+                            const isGroundFloor = floor.level === 0;
+                            const floorUnits = (isGroundFloor && baseLayout.groundFloorUnits)
+                                ? baseLayout.groundFloorUnits
+                                : baseLayout.units || [];
+                            floorUnits.forEach((u: Unit) => units.push({ ...u, id: `${floor.id}-u-${u.id}`, floorId: floor.id }));
                         });
                         return units;
                     };
