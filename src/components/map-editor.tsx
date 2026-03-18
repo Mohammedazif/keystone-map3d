@@ -1,4 +1,4 @@
-﻿import { useBuildingStore, UTILITY_COLORS } from '@/hooks/use-building-store';
+import { useBuildingStore, UTILITY_COLORS } from '@/hooks/use-building-store';
 import { planarDimensions, planarArea } from '@/lib/generators/geometry-utils';
 import { BUILDING_MATERIALS, hslToRgb } from '@/lib/color-utils';
 import { useToast } from '@/hooks/use-toast';
@@ -38,6 +38,23 @@ const LABELS_SOURCE_ID = 'building-labels-source';
 const LABELS_LAYER_ID = 'building-labels-layer';
 const SELECTION_HIGHLIGHT_SOURCE_ID = 'selection-highlight-source';
 const SELECTION_HIGHLIGHT_LAYER_ID = 'selection-highlight-layer';
+const DRAWING_LABELS_SOURCE_ID = 'drawing-labels-source';
+const DRAWING_LABELS_LAYER_ID = 'drawing-labels-layer';
+
+// Helper to calculate distance labels for drawing segments
+const createDistanceLabels = (points: [number, number][]) => {
+  if (points.length < 2) return turf.featureCollection([]);
+  const features = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p1 = turf.point(points[i]);
+    const p2 = turf.point(points[i + 1]);
+    const dist = turf.distance(p1, p2, { units: 'meters' });
+    const mid = turf.midpoint(p1, p2);
+    mid.properties = { distance: `${Math.round(dist)}m` };
+    features.push(mid);
+  }
+  return turf.featureCollection(features);
+};
 
 // Helper to darken/lighten hex color
 const adjustColorBrightness = (hex: string, percent: number) => {
@@ -582,18 +599,23 @@ export function MapEditor({
     if (drawingState.isDrawing) {
       map.current.getCanvas().style.cursor = 'crosshair';
       if (drawingPoints.length > 0) {
-        if (drawingState.objectType === 'Road' && drawingPoints.length >= 1) {
-          const mousePoint: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-          const previewPoints = [...drawingPoints, mousePoint];
-          const line = turf.lineString(previewPoints);
+        const mousePoint: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+        const previewPoints = [...drawingPoints, mousePoint];
+        const line = turf.lineString(previewPoints);
+
+        const outlineSource = map.current.getSource(DRAWING_OUTLINE_SOURCE_ID) as GeoJSONSource;
+        const labelsSource = map.current.getSource(DRAWING_LABELS_SOURCE_ID) as GeoJSONSource;
+        const roadFillSource = map.current.getSource('drawing-road-fill') as GeoJSONSource;
+
+        if (outlineSource) outlineSource.setData(turf.featureCollection([line]));
+        if (labelsSource) labelsSource.setData(createDistanceLabels(previewPoints));
+
+        if (drawingState.objectType === 'Road' && roadFillSource) {
           const buffered = turf.buffer(line, (drawingState.roadWidth / 2), { units: 'meters' });
+          if (buffered) roadFillSource.setData(turf.featureCollection([buffered]));
+        }
 
-          const outlineSource = map.current.getSource(DRAWING_OUTLINE_SOURCE_ID) as GeoJSONSource;
-          const roadFillSource = map.current.getSource('drawing-road-fill') as GeoJSONSource;
-
-          if (outlineSource) outlineSource.setData(turf.featureCollection([line]));
-          if (roadFillSource && buffered) roadFillSource.setData(turf.featureCollection([buffered]));
-        } else if (drawingPoints.length > 2) {
+        if (drawingPoints.length > 2) {
           const firstPoint = drawingPoints[0];
           const hoverPoint: LngLatLike = { lng: e.lngLat.lng, lat: e.lngLat.lat };
           const firstMapPoint: LngLatLike = { lng: firstPoint[0], lat: firstPoint[1] };
@@ -1902,11 +1924,14 @@ useEffect(() => {
       });
 
       const outlineSource = mapInstance.getSource(DRAWING_OUTLINE_SOURCE_ID) as GeoJSONSource;
+      const labelsSource = mapInstance.getSource(DRAWING_LABELS_SOURCE_ID) as GeoJSONSource;
       const roadFillSource = mapInstance.getSource('drawing-road-fill') as GeoJSONSource;
       let outlineData: any = turf.featureCollection([]);
+      let labelsData: any = turf.featureCollection([]);
       let roadFillData: any = turf.featureCollection([]);
 
       if (drawingPoints.length > 0) {
+        labelsData = createDistanceLabels(drawingPoints);
         if (drawingState.objectType === 'Road') {
           if (drawingPoints.length === 1) {
             outlineData = turf.featureCollection([
@@ -1920,7 +1945,9 @@ useEffect(() => {
           }
         } else {
           if (drawingPoints.length > 1) {
-            outlineData = turf.lineString(drawingPoints);
+            outlineData = turf.featureCollection([turf.lineString(drawingPoints)]);
+          } else if (drawingPoints.length === 1) {
+             outlineData = turf.featureCollection([turf.point(drawingPoints[0])]);
           }
         }
       }
@@ -1937,6 +1964,29 @@ useEffect(() => {
         });
       }
 
+      if (labelsSource) {
+        labelsSource.setData(labelsData);
+      } else {
+        mapInstance.addSource(DRAWING_LABELS_SOURCE_ID, { type: 'geojson', data: labelsData });
+        mapInstance.addLayer({
+          id: DRAWING_LABELS_LAYER_ID,
+          type: 'symbol',
+          source: DRAWING_LABELS_SOURCE_ID,
+          layout: {
+            'text-field': ['get', 'distance'],
+            'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+            'text-size': 12,
+            'symbol-placement': 'point',
+            'text-offset': [0, 0.5]
+          },
+          paint: {
+            'text-color': '#F5A623',
+            'text-halo-color': '#FFFFFF',
+            'text-halo-width': 2
+          }
+        });
+      }
+
       if (roadFillSource) {
         roadFillSource.setData(roadFillData);
       } else if (drawingState.objectType === 'Road') {
@@ -1949,18 +1999,12 @@ useEffect(() => {
         });
       }
     } else {
-      if (mapInstance.getLayer('drawing-road-fill-layer')) {
-        mapInstance.removeLayer('drawing-road-fill-layer');
-      }
-      if (mapInstance.getSource('drawing-road-fill')) {
-        mapInstance.removeSource('drawing-road-fill');
-      }
-      if (mapInstance.getLayer(DRAWING_OUTLINE_LAYER_ID)) {
-        mapInstance.removeLayer(DRAWING_OUTLINE_LAYER_ID);
-      }
-      if (mapInstance.getSource(DRAWING_OUTLINE_SOURCE_ID)) {
-        mapInstance.removeSource(DRAWING_OUTLINE_SOURCE_ID);
-      }
+      if (mapInstance.getLayer('drawing-road-fill-layer')) mapInstance.removeLayer('drawing-road-fill-layer');
+      if (mapInstance.getSource('drawing-road-fill')) mapInstance.removeSource('drawing-road-fill');
+      if (mapInstance.getLayer(DRAWING_OUTLINE_LAYER_ID)) mapInstance.removeLayer(DRAWING_OUTLINE_LAYER_ID);
+      if (mapInstance.getSource(DRAWING_OUTLINE_SOURCE_ID)) mapInstance.removeSource(DRAWING_OUTLINE_SOURCE_ID);
+      if (mapInstance.getLayer(DRAWING_LABELS_LAYER_ID)) mapInstance.removeLayer(DRAWING_LABELS_LAYER_ID);
+      if (mapInstance.getSource(DRAWING_LABELS_SOURCE_ID)) mapInstance.removeSource(DRAWING_LABELS_SOURCE_ID);
     }
   }, [drawingState.isDrawing, drawingPoints, isMapLoaded, primaryColor]);
 
