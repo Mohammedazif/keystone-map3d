@@ -2,6 +2,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import { VASTU_SCHEMA } from "@/lib/scoring/vastu.schema";
 import { useBuildingStore, useProjectData, useSelectedPlot } from '@/hooks/use-building-store';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { useGreenStandardChecks } from '@/hooks/use-green-standard-checks';
@@ -13,6 +14,8 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Switch } from '@/components/ui/switch';
 import { CheckCircle2, Circle, XCircle, AlertCircle, Leaf, Wind, Sun, MapPin, Loader2, MousePointerClick, Hand } from 'lucide-react';
+import { GREEN_SCHEMA } from '@/lib/scoring/green.schema';
+import evaluateSchema, { ItemResult } from '@/lib/scoring/schema-engine';
 import { cn } from '@/lib/utils';
 import { Separator } from '@/components/ui/separator';
 
@@ -66,139 +69,117 @@ function getStandardLabel(raw: string | undefined): string {
     return label;
 }
 
+/** Return the canonical standard short name without version (used for UI display) */
+function getStandardName(raw: string | undefined): string {
+    if (!raw) return 'Generic';
+    const lower = raw.toLowerCase();
+    const STANDARDS: Record<string, string> = {
+        'igbc': 'IGBC',
+        'griha': 'GRIHA',
+        'leed': 'LEED',
+        'well': 'WELL',
+        'breeam': 'BREEAM',
+        'edge': 'EDGE',
+    };
+    for (const [key, name] of Object.entries(STANDARDS)) {
+        if (lower.includes(key)) return name;
+    }
+    // fallback: return the raw string (trimmed)
+    return String(raw).split(' ')[0];
+}
+
+/** Normalize certification IDs to short display labels (e.g. 'LEED', 'IGBC', 'GRIHA') */
+function getCertificationLabel(cert: string | string[] | undefined): string {
+    if (!cert) return '';
+    // support arrays (project stores greenCertification as an array)
+    const raw = Array.isArray(cert) ? cert[0] : cert;
+    if (!raw) return '';
+    const c = String(raw).toLowerCase();
+    if (c.includes('leed')) return 'LEED';
+    if (c.includes('igbc')) return 'IGBC';
+    if (c.includes('griha')) return 'GRIHA';
+    return String(raw).toUpperCase();
+}
+
 export function GreenScorecardPanel() {
     const activeProject = useProjectData();
     const { regulations, isLoading } = useGreenRegulations(activeProject as unknown as Project);
 
     const creditStatusMap = useGreenStandardChecks(activeProject, activeProject?.simulationResults);
-    const [manualOverrides, setManualOverrides] = useState<Record<string, boolean>>({});
+    const [results, setResults] = useState<Record<string, ItemResult | undefined>>({});
+    const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+    // Use project's certification only for label — schema is always GREEN_SCHEMA
+    // The project type stores certification under `greenCertification` (array). Use first entry if present.
+    const certification = activeProject?.greenCertification ? activeProject.greenCertification[0] : undefined;
+    const activeSchema = GREEN_SCHEMA;
 
-    const scorecardDataList = useMemo(() => {
-        if (!regulations?.length) return [];
+    // Initialize expanded state and mandatory results whenever the active schema changes
+    React.useEffect(() => {
+        const expInit: Record<string, boolean> = {};
+        (activeSchema.categories || []).forEach((cat: any) => {
+            expInit[cat.id || cat.name || String(Math.random())] = true;
+        });
+        setExpanded(expInit);
 
-        return regulations.map((regulation) => {
-        if (!regulation?.categories?.length) return null;
-
-        let totalPoints = 0;
-        let achievedPoints = 0;
-
-        const categories = regulation.categories.map((cat: any, catIdx: number) => {
-            const credits = (cat.credits || []).map((credit: any, creditIdx: number) => {
-                const maxPoints = credit.points || 0;
-                let status: 'pending' | 'achieved' | 'failed' = 'pending';
-                let score = 0;
-                let isAuto = false;
-                let isManualOnly = false;
-                let dataKey = '';
-                // Use category+index as fallback to handle duplicate credit names (e.g., 4x Innovation in Design)
-                const overrideKey = credit.code || `${catIdx}-${creditIdx}-${credit.name}`;
-
-                const nameLower = credit.name.toLowerCase();
-                
-                // Find matching rule
-                const matchedRule = CREDIT_MATCH_RULES.find(rule => 
-                    rule.keywords.some(kw => nameLower.includes(kw))
-                );
-
-                const isPrerequisite = credit.type === 'mandatory' || credit.type === 'prerequisite' || maxPoints === 0;
-
-                if (matchedRule) {
-                    if (matchedRule.checkKey === 'manual_tracking') {
-                        isManualOnly = true;
-                    } else if (matchedRule.checkKey === 'heat_island') {
-                        if (creditStatusMap['ventilation']?.status === 'achieved' && creditStatusMap['green_cover']?.status === 'achieved') {
-                            status = 'achieved';
-                            score = maxPoints;
-                            isAuto = true;
-                            dataKey = matchedRule.checkKey;
-                        }
-                    } else if (matchedRule.checkKey === 'energy_optimization') {
-                        // Energy optimization proven by good daylighting OR ventilation simulation
-                        if (creditStatusMap['ventilation']?.status === 'achieved' || creditStatusMap['daylighting']?.status === 'achieved') {
-                            status = 'achieved';
-                            score = maxPoints;
-                            isAuto = true;
-                            dataKey = 'energy_optimization';
-                        }
-                    } else {
-                        const engineStatus = creditStatusMap[matchedRule.checkKey];
-                        if (engineStatus) {
-                            status = engineStatus.status;
-                            if (status === 'achieved') score = maxPoints;
-                            isAuto = true;
-                            dataKey = matchedRule.checkKey;
-                        }
-                    }
-                } else {
-                    isManualOnly = true;
+        // Initialize mandatory items (including children) in results
+        const initial: Record<string, ItemResult> = {};
+        (activeSchema.categories || []).forEach((cat: any) => {
+            (cat.items || []).forEach((item: any) => {
+                if (item.mandatory) initial[item.id] = { status: 'pass' };
+                if (item.children && Array.isArray(item.children)) {
+                    item.children.forEach((child: any) => {
+                        if (child.mandatory) initial[child.id] = { status: 'pass' };
+                    });
                 }
-
-                if (isPrerequisite && !isAuto && !isManualOnly) {
-                    isManualOnly = true;
-                }
-
-                // Final override: user toggle always takes precedence
-                if (overrideKey in manualOverrides) {
-                    if (manualOverrides[overrideKey]) {
-                        status = 'achieved';
-                        score = maxPoints;
-                    } else {
-                        status = 'pending';
-                        score = 0;
-                    }
-                }
-
-                totalPoints += maxPoints;
-                achievedPoints += score;
-
-                return { 
-                    ...credit, 
-                    status, 
-                    score, 
-                    maxPoints, 
-                    isAuto, 
-                    isManualOnly, 
-                    dataKey,
-                    overrideKey
-                };
             });
-
-            return { ...cat, credits };
         });
 
-        return {
-            id: regulation.id || regulation.certificationType,
-            certificationType: regulation.certificationType,
-            label: getStandardLabel(regulation.name || regulation.certificationType),
-            categories,
-            totalPoints,
-            achievedPoints,
-            ratingBands: regulation.ratingBands || [],
-        };
-        }).filter(Boolean) as Array<{
-            id: string;
-            certificationType: string;
-            label: string;
-            categories: any[];
-            totalPoints: number;
-            achievedPoints: number;
-            ratingBands: { label: string; minPoints: number; maxPoints?: number }[];
-        }>;
-    }, [regulations, creditStatusMap, manualOverrides]);
+        setResults(initial);
+    }, [activeSchema]);
 
-    const handleToggleManual = (overrideKey: string) => {
-        setManualOverrides(prev => ({
-            ...prev,
-            [overrideKey]: !prev[overrideKey]
-        }));
-    };
+    // Compute analysis from evaluateSchema using activeSchema and current results
+    const analysis = useMemo(() => {
+        try {
+            return evaluateSchema(activeSchema as any, results as Record<string, ItemResult | undefined>);
+        } catch (e) {
+            console.error('evaluateSchema failed', e);
+            return null as any;
+        }
+    }, [activeSchema, results]);
 
-    const plots = useBuildingStore(state => state.plots);
-    const isPlotCreated = plots.length > 0;
+    // Debug logs to validate data flow
+    React.useEffect(() => {
+        console.log('CERT:', certification);
+        console.log('SCHEMA:', activeSchema);
+        console.log('RESULTS', results);
+        console.log('ANALYSIS', analysis);
+    }, [certification, activeSchema, results, analysis]);
+
+    // Reset results when certification changes
+    React.useEffect(() => {
+        const initial: Record<string, ItemResult> = {};
+        (activeSchema.categories || []).forEach((cat: any) => {
+            (cat.items || []).forEach((item: any) => {
+                if (item.mandatory) initial[item.id] = { status: 'pass' };
+                if (item.children && Array.isArray(item.children)) {
+                    item.children.forEach((child: any) => {
+                        if (child.mandatory) initial[child.id] = { status: 'pass' };
+                    });
+                }
+            });
+        });
+        setResults(initial);
+    }, [certification]);
 
     if (!activeProject) return <div className="p-4 text-center text-muted-foreground">Select a project to view scorecard</div>;
 
-    if (!isPlotCreated) {
+    // If schema not available, show empty state (no fallback)
+    if (!activeSchema) {
+        return <div className="p-4 text-sm text-muted-foreground">No schema available for certification: {certification}</div>;
+    }
+
+    // We no longer require a created plot for schema-driven UI; render using `analysis` alone.
+    if (!analysis) {
         return (
             <div className="flex flex-col h-full">
                 <div className="px-3 py-2 border-b shrink-0">
@@ -213,7 +194,7 @@ export function GreenScorecardPanel() {
                             <MousePointerClick className="h-6 w-6 text-muted-foreground/50" />
                         </div>
                         <p className="text-sm text-muted-foreground max-w-[200px]">
-                            Create a plot on the map to start tracking your green score.
+                            Scorecard data is not yet available.
                         </p>
                     </div>
                 </div>
@@ -221,13 +202,8 @@ export function GreenScorecardPanel() {
         );
     }
 
-
-    if (isLoading && scorecardDataList.length === 0) return (
-        <div className="p-8 flex items-center justify-center text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading Green Regulations...
-        </div>
-    );
-    if (scorecardDataList.length === 0) return <div className="p-4 text-center text-muted-foreground">No Green Regulation data found for this project.</div>;
+    // Per strict UI rule: rely only on engine output (evaluateSchema).
+    if (!analysis) return null;
 
     return (
         <div className="h-full flex flex-col w-full max-h-[calc(100vh-200px)]">
@@ -240,112 +216,118 @@ export function GreenScorecardPanel() {
                         {isLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
                     </h2>
                     <div className="flex gap-2 flex-wrap items-center justify-end">
-                        {scorecardDataList.map((scorecard) => (
-                            <Badge key={scorecard.id} variant="outline">{scorecard.certificationType}</Badge>
-                        ))}
-                        {regulations && regulations.length > 0 && (
-                            <div className="text-xs text-muted-foreground ml-2">
-                                {regulations.map(r => (
-                                    <div key={r.id}>{r.name || r.certificationType}</div>
-                                ))}
-                            </div>
-                        )}
+                        {/* Removed regulation-based badges per strict engine-only UI rule */}
                     </div>
                 </div>
-                <div className="mt-2 space-y-2">
-                    {scorecardDataList.map((scorecard) => {
-                        const percentage = scorecard.totalPoints > 0 ? (scorecard.achievedPoints / scorecard.totalPoints) * 100 : 0;
-                        const achievedBand = scorecard.ratingBands.find((band) =>
-                            scorecard.achievedPoints >= band.minPoints &&
-                            (band.maxPoints === undefined || scorecard.achievedPoints <= band.maxPoints)
-                        );
+                                <div className="mt-2">
+                                                        {/* Certification label from project */}
+                                                        <div className="text-sm text-muted-foreground mb-1"><strong>Certification:</strong> {getCertificationLabel(certification) || 'GRIHA'}</div>
 
-                        return (
-                            <div key={scorecard.id} className="space-y-1">
-                                <div className="flex justify-between text-sm font-medium">
-                                    <span>{scorecard.certificationType}: {scorecard.achievedPoints} / {scorecard.totalPoints}</span>
-                                    <span>{percentage.toFixed(0)}%</span>
+                                                        {/* Header: show only overallScore / totalPoints from analysis */}
+                                                        <div className="text-sm font-medium">{analysis.overallScore} / {analysis.maxScore || 100}</div>
+
+                                        {/* Progress bar driven strictly by analysis values */}
+                                        <div style={{ marginTop: 8 }}>
+                                            {(() => {
+                                                const percentage = analysis.maxScore > 0 ? (analysis.overallScore / analysis.maxScore) * 100 : 0;
+                                                return (
+                                                    <div style={{ height: '6px', width: '100%', background: '#eee', borderRadius: '4px' }}>
+                                                        <div style={{ height: '6px', width: `${percentage}%`, background: '#22c55e', borderRadius: '4px' }} />
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
                                 </div>
-                                <Progress value={percentage} className="h-2" />
-                                {achievedBand && (
-                                    <div className="text-[11px] text-muted-foreground">
-                                        Rating: {achievedBand.label}
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
             </div>
 
             {/* Scrollable List */}
             <ScrollArea className="flex-1">
                 <div className="p-4">
                     <div className="space-y-6">
-                        {scorecardDataList.map((scorecard) => (
-                            <div key={scorecard.id} className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <h3 className="text-sm font-semibold">{scorecard.label}</h3>
-                                    <span className="text-xs text-muted-foreground">{scorecard.achievedPoints} / {scorecard.totalPoints}</span>
-                                </div>
-                                <Accordion type="multiple" defaultValue={scorecard.categories.map((c: any) => `${scorecard.id}-${c.name}`)} className="space-y-4">
-                                    {scorecard.categories.map((cat: any, idx: number) => (
-                                        <AccordionItem value={`${scorecard.id}-${cat.name}`} key={`${scorecard.id}-${idx}`} className="border rounded-lg px-3 bg-secondary/10">
-                                            <AccordionTrigger className="hover:no-underline py-3">
-                                                <div className="flex items-center gap-2 text-sm font-semibold">
-                                                    {cat.name.includes("Location") ? <MapPin className="h-4 w-4 text-orange-500" /> :
-                                                        cat.name.includes("Energy") ? <Sun className="h-4 w-4 text-yellow-500" /> :
-                                                            cat.name.includes("Water") ? <Wind className="h-4 w-4 text-blue-500" /> :
-                                                                <Circle className="h-3 w-3 text-muted-foreground" />}
-                                                    {cat.name}
+                        <div className="space-y-3">
+                            { (activeSchema.categories || []).map((category: any) => {
+                                const catId = category.id || category.name || category.title;
+                                const isExpanded = expanded[catId] !== false;
+                                const catAnalysis = (analysis.categories || []).find((c: any) => c.title === category.name || c.title === category.title);
+
+                                return (
+                                    <div key={catId} className="space-y-2">
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                fontWeight: 600,
+                                                marginTop: 10,
+                                                cursor: 'pointer'
+                                            }}
+                                            onClick={() => setExpanded(prev => ({ ...prev, [catId]: !prev[catId] }))}
+                                        >
+                                            <span>{category.name || category.title}</span>
+                                            <span style={{ textAlign: 'right' }}>{catAnalysis ? `${catAnalysis.score} / ${category.maxScore || 0}` : `0 / ${category.maxScore || 0}`}</span>
+                                        </div>
+
+                                        {isExpanded ? (
+                                            <div className="rounded-lg border border-border/40 bg-secondary/10 p-3">
+                                                <div className="mt-1 text-xs text-muted-foreground">
+                                                    { (category.items || []).map((item: any) => {
+                                                        const itemRes = results[item.id];
+                                                        const isPass = !!itemRes && (itemRes.status === true || itemRes.status === 'pass');
+                                                        const itemAnalysis = (analysis.categories || []).flatMap((c: any) => c.items).find((i: any) => i.id === String(item.id));
+
+                                                        return (
+                                                            <div key={item.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', marginBottom: 6 }}>
+                                                                {/* LEFT: TITLE */}
+                                                                <span style={{ flex: 1 }}>{item.name || item.title}</span>
+
+                                                                {/* CENTER-RIGHT: SCORE */}
+                                                                <span style={{ width: '60px', textAlign: 'right', marginRight: 10 }}>{itemAnalysis ? `${itemAnalysis.score} / ${item.maxScore || 0}` : `0 / ${item.maxScore || 0}`}</span>
+
+                                                                {/* RIGHT: TOGGLE */}
+                                                                <div
+                                                                    onClick={() => {
+                                                                        const isActive = results[item.id]?.status === 'pass';
+                                                                        setResults(prev => ({ ...prev, [item.id]: { status: isActive ? 'fail' : 'pass' } }));
+                                                                    }}
+                                                                    style={{ width: 34, height: 18, borderRadius: 20, background: results[item.id]?.status === 'pass' ? '#22c55e' : '#ccc', display: 'flex', alignItems: 'center', padding: 2, cursor: 'pointer' }}
+                                                                >
+                                                                    <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', transform: results[item.id]?.status === 'pass' ? 'translateX(16px)' : 'translateX(0px)', transition: '0.2s' }} />
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+
+                                                    {/* Child items (if any) */}
+                                                    { (category.items || []).map((item: any) => {
+                                                        if (!item.children || !Array.isArray(item.children) || item.children.length === 0) return null;
+                                                        return (
+                                                            <div key={`${item.id}-children`} style={{ paddingLeft: 12, marginBottom: 6 }}>
+                                                                {item.children.map((child: any) => {
+                                                                    const childRes = results[child.id];
+                                                                    const childPass = !!childRes && (childRes.status === true || childRes.status === 'pass');
+                                                                    const childAnalysis = (analysis.categories || []).flatMap((c: any) => c.items).find((i: any) => i.id === String(child.id));
+                                                                    return (
+                                                                        <div key={child.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0' }}>
+                                                                            <span style={{ flex: 1 }}>{child.name || child.title}</span>
+                                                                            <span style={{ width: '60px', textAlign: 'right', marginRight: 10 }}>{childAnalysis ? `${childAnalysis.score} / ${child.maxScore || 0}` : `0 / ${child.maxScore || 0}`}</span>
+                                                                            <div
+                                                                                onClick={() => setResults(prev => ({ ...prev, [child.id]: { status: childPass ? 'fail' : 'pass' } }))}
+                                                                                style={{ width: 34, height: 18, borderRadius: 20, background: results[child.id]?.status === 'pass' ? '#22c55e' : '#ccc', display: 'flex', alignItems: 'center', padding: 2, cursor: 'pointer' }}
+                                                                            >
+                                                                                <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', transform: results[child.id]?.status === 'pass' ? 'translateX(16px)' : 'translateX(0px)', transition: '0.2s' }} />
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
-                                            </AccordionTrigger>
-                                            <AccordionContent className="pb-3">
-                                                <div className="space-y-1">
-                                                    {cat.credits.map((credit: any, cIdx: number) => (
-                                                        <div key={cIdx} className="flex items-center gap-2 p-2 rounded-md hover:bg-secondary/20 transition-colors group">
-                                                            <div className="shrink-0">
-                                                                {credit.status === 'achieved' ? <CheckCircle2 className="h-4 w-4 text-green-500" /> :
-                                                                    credit.status === 'failed' ? <XCircle className="h-4 w-4 text-red-500" /> :
-                                                                        <Circle className="h-4 w-4 text-muted-foreground/30" />}
-                                                            </div>
-                                                            <div className="flex-1 min-w-0">
-                                                                <span className={cn(
-                                                                    "text-sm font-medium leading-tight",
-                                                                    credit.status === 'achieved' && "text-green-700 dark:text-green-400"
-                                                                )}>
-                                                                    {credit.name}
-                                                                </span>
-                                                                {credit.isAuto && !credit.isManualOnly && (
-                                                                    <span className="text-[10px] text-muted-foreground ml-1.5">
-                                                                        {credit.dataKey === 'standard' ? '· Standard' :
-                                                                         credit.dataKey === 'ventilation' || credit.dataKey === 'daylighting' || credit.dataKey === 'energy_optimization' ? '· Simulation' :
-                                                                         credit.dataKey === 'transit' || credit.dataKey === 'amenity' ? '· Proximity' :
-                                                                         ['green_cover', 'open_space', 'site_planning', 'land_use_planning'].includes(credit.dataKey) ? '· Plot Data' :
-                                                                         ['far_compliance', 'ground_coverage', 'parking_compliance'].includes(credit.dataKey) ? '· KPIs' :
-                                                                         ['rainwater_harvesting', 'solar_energy', 'water_recycling', 'waste_management', 'ev_charging', 'fire_safety', 'energy_efficiency'].includes(credit.dataKey) ? '· Utilities' : ''}
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                            <div className="flex items-center gap-2 shrink-0">
-                                                                <span className="text-xs font-mono text-muted-foreground">
-                                                                    {credit.score}/{credit.maxPoints}
-                                                                </span>
-                                                                <Switch
-                                                                    checked={credit.status === 'achieved'}
-                                                                    onCheckedChange={() => handleToggleManual(credit.overrideKey)}
-                                                                    className="scale-[0.6] origin-right"
-                                                                />
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </AccordionContent>
-                                        </AccordionItem>
-                                    ))}
-                                </Accordion>
-                            </div>
-                        ))}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 </div>
             </ScrollArea>
@@ -372,3 +354,6 @@ function Sparkles4Icon(props: any) {
         </svg>
     )
 }
+
+
+
