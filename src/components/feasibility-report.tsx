@@ -175,7 +175,8 @@ export function FeasibilityReport({
 
   const uw = project.underwriting;
   const landCost = uw?.actualLandPurchaseCost || 40000000;
-  const stampDuty = uw?.stampDutyAndLegalFees || 0;
+  // Stamp duty (5%) + registration (1%) + legal (0.5%) = 6.5% of land cost
+  const stampDuty = landCost * 0.065;
   const actualLandCost = landCost + stampDuty;
 
   // Cost range from simulation

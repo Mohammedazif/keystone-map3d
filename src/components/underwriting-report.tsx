@@ -757,9 +757,9 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                 {([
                                     ['1. LAND ACQUISITION', '', '', ''],
                                     ['Land purchase cost', uw.actualLandPurchaseCost || cb.earthwork * 0.4, '', 'Estimated land value'],
-                                    ['Stamp duty & registration', uw.stampDutyAndLegalFees || cb.earthwork * 0.04, '', '~10% of land value'],
+                                    ['Stamp duty & registration', (uw.actualLandPurchaseCost || cb.earthwork * 0.4) * 0.065, '', '6.5% of land value (5% stamp + 1% reg + 0.5% legal)'],
                                     ['Legal & professional fees', 0.2 * 10000000, '', 'Title verification'],
-                                    ['Sub-total: Land', (uw.actualLandPurchaseCost || cb.earthwork * 0.4) + (uw.stampDutyAndLegalFees || cb.earthwork * 0.04) + 2000000, '', ''],
+                                    ['Sub-total: Land', (uw.actualLandPurchaseCost || cb.earthwork * 0.4) * 1.065 + 2000000, '', ''],
 
                                     ['2. CONSTRUCTION COSTS', '', '', ''],
                                     ['Civil & structural work', cb.structure, '', `₹${fmt(cb.structure / sqftArea)}/sq.ft × ${fmt(sqftArea)} sq.ft`],
@@ -813,7 +813,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
 
                     // ── Land costs from form ──
                     const landCost   = uw.actualLandPurchaseCost   || 0;
-                    const stampDuty  = uw.stampDutyAndLegalFees     || 0;
+                    const stampDuty  = landCost * 0.065;
                     const landTotal  = landCost + stampDuty;
 
                     // ── Equity sub-breakdown ──
@@ -1784,7 +1784,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 <p className="font-bold text-[10px] mb-1">A. Land &amp; Building Mortgage</p>
                 {(() => {
                     // Land value: prefer actual cost from form, else estimate from plot area at ₹60k/sqm
-                    const landCostFromForm = (uw.actualLandPurchaseCost || 0) + (uw.stampDutyAndLegalFees || 0);
+                    const landCostFromForm = (uw.actualLandPurchaseCost || 0) * 1.065; // includes 6.5% stamp/legal
                     const landValRaw  = landCostFromForm > 0 ? landCostFromForm : plotArea * 60000;
                     const buildValRaw = totalRev > 0 ? totalRev : totalCost * 1.3;
                     const wipValRaw   = totalCost * 0.4; // ~40% of construction cost as progressive WIP

@@ -111,10 +111,6 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
                 <Label>Actual Land Purchase Cost (₹)</Label>
                 <Input type="number" value={formData.actualLandPurchaseCost || ''} onChange={e => handleChange('', 'actualLandPurchaseCost', parseInt(e.target.value))} placeholder="e.g. 40000000" />
               </div>
-              <div className="space-y-2">
-                <Label>Stamp Duty & Legal Fees (₹)</Label>
-                <Input type="number" value={formData.stampDutyAndLegalFees || ''} onChange={e => handleChange('', 'stampDutyAndLegalFees', parseInt(e.target.value))} placeholder="e.g. 2000000" />
-              </div>
             </div>
           ) : (
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full h-full flex flex-col">
@@ -185,10 +181,6 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
                   <div className="space-y-2">
                     <Label>Actual Land Purchase Cost (₹)</Label>
                     <Input type="number" value={formData.actualLandPurchaseCost || ''} onChange={e => handleChange('', 'actualLandPurchaseCost', parseInt(e.target.value))} placeholder="e.g. 40000000" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Stamp Duty & Legal Fees (₹)</Label>
-                    <Input type="number" value={formData.stampDutyAndLegalFees || ''} onChange={e => handleChange('', 'stampDutyAndLegalFees', parseInt(e.target.value))} placeholder="e.g. 2000000" />
                   </div>
                 </div>
               </TabsContent>
