@@ -73,10 +73,96 @@ import { FeasibilityReport } from "./feasibility-report";
 import { UnderwritingReport } from "./underwriting-report";
 import { ProjectUnderwritingForm } from "./project-underwriting-form";
 
+const getSelectedPlotMetricsSource = (plot: any | null | undefined) => {
+  if (!plot) {
+    return {
+      buildings: [],
+      utilityAreas: [],
+      parkingAreas: [],
+      greenAreas: [],
+      units: [],
+      cores: [],
+      parkingFloors: [],
+      unitBreakdown: {},
+      totalBuildings: 0,
+      totalUnits: 0,
+      totalPlotArea: 0,
+      totalBuiltUpArea: 0,
+      totalFootprint: 0,
+      totalGreenArea: 0,
+      totalRoadArea: 0,
+      achievedFAR: 0,
+      groundCoveragePct: 0,
+      openSpace: 0,
+    };
+  }
+
+  const buildings = (plot.buildings || []).filter((b: any) => b.visible !== false);
+  const utilityAreas = (plot.utilityAreas || []).filter((u: any) => u.visible !== false);
+  const parkingAreas = (plot.parkingAreas || []).filter((p: any) => p.visible !== false);
+  const greenAreas = (plot.greenAreas || []).filter((g: any) => g.visible !== false);
+  const units = buildings.flatMap((b: any) => b.units || []);
+  const cores = buildings.flatMap((b: any) => b.cores || []);
+  const parkingFloors = buildings.flatMap((b: any) =>
+    (b.floors || []).filter((f: any) => f.type === "Parking"),
+  );
+
+  const unitBreakdown = units.reduce(
+    (acc: Record<string, number>, unit: any) => {
+      const key = unit.type || unit.unitType || "Unit";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    },
+    {},
+  );
+
+  const totalPlotArea = plot.area || 0;
+  const totalFootprint = buildings.reduce((sum: number, building: any) => sum + (building.area || 0), 0);
+  const totalBuiltUpArea =
+    plot.developmentStats?.totalBuiltUpArea ||
+    buildings.reduce((sum: number, building: any) => {
+      const floors =
+        building.numFloors ||
+        (building.floors || []).filter((floor: any) => (floor.level ?? 0) >= 0).length ||
+        1;
+      return sum + (building.area || 0) * Math.max(1, floors);
+    }, 0);
+  const totalGreenArea = greenAreas.reduce((sum: number, area: any) => sum + (area.area || 0), 0);
+  const totalRoadArea = utilityAreas.reduce((sum: number, area: any) => {
+    const type = String(area.type || area.name || "").toLowerCase();
+    return type.includes("road") ? sum + (area.targetArea || area.area || 0) : sum;
+  }, 0);
+  const achievedFAR = totalPlotArea > 0 ? totalBuiltUpArea / totalPlotArea : 0;
+  const groundCoveragePct = totalPlotArea > 0 ? (totalFootprint / totalPlotArea) * 100 : 0;
+  const openSpace = Math.max(totalPlotArea - totalFootprint, 0);
+
+  return {
+    buildings,
+    utilityAreas,
+    parkingAreas,
+    greenAreas,
+    units,
+    cores,
+    parkingFloors,
+    unitBreakdown,
+    totalBuildings: buildings.length,
+    totalUnits: units.length,
+    totalPlotArea,
+    totalBuiltUpArea,
+    totalFootprint,
+    totalGreenArea,
+    totalRoadArea,
+    achievedFAR,
+    groundCoveragePct,
+    openSpace,
+  };
+};
+
 function MetricsTab() {
   const activeProject = useProjectData();
   const metrics = useDevelopmentMetrics(activeProject || null);
   const plots = useBuildingStore((state) => state.plots);
+  const selectedPlot = useSelectedPlot() ?? plots?.[0] ?? null;
   const [expandedBuildings, setExpandedBuildings] = useState<
     Record<string, boolean>
   >({});
@@ -85,50 +171,40 @@ function MetricsTab() {
   const toggleBuilding = (id: string) =>
     setExpandedBuildings((prev) => ({ ...prev, [id]: !prev[id] }));
 
-  const allBuildings = useMemo(() => {
-    if (!plots || plots.length === 0) return [];
-    return plots.flatMap((p) => p.buildings.filter((b) => b.visible !== false));
-  }, [plots]);
+  const selectedPlotData = useMemo(
+    () => getSelectedPlotMetricsSource(selectedPlot),
+    [selectedPlot],
+  );
 
-  const allUtilityAreas = useMemo(() => {
-    if (!plots) return [];
-    return plots.flatMap((p) => p.utilityAreas || []);
-  }, [plots]);
+  const buildingsForMetrics = selectedPlotData.buildings;
+  const allUtilityAreas = selectedPlotData.utilityAreas;
+  const allParkingAreas = selectedPlotData.parkingAreas;
+  const allGreenAreas = selectedPlotData.greenAreas;
+  const allUnits = selectedPlotData.units;
+  const allCores = selectedPlotData.cores;
+  const allParkingFloors = selectedPlotData.parkingFloors;
+  const unitBreakdown = selectedPlotData.unitBreakdown;
+  const totalBuildings = selectedPlotData.totalBuildings;
+  const totalUnitsCount = selectedPlotData.totalUnits;
 
-  const allParkingAreas = useMemo(() => {
-    if (!plots) return [];
-    return plots.flatMap((p) => p.parkingAreas || []);
-  }, [plots]);
-
-  const allGreenAreas = useMemo(() => {
-    if (!plots) return [];
-    return plots.flatMap((p) => p.greenAreas || []);
-  }, [plots]);
-
-  if (!activeProject || !metrics || allBuildings.length === 0)
+  if (!activeProject || !metrics || !selectedPlot || buildingsForMetrics.length === 0)
     return (
       <div className="p-6 text-center text-muted-foreground text-base">
         No metrics available — generate buildings first.
       </div>
     );
 
-  const totalPlotArea =
-    activeProject.totalPlotArea || plots.reduce((s, p) => s + (p.area || 0), 0);
-  // Use consumedBuildableArea to exactly match the Project Constraints panel FAR calculation
-  const gfa =
-    activeProject.consumedBuildableArea || metrics.totalBuiltUpArea || 1;
-  const totalFootprint = allBuildings.reduce((s, b) => s + b.area, 0);
-  const totalGreenArea = allGreenAreas.reduce(
-    (s, g) => s + (g.visible ? g.area : 0),
-    0,
-  );
-
-  // Gather global unit/core/parking totals
-  const allUnits = allBuildings.flatMap((b) => b.units || []);
-  const allCores = allBuildings.flatMap((b) => b.cores || []);
-  const allParkingFloors = allBuildings.flatMap((b) =>
-    (b.floors || []).filter((f) => f.type === "Parking"),
-  );
+  const totalPlotArea = selectedPlotData.totalPlotArea;
+  const gfa = selectedPlotData.totalBuiltUpArea || 1;
+  const totalFootprint = selectedPlotData.totalFootprint;
+  const totalGreenArea = selectedPlotData.totalGreenArea;
+  const achievedFAR = selectedPlotData.achievedFAR;
+  const groundCoveragePct = selectedPlotData.groundCoveragePct;
+  const openSpace = selectedPlotData.openSpace;
+  const greenAreaPct =
+    totalPlotArea > 0 ? (totalGreenArea / totalPlotArea) * 100 : 0;
+  const occupantsEstimate = Math.max(totalUnitsCount, 1) * 4;
+  const parkingRequired = Math.ceil(totalUnitsCount * 1.5);
   const totalParkingSpaces =
     allParkingAreas.reduce((s, p) => s + (p.capacity || 0), 0) +
     allParkingFloors.reduce((s, f) => s + (f.parkingCapacity || 0), 0);
@@ -294,29 +370,72 @@ function MetricsTab() {
         </div>
       </Section>
 
+      {/* ══════════ KPI SUMMARY ══════════ */}
+      <Section title="📈 KPI Summary">
+        <div className="rounded-lg border border-border/40 bg-secondary/10 px-3 py-3 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-md border border-white/5 bg-black/10 px-3 py-2.5">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                Total Buildings
+              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-slate-100">
+                {totalBuildings}
+              </div>
+            </div>
+            <div className="rounded-md border border-white/5 bg-black/10 px-3 py-2.5">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                Total Units
+              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-slate-100">
+                {totalUnitsCount}
+              </div>
+            </div>
+          </div>
+
+          {Object.keys(unitBreakdown).length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {Object.entries(unitBreakdown)
+                .sort((a, b) => b[1] - a[1])
+                .map(([type, count]) => (
+                  <div
+                    key={type}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-[2px] text-[11px]"
+                  >
+                    <span className="leading-none">🏠</span>
+                    <span className="font-medium text-slate-100">{type}</span>
+                    <span className="tabular-nums text-slate-300">
+                      {count}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      </Section>
+
       {/* ══════════ SITE UTILIZATION ══════════ */}
       <Section title="📊 Site Utilization">
         <Row
           label="Achieved FAR"
-          value={metrics.achievedFAR.toFixed(2)}
-          accent={metrics.achievedFAR > 3 ? "text-red-400" : "text-blue-400"}
+          value={achievedFAR.toFixed(2)}
+          accent={achievedFAR > 3 ? "text-red-400" : "text-blue-400"}
           formula={`GFA ÷ Plot Area = ${Math.round(gfa)} ÷ ${Math.round(totalPlotArea)}`}
         />
         <Row
           label="Ground Coverage"
-          value={metrics.groundCoveragePct.toFixed(1)}
+          value={groundCoveragePct.toFixed(1)}
           unit="%"
           formula={`(Footprint ÷ Plot Area) × 100 = (${Math.round(totalFootprint)} ÷ ${Math.round(totalPlotArea)}) × 100`}
         />
         <Row
           label="Open Space"
-          value={Math.round(metrics.openSpace).toLocaleString()}
+          value={Math.round(openSpace).toLocaleString()}
           unit="m²"
           formula={`Plot Area − Footprint = ${Math.round(totalPlotArea)} − ${Math.round(totalFootprint)}`}
         />
         <Row
           label="Green Cover"
-          value={metrics.greenArea.percentage.toFixed(1)}
+          value={greenAreaPct.toFixed(1)}
           unit="%"
           accent="text-green-400"
           formula={`(Green Area ÷ Plot Area) × 100 = (${Math.round(totalGreenArea)} ÷ ${Math.round(totalPlotArea)}) × 100`}
@@ -335,9 +454,9 @@ function MetricsTab() {
       </Section>
 
       {/* ══════════ PER-BUILDING BREAKDOWN ══════════ */}
-      <Section title={`🏢 Buildings (${allBuildings.length} total)`}>
+      <Section title={`🏢 Buildings (${totalBuildings} total)`}>
         <div className="space-y-2">
-          {allBuildings.map((b, idx) => {
+          {buildingsForMetrics.map((b, idx) => {
             const bFloors = b.floors || [];
             const occFloors = bFloors.filter(
               (f) => f.type !== "Parking" && f.type !== "Utility",
@@ -1173,14 +1292,10 @@ function MetricsTab() {
               // Determine formula/rationale per type — with actual values
               const uType = (u.type || "").toLowerCase();
               const uArea = Math.round(u.targetArea || u.area || 0);
-              const totalOccupants = Math.round(
-                (allUnits.length || metrics.totalUnits) * 4,
-              ); // avg 4 per unit
+              const totalOccupants = occupantsEstimate;
               const totalGfa = Math.round(gfa);
               const totalFootprintVal = Math.round(totalFootprint);
-              const totalRooftop = Math.round(
-                allBuildings.reduce((s, b) => s + b.area, 0),
-              );
+              const totalRooftop = Math.round(totalFootprint);
               const kva = Math.round((totalGfa * 10) / 1000); // 10 W/m²
               const dgKva = Math.round(kva * 0.375); // ~37.5% average of 25-50%
               const dailyWaterKL =
@@ -1293,18 +1408,20 @@ function MetricsTab() {
             const activeGfaTotal = useMaxCapacity ? maxGFA : Math.round(gfa);
             const activeNumUnits = useMaxCapacity
               ? maxUnits
-              : allUnits.length || metrics.totalUnits || 1;
+              : totalUnitsCount || 1;
             const activeTotalOccupants = useMaxCapacity
               ? maxOccupants
-              : Math.round((allUnits.length || metrics.totalUnits) * 4);
+              : occupantsEstimate;
             const activeRoofArea = useMaxCapacity
               ? maxGroundCoverage
-              : Math.round(allBuildings.reduce((s, b) => s + b.area, 0));
+              : Math.round(totalFootprint);
             const avgFloors =
-              allBuildings.length > 0
+              buildingsForMetrics.length > 0
                 ? Math.round(
-                    allBuildings.reduce((s, b) => s + (b.numFloors || 1), 0) /
-                      allBuildings.length,
+                    buildingsForMetrics.reduce(
+                      (s, b) => s + (b.numFloors || 1),
+                      0,
+                    ) / buildingsForMetrics.length,
                   )
                 : 1;
 
@@ -1622,25 +1739,38 @@ function MetricsTab() {
         />
         <Row
           label="Required"
-          value={metrics.parking.required}
-          formula={`Total Units (${metrics.totalUnits}) × parking ratio`}
+          value={parkingRequired}
+          formula={`Total Units (${totalUnitsCount}) × parking ratio`}
         />
         <Row
           label="Status"
           value={
-            totalParkingSpaces >= metrics.parking.required
+            totalParkingSpaces >= parkingRequired
               ? "✓ Compliant"
               : "✗ Deficit"
           }
           accent={
-            totalParkingSpaces >= metrics.parking.required
+            totalParkingSpaces >= parkingRequired
               ? "text-green-400"
               : "text-red-400"
           }
         />
-        <Row label="Basement" value={metrics.parking.breakdown.basement} />
-        <Row label="Stilt" value={metrics.parking.breakdown.stilt} />
-        <Row label="Surface" value={metrics.parking.breakdown.surface} />
+        <Row
+          label="Basement"
+          value={allParkingFloors
+            .filter((f) => (f.level || 0) < 0)
+            .reduce((s, f) => s + (f.parkingCapacity || 0), 0)}
+        />
+        <Row
+          label="Stilt"
+          value={allParkingFloors
+            .filter((f) => (f.level || 0) === 0)
+            .reduce((s, f) => s + (f.parkingCapacity || 0), 0)}
+        />
+        <Row
+          label="Surface"
+          value={allParkingAreas.reduce((s, p) => s + (p.capacity || 0), 0)}
+        />
         {allParkingFloors.reduce((s, f) => s + (f.evStations || 0), 0) > 0 && (
           <Row
             label="EV Charging Points"
@@ -1662,25 +1792,16 @@ function MetricsTab() {
           accent="text-blue-400"
           formula={`(GFA − Core − Circulation − Services − Amenities) ÷ GFA`}
         />
-        <Row
-          label="Total Units"
-          value={allUnits.length > 0 ? allUnits.length : metrics.totalUnits}
-          formula={
-            allUnits.length > 0
-              ? "Σ actual units from all buildings"
-              : `GFA ÷ 100 = ${Math.round(gfa)} ÷ 100`
-          }
-        />
         <Row label="Total Cores" value={allCores.length} />
         <Row
           label="Green Area / Capita"
-          value={metrics.greenArea.perCapita.toFixed(1)}
+          value={(totalGreenArea / occupantsEstimate).toFixed(1)}
           unit="m²/person"
         />
-        {metrics.roadArea > 0 && (
+        {selectedPlotData.totalRoadArea > 0 && (
           <Row
             label="Road Area"
-            value={Math.round(metrics.roadArea).toLocaleString()}
+            value={Math.round(selectedPlotData.totalRoadArea).toLocaleString()}
             unit="m²"
           />
         )}
@@ -2466,6 +2587,9 @@ function MultiBuildingBudgetTab({
   estimates,
   isLoading,
 }: MultiBuildingTabProps) {
+  const plots = useBuildingStore((state) => state.plots);
+  const selectedPlot = useSelectedPlot() ?? plots?.[0] ?? null;
+
   if (isLoading)
     return (
       <div className="p-6 text-center text-sm text-muted-foreground animate-pulse">
@@ -2484,13 +2608,46 @@ function MultiBuildingBudgetTab({
         No buildings to display
       </div>
     );
+  if (!selectedPlot)
+    return (
+      <div className="p-6 text-center text-sm text-muted-foreground">
+        Select a plot to view building costs
+      </div>
+    );
 
   const fmtCr = (v: number) => `₹${(v / 10000000).toFixed(1)} Cr`;
-  const buildings = estimates.breakdown;
-  const totalCost = estimates.total_construction_cost;
-  const totalRev = estimates.total_revenue;
-  const totalUtilities = estimates.simulation?.total_utility_cost || 0;
+  const selectedPlotBuildingIds = new Set(
+    (selectedPlot.buildings || [])
+      .filter((building) => building.visible !== false)
+      .map((building) => building.id),
+  );
+  const buildings = (estimates.breakdown || []).filter((building) =>
+    selectedPlotBuildingIds.has(building.buildingId),
+  );
+  if (buildings.length === 0)
+    return (
+      <div className="p-6 text-center text-sm text-muted-foreground">
+        No buildings to display for the selected plot
+      </div>
+    );
+
+  const totalCost = buildings.reduce(
+    (sum, building) => sum + (building.cost?.total || 0),
+    0,
+  );
+  const totalUtilities = buildings.reduce(
+    (sum, building) => sum + (building.utilityCost || 0),
+    0,
+  );
   const sim = estimates.simulation;
+  const costLo =
+    sim && estimates.total_construction_cost > 0
+      ? totalCost * (sim.cost_p10 / estimates.total_construction_cost)
+      : totalCost;
+  const costHi =
+    sim && estimates.total_construction_cost > 0
+      ? totalCost * (sim.cost_p90 / estimates.total_construction_cost)
+      : totalCost;
 
   // Calculate budget metrics
   const largestBuilding = buildings.reduce((max: any, b: any) =>
@@ -2500,6 +2657,23 @@ function MultiBuildingBudgetTab({
     Math.max(...buildings.map((b: any) => b.cost.total)) -
     Math.min(...buildings.map((b: any) => b.cost.total));
   const avgCostPerBuilding = totalCost / buildings.length;
+  const visibleBuildings = (selectedPlot.buildings || []).filter(
+    (building) => building.visible !== false,
+  );
+  const totalUnits = visibleBuildings.reduce(
+    (sum, building) => sum + (building.units?.length || 0),
+    0,
+  );
+  const unitBreakdown = visibleBuildings.reduce(
+    (acc: Record<string, number>, building) => {
+      (building.units || []).forEach((unit) => {
+        const key = unit.type || unit.unitType || "Unit";
+        acc[key] = (acc[key] || 0) + 1;
+      });
+      return acc;
+    },
+    {},
+  );
   const infrastructureShare =
     totalUtilities > 0
       ? (totalUtilities / (totalCost + totalUtilities)) * 100
@@ -2508,7 +2682,8 @@ function MultiBuildingBudgetTab({
   return (
     <div className="space-y-4 pb-4">
       {/* Summary Overview */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="space-y-3">
+        <div className="grid grid-cols-4 gap-2">
         <div className="p-2.5 rounded-lg border bg-slate-500/10 border-slate-500/20 text-center">
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
             Total Buildings
@@ -2517,13 +2692,21 @@ function MultiBuildingBudgetTab({
             {buildings.length}
           </div>
         </div>
+        <div className="p-2.5 rounded-lg border bg-emerald-500/10 border-emerald-500/20 text-center">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
+            Total Units
+          </div>
+          <div className="text-xl font-bold text-emerald-400">
+            {totalUnits}
+          </div>
+        </div>
         <div className="p-2.5 rounded-lg border bg-blue-500/10 border-blue-500/20 text-center">
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
             Project Cost Range
           </div>
           <div className="text-base font-bold text-blue-400">
             {sim
-              ? `${fmtCr(sim.cost_p10)} - ${fmtCr(sim.cost_p90)}`
+              ? `${fmtCr(costLo)} - ${fmtCr(costHi)}`
               : `~${fmtCr(totalCost)} (est.)`}
           </div>
         </div>
@@ -2535,6 +2718,25 @@ function MultiBuildingBudgetTab({
             ~{fmtCr(totalUtilities)}
           </div>
         </div>
+        </div>
+        {Object.keys(unitBreakdown).length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(unitBreakdown)
+              .sort((a, b) => b[1] - a[1])
+              .map(([type, count]) => (
+                <div
+                  key={type}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-[2px] text-[11px] shadow-sm"
+                >
+                  <span className="leading-none">🏠</span>
+                  <span className="font-medium text-slate-100">{type}</span>
+                  <span className="tabular-nums text-slate-300">
+                    {count}
+                  </span>
+                </div>
+              ))}
+          </div>
+        )}
       </div>
 
       {/* Building-wise Cost Breakdown */}
@@ -2727,6 +2929,7 @@ function FeasibilityTab() {
     (state) => state.actions.toggleVastuCompass,
   );
   const plots = useBuildingStore((state) => state.plots);
+  const selectedPlot = useSelectedPlot() ?? plots?.[0] ?? null;
   const actions = useBuildingStore((state) => state.actions);
   const generationParams = useBuildingStore((state) => state.generationParams);
   const [isGeneratingGates, setIsGeneratingGates] = useState(false);
@@ -2768,6 +2971,10 @@ function FeasibilityTab() {
   const { estimates, isLoading: isLoadingEstimates } = useProjectEstimates(
     activeProject,
     metrics,
+  );
+  const selectedPlotData = useMemo(
+    () => getSelectedPlotMetricsSource(selectedPlot),
+    [selectedPlot],
   );
 
   if (!metrics)
@@ -3001,7 +3208,14 @@ function FeasibilityTab() {
             Green Cover
           </div>
           <div className="font-bold text-xl text-green-600">
-            {metrics.greenArea.percentage.toFixed(1)}%
+            {selectedPlotData.totalPlotArea > 0
+              ? (
+                  (selectedPlotData.totalGreenArea /
+                    selectedPlotData.totalPlotArea) *
+                  100
+                ).toFixed(1)
+              : "0.0"}
+            %
           </div>
         </div>
         <div className="p-3 bg-secondary/30 rounded border text-center">
@@ -3009,10 +3223,13 @@ function FeasibilityTab() {
             Road Area
           </div>
           <div className="font-bold text-xl text-slate-500">
-            {(
-              (metrics.roadArea / Math.max(1, metrics.totalPlotArea)) *
-              100
-            ).toFixed(1)}
+            {selectedPlotData.totalPlotArea > 0
+              ? (
+                  (selectedPlotData.totalRoadArea /
+                    selectedPlotData.totalPlotArea) *
+                  100
+                ).toFixed(1)
+              : "0.0"}
             %
           </div>
         </div>
