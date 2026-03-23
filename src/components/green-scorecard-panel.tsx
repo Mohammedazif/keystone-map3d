@@ -235,7 +235,9 @@ function buildDetectedToggleState(
 ) {
   return schema.categories.reduce<Record<string, boolean>>((state, category) => {
     category.items.forEach((item) => {
-      state[item.id] = getItemAutoDetectedValidity(item, checks);
+      state[item.id] = item.mandatory
+        ? true
+        : getItemAutoDetectedValidity(item, checks);
     });
     return state;
   }, {});
@@ -290,6 +292,11 @@ export function GreenScorecard({ certificateType }: GreenScorecardProps) {
           const hasStored = Object.prototype.hasOwnProperty.call(stored, item.id);
           const storedValue = hasStored ? stored[item.id] : undefined;
 
+          if (item.mandatory) {
+            next[item.id] = hasStored ? Boolean(storedValue) : true;
+            return;
+          }
+
           if (detectedOn) {
             next[item.id] = true;
             return;
@@ -326,8 +333,7 @@ export function GreenScorecard({ certificateType }: GreenScorecardProps) {
       category.items.forEach((item) => {
         const isDetectedValid = getItemAutoDetectedValidity(item, checks);
         const isChecked = Boolean(toggleState[item.id]);
-        const countedScore =
-          isChecked && (!item.mandatory || isDetectedValid) ? item.maxScore : 0;
+        const countedScore = isChecked ? item.maxScore : 0;
 
         map[item.id] = {
           isDetectedValid,
@@ -376,7 +382,7 @@ export function GreenScorecard({ certificateType }: GreenScorecardProps) {
           return;
         }
 
-        if (!toggleState[item.id] || !evaluations[item.id]?.isDetectedValid) {
+        if (!toggleState[item.id]) {
           issues.push({ categoryId: category.id, itemId: item.id });
         }
       });
@@ -470,7 +476,7 @@ export function GreenScorecard({ certificateType }: GreenScorecardProps) {
                     {category.items.map((item) => {
                       const evaluation = evaluations[item.id];
                       const isChecked = Boolean(toggleState[item.id]);
-                      const isInvalidMandatory = item.mandatory && !evaluation?.isDetectedValid;
+                      const isInvalidMandatory = item.mandatory && !isChecked;
 
                       return (
                         <div
