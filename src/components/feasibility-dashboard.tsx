@@ -896,13 +896,23 @@ function MetricsTab() {
                       {(() => {
                         // ═══ METHOD A: Actual Geometry Area ═══
                         const coreGeomAreas = bCores.map((c: any) => {
+                          const rawCoreType = c?.type;
+                          const displayCoreType =
+                            typeof rawCoreType === "string"
+                              ? rawCoreType
+                              : rawCoreType && typeof rawCoreType === "object"
+                                ? (rawCoreType as any).type ||
+                                  (rawCoreType as any).name ||
+                                  (rawCoreType as any).utilityType ||
+                                  String((rawCoreType as any).id || "Core")
+                                : String(rawCoreType || "Core");
                           try {
                             return {
-                              type: c.type,
+                              type: displayCoreType,
                               area: Math.round(turf.area(c.geometry)),
                             };
                           } catch {
-                            return { type: c.type, area: 0 };
+                            return { type: displayCoreType, area: 0 };
                           }
                         });
                         const totalGeomArea = coreGeomAreas.reduce(
@@ -2711,6 +2721,45 @@ function MultiBuildingBudgetTab({
   const totalRev = estimates.total_revenue;
   const totalUtilities = estimates.simulation?.total_utility_cost || 0;
   const sim = estimates.simulation;
+  const getBuildingDisplayName = (building: any, index: number) => {
+    const rawName =
+      building?.buildingName ??
+      building?.name ??
+      building?.building_name ??
+      building?.properties?.buildingName;
+
+    if (typeof rawName === "string" && rawName.trim().length > 0) {
+      return rawName;
+    }
+
+    if (rawName && typeof rawName === "object") {
+      return (
+        rawName.name ||
+        rawName.label ||
+        rawName.type ||
+        rawName.utilityType ||
+        String(rawName.id || `Building ${index + 1}`)
+      );
+    }
+
+    return `Building ${index + 1}`;
+  };
+
+  const getBuildingFloorCount = (building: any) => {
+    if (Array.isArray(building?.floors)) {
+      return building.floors.length;
+    }
+
+    if (typeof building?.floors === "number") {
+      return building.floors;
+    }
+
+    if (typeof building?.numFloors === "number") {
+      return building.numFloors;
+    }
+
+    return 0;
+  };
 
   // Prefer authoritative unit counts from the project data (plots/buildings).
   const project = useProjectData();
@@ -2845,13 +2894,15 @@ function MultiBuildingBudgetTab({
             const utilityCr = usingEstimates
               ? (b.utilityCost || 0) / 10000000
               : 0;
+            const floorCount = getBuildingFloorCount(b);
+            const buildingDisplayName = getBuildingDisplayName(b, i);
             return (
               <div
                 key={i}
                 className="grid grid-cols-6 gap-2 text-[10px] p-2 rounded bg-secondary/20 border border-border/20 hover:bg-secondary/30 transition"
               >
                 <div className="font-semibold truncate">
-                  {b.buildingName || `Building ${i + 1}`}
+                  {buildingDisplayName}
                 </div>
                 <div className="text-right font-bold text-emerald-400">
                   {usingEstimates ? `~${costCr.toFixed(1)}` : "N/A"}
@@ -2866,7 +2917,7 @@ function MultiBuildingBudgetTab({
                   {(b.gfa || 0).toFixed(0)}
                 </div>
                 <div className="text-right text-purple-400">
-                  {b.floors || 0}
+                  {floorCount}
                 </div>
                 <div className="text-right text-slate-300">
                   {(() => {
@@ -2934,7 +2985,10 @@ function MultiBuildingBudgetTab({
                 .toFixed(0)}
             </div>
             <div className="text-right text-slate-300">
-              {buildings.reduce((s: number, b: any) => s + (b.floors || 0), 0)}
+              {buildings.reduce(
+                (s: number, b: any) => s + getBuildingFloorCount(b),
+                0,
+              )}
             </div>
             <div className="text-right text-slate-300">{totalUnitsAcross}</div>
           </div>
@@ -2971,7 +3025,7 @@ function MultiBuildingBudgetTab({
                 <div key={i}>
                   <div className="flex justify-between mb-1 text-[10px]">
                     <span className="text-muted-foreground truncate">
-                      {b.buildingName || `Building ${i + 1}`}
+                      {getBuildingDisplayName(b, i)}
                     </span>
                     <span className="font-semibold" style={{ color }}>
                       {usingEstimates ? `${pct.toFixed(1)}%` : "N/A"}
