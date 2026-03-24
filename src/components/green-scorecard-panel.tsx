@@ -563,9 +563,6 @@ export function GreenScorecard({ certificateType }: GreenScorecardProps) {
                                   </Badge>
                                 ) : null}
                               </div>
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                {selectedItems[item.id] || 0} / {item.maxScore}
-                              </p>
                             </div>
 
                             <div className="flex items-start gap-3 whitespace-nowrap text-right">
