@@ -369,11 +369,6 @@ export function UtilityCostsTable({ items, total, totalMin, totalMax }: UtilityC
                                 <div className="text-[10px] text-muted-foreground/70 mt-0.5 space-y-0.5">
                                     <div className="flex items-center gap-1.5">
                                         <span className="bg-secondary/30 px-1 py-0.5 rounded">{item.unit}</span>
-                                        {item.unit !== 'Fixed' && (
-                                            <span>
-                                                × ₹{calculatedRate.toLocaleString('en-IN')}/{item.unit.replace(/^[\d.]+\s*/, '')}
-                                            </span>
-                                        )}
                                     </div>
                                     {item.rateRange && (
                                         <div className="text-primary/60 font-medium">Range: {item.rateRange}</div>
@@ -390,9 +385,6 @@ export function UtilityCostsTable({ items, total, totalMin, totalMax }: UtilityC
                                         {fmt(item.amount)}
                                     </span>
                                 )}
-                                <span className="text-[9px] text-muted-foreground/60 mt-0.5">
-                                    Est. {fmt(item.minAmount && item.maxAmount ? (item.minAmount + item.maxAmount) / 2 : item.amount)}
-                                </span>
                             </div>
                         </div>
                     );

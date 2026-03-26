@@ -2863,6 +2863,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         cores: freshLayout.cores,
                         units: freshLayout.units,
                         groundFloorUnits: freshLayout.groundFloorUnits,
+                        groundFloorRemovedArea: freshLayout.groundFloorRemovedArea || 0,
                         utilities: freshLayout.utilities || f.properties?.internalUtilities || []
                     };
 
@@ -3070,6 +3071,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         numFloors: floors,
                         baseHeight: 0,
                         floors: buildingSpecificFloors,
+                        groundFloorRemovedArea: layout.groundFloorRemovedArea || 0,
                     } as Building];
                 });
 

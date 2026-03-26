@@ -680,34 +680,54 @@ export function FeasibilityReport({
               Amenities
             </strong>
             <div className="text-[9px] text-slate-600 space-y-2">
-              <div>
-                <strong className="text-slate-800">Covered (560 sq.m):</strong>
-                <ul className="list-disc pl-3">
-                  <li>
-                    Reception lobby, gym (100 sq.m), indoor games (80 sq.m)
-                  </li>
-                  <li>
-                    Multipurpose hall (120 sq.m), management office, convenience
-                    store
-                  </li>
-                </ul>
-              </div>
-              <div>
-                <strong className="text-slate-800">Open (500 sq.m):</strong>
-                <ul className="list-disc pl-3">
-                  <li>
-                    Swimming pool (12×6m), children's play area, jogging track
-                    (180m)
-                  </li>
-                  <li>
-                    Landscaping (
-                    {metrics?.greenArea?.percentage
-                      ? Math.round(metrics.greenArea.percentage * 100)
-                      : 28}
-                    % of site), yoga/meditation deck
-                  </li>
-                </ul>
-              </div>
+              {(() => {
+                const closedAmenity = (plot.buildings || []).reduce(
+                  (sum: number, b: any) => sum + (b.groundFloorRemovedArea || 0),
+                  0,
+                );
+                const bFootprint = (plot.buildings || []).reduce(
+                  (sum: number, b: any) => sum + (b.area || 0),
+                  0,
+                );
+                const openSpace = plotArea - bFootprint;
+                const greenArea = metrics?.greenArea?.total || 0;
+                const openAmenity = Math.max(0, greenArea + Math.max(0, openSpace - greenArea) * 0.3);
+                return (
+                  <>
+                    <div>
+                      <strong className="text-slate-800">
+                        Covered ({fmt(closedAmenity || 560)} sq.m):
+                      </strong>
+                      <ul className="list-disc pl-3">
+                        <li>
+                          Reception lobby, gym, indoor games
+                        </li>
+                        <li>
+                          Multipurpose hall, management office, convenience store
+                        </li>
+                      </ul>
+                    </div>
+                    <div>
+                      <strong className="text-slate-800">
+                        Open ({fmt(openAmenity || 500)} sq.m):
+                      </strong>
+                      <ul className="list-disc pl-3">
+                        <li>
+                          Swimming pool (12×6m), children's play area, jogging
+                          track (180m)
+                        </li>
+                        <li>
+                          Landscaping (
+                          {metrics?.greenArea?.percentage
+                            ? Math.round(metrics.greenArea.percentage * 100)
+                            : 28}
+                          % of site), yoga/meditation deck
+                        </li>
+                      </ul>
+                    </div>
+                  </>
+                );
+              })()}
               <p className="font-medium text-green-700 pt-1 border-t">
                 Assessment: ✔ Comprehensive amenities for {totalUnits || 64}
                 -unit project
@@ -2720,15 +2740,20 @@ export function FeasibilityReport({
         <SH>9. Amenities & Facilities</SH>
         <SH2>7.1 Ground Floor Amenities</SH2>
         {(() => {
+          // Use real ground floor removed area from buildings (closed amenity space)
+          const realRemovedArea = (plot.buildings || []).reduce(
+            (sum: number, b: any) => sum + (b.groundFloorRemovedArea || 0),
+            0,
+          );
+          // Fallback: estimate if no real data
           const towerFootprint = Math.round(
             (builtUp || 10080) / maxFloors / towers,
-          ); // rough footprint
-          const coreArea = Math.round(towerFootprint * 0.2); // typical 20% core
-          const amenitiesArea = towerFootprint - coreArea; // remaining per tower
-          const totalAmenitiesArea = amenitiesArea * towers;
+          );
+          const coreArea = Math.round(towerFootprint * 0.2);
+          const fallbackArea = (towerFootprint - coreArea) * towers;
+          const totalAmenitiesArea = realRemovedArea > 0 ? Math.round(realRemovedArea) : fallbackArea;
 
           // Ratios for distributing the total available amenities area
-          // (60+40+100+80+120+30+20+40+30+20+20 = 560 old total)
           const split = [60, 40, 100, 80, 120, 30, 20, 40, 30, 20, 20];
           const splitSum = split.reduce((acc, v) => acc + v, 0);
 

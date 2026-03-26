@@ -441,6 +441,51 @@ function MetricsTab() {
         />
       </Section>
 
+      {/* ══════════ AMENITIES ══════════ */}
+      {(() => {
+        const closedAmenity = buildingsForMetrics.reduce(
+          (s: number, b: any) => s + (b.groundFloorRemovedArea || 0),
+          0,
+        );
+        const openSpace = totalPlotArea - totalFootprint;
+        const openAmenity = Math.max(0, totalGreenArea + Math.max(0, openSpace - totalGreenArea) * 0.3);
+
+        return (
+          <Section title="🏋️ Amenities">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg border border-border/40 bg-secondary/20 p-3">
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-0.5">
+                  Closed Amenity
+                </div>
+                <div className="text-lg font-bold text-violet-400">
+                  {Math.round(closedAmenity).toLocaleString()}{" "}
+                  <span className="text-xs font-normal text-muted-foreground">
+                    m²
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground/60 italic mt-0.5">
+                  = Σ ground floor removed unit area
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-secondary/20 p-3">
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-0.5">
+                  Open Amenity
+                </div>
+                <div className="text-lg font-bold text-emerald-400">
+                  {Math.round(openAmenity).toLocaleString()}{" "}
+                  <span className="text-xs font-normal text-muted-foreground">
+                    m²
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground/60 italic mt-0.5">
+                  = Green + 30% remaining open
+                </div>
+              </div>
+            </div>
+          </Section>
+        );
+      })()}
+
       {/* ══════════ PER-BUILDING BREAKDOWN ══════════ */}
       <Section title={`🏢 Buildings (${buildingsForMetrics.length} total)`}>
         <div className="space-y-2">
@@ -1948,16 +1993,6 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
 
   const fmtCr = (v: number) => `₹${(v / 10000000).toFixed(1)} Cr`;
 
-  // Calculate revenue and profit ranges based on cost ranges
-  // Revenue is typically fixed; profit varies inversely with cost
-  const profit_p10 = totalRev - sim.cost_p90; // Lowest profit (highest cost)
-  const profit_p90 = totalRev - sim.cost_p10; // Highest profit (lowest cost)
-
-  // Calculate ROI ranges: ROI = (Profit / Cost) × 100
-  // roi_p10: pessimistic (lowest profit, highest cost)
-  // roi_p90: optimistic (highest profit, lowest cost)
-  const roi_p10 = sim.cost_p90 > 0 ? (profit_p10 / sim.cost_p90) * 100 : 0;
-  const roi_p90 = sim.cost_p10 > 0 ? (profit_p90 / sim.cost_p10) * 100 : 0;
 
   // ----- New: Additional Site Cost Components (Road, Parking, Boundary Wall) -----
   // We'll read plot/metric data directly so these values auto-update with project changes.
@@ -1996,6 +2031,46 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
   const clamp = (v: number, min: number, max: number) =>
     Math.max(min, Math.min(max, v));
 
+  // ─── Land Cost state (editable, persisted to project.underwriting) ───
+  const [landCostInput, setLandCostInput] = React.useState<string>('');
+  const landCostInitRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (project?.underwriting?.actualLandPurchaseCost && !landCostInitRef.current) {
+      setLandCostInput(String(project.underwriting.actualLandPurchaseCost));
+      landCostInitRef.current = true;
+    }
+  }, [project?.underwriting?.actualLandPurchaseCost]);
+
+  const landCostValue = parseFloat(landCostInput) || 0;
+  const landCostWithStamp = landCostValue * 1.065; // +6.5% stamp/registration/legal
+
+  // Save land cost to project underwriting on change
+  React.useEffect(() => {
+    if (landCostValue > 0 && project?.id) {
+      const timer = setTimeout(() => {
+        const uw = project.underwriting || {};
+        useBuildingStore.getState().actions.updateProject(project.id, {
+          underwriting: { ...uw, actualLandPurchaseCost: landCostValue },
+        });
+        useBuildingStore.getState().actions.saveCurrentProject();
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [landCostValue, project?.id]);
+
+  // Calculate revenue and profit ranges based on cost ranges (including land)
+  // Revenue is typically fixed; profit varies inversely with cost
+  const totalCostWithLand_p10 = sim.cost_p10 + landCostWithStamp;
+  const totalCostWithLand_p90 = sim.cost_p90 + landCostWithStamp;
+
+  const profit_p10 = totalRev - totalCostWithLand_p90; // Lowest profit (highest cost)
+  const profit_p90 = totalRev - totalCostWithLand_p10; // Highest profit (lowest cost)
+
+  // Calculate ROI ranges: ROI = (Profit / Total Cost incl. Land) × 100
+  const roi_p10 = totalCostWithLand_p90 > 0 ? (profit_p10 / totalCostWithLand_p90) * 100 : 0;
+  const roi_p90 = totalCostWithLand_p10 > 0 ? (profit_p90 / totalCostWithLand_p10) * 100 : 0;
+
   // Calculations (reactive)
   const roadMin = Math.round(5000 * roadArea);
   const roadMax = Math.round(10000 * roadArea);
@@ -2024,16 +2099,16 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
   return (
     <div className="space-y-4 pb-4">
       {/* Summary Hero — Range-based */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="p-2.5 rounded-lg border bg-slate-500/10 border-slate-500/20 text-center">
+      <div className="grid grid-cols-4 gap-2">
+        <div className="p-2.5 rounded-lg border bg-slate-500/10 border-slate-500/20 text-center flex flex-col justify-center">
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
             Project Cost (P10–P90)
           </div>
           <div className="text-base font-bold">
-            {fmtCr(sim.cost_p10)} – {fmtCr(sim.cost_p90)}
+            {fmtCr(totalCostWithLand_p10)} – {fmtCr(totalCostWithLand_p90)}
           </div>
         </div>
-        <div className="p-2.5 rounded-lg border bg-emerald-500/10 border-emerald-500/20 text-center">
+        <div className="p-2.5 rounded-lg border bg-emerald-500/10 border-emerald-500/20 text-center flex flex-col justify-center">
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
             Profit (P10–P90)
           </div>
@@ -2043,7 +2118,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
         </div>
         <div
           className={cn(
-            "p-2.5 rounded-lg border text-center",
+            "p-2.5 rounded-lg border text-center flex flex-col justify-center",
             profit > 0
               ? "bg-blue-500/10 border-blue-500/20"
               : "bg-red-500/10 border-red-500/20",
@@ -2060,6 +2135,25 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
           >
             {roi_p10.toFixed(1)}% – {roi_p90.toFixed(1)}%
           </div>
+        </div>
+        
+        {/* Land Cost Input Card */}
+        <div className="p-2.5 rounded-lg border bg-amber-500/10 border-amber-500/20 text-center flex flex-col justify-center">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider flex items-center justify-center gap-1 mb-0.5 whitespace-nowrap">
+            Land Cost
+            {landCostValue > 0 && (
+              <span className="text-[9px] normal-case opacity-70">
+                (w/ stamp: {fmtCr(landCostWithStamp)})
+              </span>
+            )}
+          </div>
+          <input
+            type="number"
+            className="w-full flex-1 min-w-0 bg-transparent text-center text-base font-bold text-amber-500 placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-amber-500/50 rounded [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            placeholder="Enter Land Cost (₹)"
+            value={landCostInput}
+            onChange={(e) => setLandCostInput(e.target.value)}
+          />
         </div>
       </div>
 
@@ -3472,6 +3566,43 @@ function FeasibilityTab() {
     return "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]";
   };
 
+  /** Returns border, background-tint, icon-color per card section */
+  const getCardTheme = (label: string) => {
+    const l = label.toLowerCase();
+    if (l.includes("bylaw"))
+      return {
+        border: "border-blue-500/40",
+        bg: "bg-blue-950/30",
+        iconColor: "text-blue-400",
+        headerBg: "bg-blue-900/20",
+        accentText: "text-blue-300",
+      };
+    if (l.includes("green"))
+      return {
+        border: "border-emerald-500/40",
+        bg: "bg-emerald-950/30",
+        iconColor: "text-emerald-400",
+        headerBg: "bg-emerald-900/20",
+        accentText: "text-emerald-300",
+      };
+    if (l.includes("vastu"))
+      return {
+        border: "border-amber-500/40",
+        bg: "bg-amber-950/30",
+        iconColor: "text-amber-400",
+        headerBg: "bg-amber-900/20",
+        accentText: "text-amber-300",
+      };
+    // default / simulation beta
+    return {
+      border: "border-border/50",
+      bg: "bg-secondary/20",
+      iconColor: "text-muted-foreground",
+      headerBg: "",
+      accentText: "text-muted-foreground",
+    };
+  };
+
   const getCertLabelForScore = (score: number, cert?: string) => {
     if (!cert) return null;
     const s = Math.round(score || 0);
@@ -3534,13 +3665,14 @@ function FeasibilityTab() {
 
   const sim = estimates?.simulation;
 
-  // Calculate ROI ranges based on cost ranges
+  // Calculate ROI ranges based on cost ranges (including land cost)
   const totalRev = estimates?.total_revenue || 0;
+  const dashLandCost = (activeProject?.underwriting?.actualLandPurchaseCost || 0) * 1.065;
   const roi_p10 = sim?.cost_p90
-    ? ((totalRev - sim.cost_p90) / sim.cost_p90) * 100
+    ? ((totalRev - sim.cost_p90 - dashLandCost) / (sim.cost_p90 + dashLandCost)) * 100
     : 0;
   const roi_p90 = sim?.cost_p10
-    ? ((totalRev - sim.cost_p10) / sim.cost_p10) * 100
+    ? ((totalRev - sim.cost_p10 - dashLandCost) / (sim.cost_p10 + dashLandCost)) * 100
     : 0;
 
   return (
@@ -3616,12 +3748,14 @@ function FeasibilityTab() {
       )}
 
       <div className="space-y-3">
-        {complianceCards.map((card, idx) => (
-          <Card key={idx} className="bg-secondary/20 border-border/50">
-            <CardHeader className="p-3 pb-2 flex flex-row items-center justify-between space-y-0">
+        {complianceCards.map((card, idx) => {
+          const theme = getCardTheme(card.label);
+          return (
+          <Card key={idx} className={cn(theme.bg, theme.border)}>
+            <CardHeader className={cn("p-3 pb-2 flex flex-row items-center justify-between space-y-0 rounded-t-lg", theme.headerBg)}>
               <div>
                 <CardTitle className="text-base font-semibold flex items-center gap-2">
-                  <card.icon className="h-4 w-4" /> {card.label}
+                  <card.icon className={cn("h-4 w-4", theme.iconColor)} /> <span className={theme.accentText}>{card.label}</span>
                 </CardTitle>
 
                 {/* Render certification / GRIHA stars or Vastu grade beneath the header title */}
@@ -4016,7 +4150,7 @@ function FeasibilityTab() {
               {card.control}
             </CardContent>
           </Card>
-        ))}
+          );})}
       </div>
 
       {/* Project Estimates Section — Range-based */}

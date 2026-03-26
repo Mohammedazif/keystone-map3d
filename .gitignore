@@ -129,9 +129,26 @@ client_proposal.md.resolved
 UNDERWRITING & RISK ASSESSMENT REPORT.txt
 tsc-errors.log
 standard cost 2.txt
-admin panel data.json
+admin panel data.jsonDone! Here's what was implemented:
+
+Land Cost Input in Budget Tab:
+
+Added a Land Cost (₹) input field at the top of the Budget tab
+Shows the "With Stamp/Legal" amount (+6.5%) next to the input
+Auto-saves to project.underwriting.actualLandPurchaseCost (persists across sessions)
+ROI/Profit now includes Land Cost:
+
+Project Cost = Construction Cost + Land Cost (with stamp/legal)
+Profit = Revenue − (Construction + Land)
+ROI = Profit / Total Cost × 100
+Both Dashboard and Budget tabs use the same land-cost-inclusive formula
+Reports auto-connected:
+
+Both feasibility-report and underwriting-report already read from project.underwriting.actualLandPurchaseCost, so the value you enter in the Budget tab will flow through to both reports automatically.
+Run npm run dev to test.
 patch.py
 scripts/test-rag.ts
 test-rag.ts
 /scripts
 keystone phase 1.2 proposals.md
+admin panel data.json

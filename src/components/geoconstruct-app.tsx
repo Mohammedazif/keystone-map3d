@@ -6,7 +6,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe, Wand2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { Bot, MapPin, PanelRight, ArrowLeft, Save, Layers, PanelLeft, Loader2, BookCopy, Sparkles, Bookmark, Leaf, Globe, Wand2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, TrendingUp } from 'lucide-react';
 import { useGreenRegulations } from '@/hooks/use-green-regulations';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -33,6 +33,7 @@ const SimulationDataPanel = dynamic(() => import('./simulation-data-panel').then
 const LocationConnectivityPanel = dynamic(() => import('./location-connectivity-panel').then(m => ({ default: m.LocationConnectivityPanel })), { ssr: false });
 const GreenScorecardPanel = dynamic(() => import('./green-scorecard-panel').then(m => ({ default: m.GreenScorecardPanel })), { ssr: false });
 const BhuvanPanel = dynamic(() => import('./bhuvan-panel').then(m => ({ default: m.BhuvanPanel })), { ssr: false });
+const LandIntelligencePanel = dynamic(() => import('./land-intelligence-panel').then(m => ({ default: m.LandIntelligencePanel })), { ssr: false });
 const DefineZoneModal = dynamic(() => import('./define-zone-modal').then(m => ({ default: m.DefineZoneModal })), { ssr: false });
 const AiScenarioViewerModal = dynamic(() => import('./ai-scenario-viewer-modal').then(m => ({ default: m.AiScenarioViewerModal })), { ssr: false });
 const RegulationViewerModal = dynamic(() => import('./regulation-viewer-modal').then(m => ({ default: m.RegulationViewerModal })), { ssr: false });
@@ -360,6 +361,9 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                     <TabsTrigger value="location" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Location">
                       <MapPin className="h-4 w-4" />
                     </TabsTrigger>
+                    <TabsTrigger value="intelligence" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Land Intelligence">
+                      <TrendingUp className="h-4 w-4" />
+                    </TabsTrigger>
                   </TabsList>
                 </div>
 
@@ -405,6 +409,9 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                   </TabsContent>
                   <TabsContent value="bhuvan" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
                     <BhuvanPanel embedded={true} />
+                  </TabsContent>
+                  <TabsContent value="intelligence" className="flex-1 overflow-hidden m-0 p-0 data-[state=active]:block h-full">
+                    <LandIntelligencePanel />
                   </TabsContent>
                 </div>
               </Tabs>

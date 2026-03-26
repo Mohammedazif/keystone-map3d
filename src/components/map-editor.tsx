@@ -428,33 +428,17 @@ export function MapEditor({
       const { drawingState, drawingPoints, activeBhuvanLayer, plots } =
         getStoreState();
 
-      if (
-        typeof drawingState.objectType !== "string" ||
-        drawingState.objectType.toLowerCase() === "move"
-      )
-        return;
-
-      // ...rotation tool map click logic removed...
-
-      // Defensive check for Rotate tool (fix invalid comparison)
-      if (
-        typeof drawingState.objectType === "string" &&
-        drawingState.objectType.toLowerCase() === "rotate"
-      ) {
-        // Rotation tool logic (if any) would go here
-        return;
-      }
-
+      // ── Bhuvan GetFeatureInfo: runs regardless of drawing tool state ──
       if (activeBhuvanLayer) {
         if (actions) actions.setBhuvanData(null, true);
-        const mapInst = map.current;
-        if (mapInst) {
+        const mapInst2 = map.current;
+        if (mapInst2) {
           const pxBuffer = 5;
-          const sw = mapInst.unproject([
+          const sw = mapInst2.unproject([
             e.point.x - pxBuffer,
             e.point.y + pxBuffer,
           ]);
-          const ne = mapInst.unproject([
+          const ne = mapInst2.unproject([
             e.point.x + pxBuffer,
             e.point.y - pxBuffer,
           ]);
@@ -479,10 +463,11 @@ export function MapEditor({
             }
           }
 
+          const distHint = getStoreState().districtNameHint;
           const layerName = buildBhuvanLayerName(
             activeBhuvanLayer,
             stateCode,
-            undefined,
+            distHint,
             plotLat,
             plotLng,
           );
@@ -547,6 +532,21 @@ export function MapEditor({
               );
             });
         }
+      }
+
+      // ── Drawing tool guards: stop here for non-drawing modes ──
+      if (
+        typeof drawingState.objectType !== "string" ||
+        drawingState.objectType.toLowerCase() === "move"
+      )
+        return;
+
+      // Defensive check for Rotate tool
+      if (
+        typeof drawingState.objectType === "string" &&
+        drawingState.objectType.toLowerCase() === "rotate"
+      ) {
+        return;
       }
 
       if (drawingState.isDrawing) {

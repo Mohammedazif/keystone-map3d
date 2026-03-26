@@ -1,13 +1,13 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useBuildingStore, useSelectedPlot } from '@/hooks/use-building-store';
 import { Loader2, Globe, Info, MousePointer2, AlertTriangle, MapPin } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { BHUVAN_THEMES, getIndianStateCode, findBhuvanLayerByCoord, buildBhuvanLayerName, isLayerAvailableInIndex, BHUVAN_EXTENTS, getBestBhuvanDistrict } from '@/lib/bhuvan-utils';
+import { BHUVAN_THEMES, getIndianStateCode, findBhuvanLayerByCoord, buildBhuvanLayerName, isLayerAvailableInIndex, BHUVAN_EXTENTS, getBestBhuvanDistrict, getBhuvanWmsUrl } from '@/lib/bhuvan-utils';
 
 interface BhuvanPanelProps {
   embedded?: boolean;
@@ -287,17 +287,14 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                               Legend
                             </Label> */}
                           </div>
-                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
-                            {activeTheme?.legend.map((item, i) => (
-                              <div key={i} className="flex items-center gap-1.5 py-0.5">
-                                <div
-                                  className="w-2.5 h-2.5 rounded-sm shrink-0 border border-black/10"
-                                  style={{ backgroundColor: item.color }}
-                                />
-                                <span className="truncate text-muted-foreground/90">{item.label}</span>
-                              </div>
-                            ))}
-                          </div>
+                          <BhuvanLegend
+                            themeId={activeBhuvanLayer!}
+                            stateCode={stateCode}
+                            districtNameHint={districtNameHint}
+                            plotLat={plotLat}
+                            plotLng={plotLng}
+                            fallbackLegend={activeTheme?.legend}
+                          />
                         </div>
 
                         {/* Feature Info (if any) */}
@@ -310,10 +307,13 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                             {isFetchingBhuvan && <Loader2 className="h-3 w-3 animate-spin text-primary" />}
                           </div>
                           {bhuvanData ? (
-                            <div 
-                              className="text-[10px] leading-tight max-h-32 overflow-auto bhuvan-info-content prose prose-invert prose-xs [&_table]:w-full [&_table]:text-[9px] [&_th]:p-1 [&_td]:p-1"
-                              dangerouslySetInnerHTML={{ __html: bhuvanData }} 
-                            />
+                            <ScrollArea className="h-32 w-full rounded-md border border-border/50 bg-background/50">
+                              <div 
+                                className="p-2 text-[10px] leading-tight w-max min-w-full bhuvan-info-content [&_table]:w-full [&_table]:text-[9px] [&_table]:border-collapse [&_th]:p-1.5 [&_th]:bg-muted/50 [&_th]:text-left [&_th]:font-semibold [&_td]:p-1.5 [&_td]:border-t [&_td]:border-border/50 [&_*]:!bg-transparent [&_*]:!text-foreground [&_*]:!border-border/50"
+                                dangerouslySetInnerHTML={{ __html: bhuvanData }} 
+                              />
+                              <ScrollBar orientation="horizontal" />
+                            </ScrollArea>
                           ) : (
                             <p className="text-[10px] text-muted-foreground italic text-center py-1">
                               {isFetchingBhuvan ? "NRSC lookup..." : "Click plot on map to query"}
@@ -333,4 +333,141 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
   );
 }
 
-const isActiveCategory = false;
+// ── Dynamic Legend from WMS GetLegendGraphic ──
+function BhuvanLegend({
+  themeId,
+  stateCode,
+  districtNameHint,
+  plotLat,
+  plotLng,
+  fallbackLegend,
+}: {
+  themeId: string;
+  stateCode: string;
+  districtNameHint?: string;
+  plotLat?: number;
+  plotLng?: number;
+  fallbackLegend?: { label: string; color: string }[];
+}) {
+  const [imgError, setImgError] = useState(false);
+  const [legendData, setLegendData] = useState<{ label: string; color: string }[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const legendUrl = useMemo(() => {
+    const theme = BHUVAN_THEMES.find(t => t.id === themeId);
+    if (!theme) return null;
+
+    const layerName = buildBhuvanLayerName(themeId, stateCode, districtNameHint, plotLat, plotLng);
+    const bhuvanBaseUrl = getBhuvanWmsUrl(theme);
+
+    const url = new URL(window.location.origin + '/api/bhuvan');
+    url.searchParams.set('_bhuvanUrl', bhuvanBaseUrl);
+    url.searchParams.set('service', 'WMS');
+    url.searchParams.set('version', '1.1.1');
+    url.searchParams.set('request', 'GetLegendGraphic');
+    url.searchParams.set('layer', layerName);
+    url.searchParams.set('format', 'image/png');
+    url.searchParams.set('width', '18');
+    url.searchParams.set('height', '18');
+    return url.toString();
+  }, [themeId, stateCode, districtNameHint, plotLat, plotLng]);
+
+  // Fetch JSON version to render as native HTML
+  React.useEffect(() => {
+    if (!legendUrl) return;
+    setLoading(true);
+    setImgError(false);
+    
+    const jsonUrl = new URL(legendUrl);
+    jsonUrl.searchParams.set('format', 'application/json');
+
+    fetch(jsonUrl.toString())
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.Legend && data.Legend[0] && data.Legend[0].rules) {
+          const rules = data.Legend[0].rules;
+          const parsed = rules.map((r: any) => {
+            let color = '#888';
+            if (r.symbolizers && r.symbolizers.length > 0) {
+              const sym = r.symbolizers[0];
+              if (sym.Polygon?.fill) color = sym.Polygon.fill;
+              else if (sym.Line?.stroke) color = sym.Line.stroke;
+              else if (sym.Polygon?.['graphic-fill']?.graphics?.[0]?.fill) color = sym.Polygon['graphic-fill'].graphics[0].fill;
+              else if (r.symbolizers[1]?.Polygon?.['graphic-fill']?.graphics?.[0]?.fill) color = r.symbolizers[1].Polygon['graphic-fill'].graphics[0].fill;
+            }
+            return {
+              label: r.title || r.name || 'Unknown',
+              color
+            };
+          }).filter((item: any) => item.label && item.label !== 'Unknown');
+          setLegendData(parsed.length > 0 ? parsed : null);
+        } else {
+          setLegendData(null);
+        }
+      })
+      .catch((err) => {
+        console.error("Legend JSON parse error, falling back to image:", err);
+        setLegendData(null);
+      })
+      .finally(() => setLoading(false));
+  }, [legendUrl]);
+
+  if (loading) {
+    return <div className="h-20 w-full flex items-center justify-center text-[10px] animate-pulse text-muted-foreground bg-background/50 rounded-md border border-border/50">Fetching legend...</div>;
+  }
+
+  // 1. Render Native JSON Legend if available (Best Quality!)
+  if (legendData && legendData.length > 0) {
+    return (
+      <ScrollArea className="w-full h-40 rounded-md border border-border/50 bg-background/50 p-2">
+        <div className="grid grid-cols-1 w-full gap-y-1.5">
+          {legendData.map((item, i) => (
+            <div key={i} className="flex items-center gap-1.5 min-w-0" title={item.label}>
+              <div
+                className="w-2.5 h-2.5 rounded-[2px] shrink-0 border border-black/20 dark:border-white/10"
+                style={{ backgroundColor: item.color }}
+              />
+              <span className="truncate text-[10px] font-medium text-foreground/90 flex-1">{item.label}</span>
+            </div>
+          ))}
+        </div>
+      </ScrollArea>
+    );
+  }
+
+  // 2. Fallback to PNG Image if JSON failed
+  if (!imgError && legendUrl) {
+    return (
+      <ScrollArea className="w-full h-40 rounded-md border border-border/50 bg-white dark:bg-black">
+        <div className="p-2 flex items-start justify-start w-max min-w-full">
+          <img
+            src={legendUrl}
+            alt="Legend"
+            className="max-w-none h-auto rounded-sm dark:invert dark:hue-rotate-180"
+            onError={() => setImgError(true)}
+          />
+        </div>
+        <ScrollBar orientation="horizontal" />
+      </ScrollArea>
+    );
+  }
+
+  // 3. Absolute Fallback to hardcoded theme config
+  if (fallbackLegend) {
+    return (
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+        {fallbackLegend.map((item, i) => (
+          <div key={i} className="flex items-center gap-1.5 py-0.5">
+            <div
+              className="w-2.5 h-2.5 rounded-sm shrink-0 border border-black/10"
+              style={{ backgroundColor: item.color }}
+            />
+            <span className="truncate text-muted-foreground/90">{item.label}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return null;
+}

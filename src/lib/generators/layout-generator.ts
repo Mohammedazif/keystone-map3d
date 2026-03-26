@@ -161,6 +161,7 @@ export function generateBuildingLayout(
   cores: Core[];
   units: Unit[];
   groundFloorUnits: Unit[]; // Units with road-facing strip removed (for ground floor use)
+  groundFloorRemovedArea: number; // Area (sq.m) of units removed from ground floor (= closed amenity space)
   entrances: any[];
   utilities: UtilityArea[];
   efficiency?: number;
@@ -606,7 +607,7 @@ export function generateBuildingLayout(
 
   if (cores.length === 0) {
     console.warn("[Layout Generator] No cores placed, returning empty layout");
-    return { cores: [], units: [], groundFloorUnits: [], utilities: [], entrances: [] };
+    return { cores: [], units: [], groundFloorUnits: [], groundFloorRemovedArea: 0, utilities: [], entrances: [] };
   }
 
   let coreGeom = cores[0].geometry;
@@ -1494,64 +1495,27 @@ export function generateBuildingLayout(
   // NOTE: This runs BEFORE the master rotation block so that unit centroids and
   // strip/bbox coordinates are all in the same working (pre-rotation-back) space.
   //
-  // STRATEGY: Building strips run along the LONG axis. The road-facing side is one
-  // of the SHORT-axis ends (front façade). We detect which end is road-facing and
-  // remove units within 30% of the building from that edge — across BOTH strips.
-  // This avoids removing an entire strip and instead removes a band at the front.
+  // STRATEGY:
+  //   1. ≤3 units total → remove only 1 unit (prefer 2BHK)
+  //   2. >3 units → remove units from BOTH EDGES of the building (strip ends),
+  //      one from each end. Always prefer removing 2BHK first.
+  //      This removes from the WIDTH side, not the LENGTH (road) side.
+  //
+  // UNIT TYPE PRIORITY: Always prefer removing 2BHK → 3BHK → 4BHK
   let groundFloorUnits: Unit[] = units;
+  let groundFloorRemovedAreaSqm = 0;
 
   if (params.groundFloorRoadSideReduction && units.length > 0) {
     try {
-      const wBbox = turf.bbox(workingPoly); // bbox in working (aligned) space
+      const wBbox = turf.bbox(workingPoly);
       const [wMinX, wMinY, wMaxX, wMaxY] = wBbox;
-      const bldgWidth = wMaxX - wMinX;   // degrees, E-W
-      const bldgHeight = wMaxY - wMinY;  // degrees, N-S
+      const bldgWidth = wMaxX - wMinX;
+      const bldgHeight = wMaxY - wMinY;
+      const isHorizBuilding = bldgWidth > bldgHeight;
 
-      // The SHORT axis of the building is the one perpendicular to the strips.
-      // Strips run along the long axis, so the road-facing façade is on the short side.
-      //   Long axis = E-W (horizontal) → short axis = N-S → road faces S or N
-      //   Long axis = N-S (vertical)   → short axis = E-W → road faces E or W
-      let roadSide: string;
-
-      if (params.plotCentroid) {
-          // Vector from plot center to building center
-          const bldgCentroid = turf.centroid(buildingPoly).geometry.coordinates;
-          const dX = bldgCentroid[0] - params.plotCentroid[0];
-          const dY = bldgCentroid[1] - params.plotCentroid[1];
-          const vPt = turf.point([dX, dY]);
-          
-          // Rotate this vector by the same angle the building was rotated to become axis-aligned in working space
-          // turf.transformRotate expects clockwise angle. The building was rotated by -rotationAngle.
-          const rotatedVPt = turf.transformRotate(vPt, -rotationAngle, { pivot: [0, 0] });
-          const [rx, ry] = rotatedVPt.geometry.coordinates;
-
-          // Find the dominant axis of the rotated outward vector
-          if (Math.abs(rx) > Math.abs(ry)) {
-              roadSide = rx > 0 ? "E" : "W";
-          } else {
-              roadSide = ry > 0 ? "N" : "S";
-          }
-          console.log(`[Layout Gen] Computed peripheral roadSide=${roadSide} using plotCentroid. dX=${dX.toFixed(6)}, dY=${dY.toFixed(6)}, rx=${rx.toFixed(6)}, ry=${ry.toFixed(6)}`);
-      } else {
-        // Fallback guess if plotCentroid is missing
-        const isHorizBuilding = bldgWidth > bldgHeight;
-        const roadSides = params.roadAccessSides && params.roadAccessSides.length > 0
-          ? params.roadAccessSides
-          : [];
-
-        if (isHorizBuilding) {
-          const preferred = roadSides.find(s => s === "S" || s === "N");
-          roadSide = preferred ?? (roadSides.find(s => s === "E" || s === "W") ?? "S");
-        } else {
-          const preferred = roadSides.find(s => s === "E" || s === "W");
-          roadSide = preferred ?? (roadSides.find(s => s === "S" || s === "N") ?? "E");
-        }
-      }
-
-      // Find the extremes of all units to determine the outermost edges
+      // Unit bboxes and extremes
       const uBboxes = units.map(u => u.geometry ? turf.bbox(u.geometry) : null);
       let minU_X = Infinity, minU_Y = Infinity, maxU_X = -Infinity, maxU_Y = -Infinity;
-      
       uBboxes.forEach(b => {
         if (!b) return;
         minU_X = Math.min(minU_X, b[0]);
@@ -1560,46 +1524,94 @@ export function generateBuildingLayout(
         maxU_Y = Math.max(maxU_Y, b[3]);
       });
 
-      // Use a 5% tolerance of the total unit span to catch the outermost units reliably
-      const tolX = (maxU_X - minU_X) * 0.05;
-      const tolY = (maxU_Y - minU_Y) * 0.05;
+      // Unit type priority: lower = remove first (2BHK before 3BHK before 4BHK)
+      const getUnitRemovalPriority = (type: string): number => {
+        const t = (type || "").toLowerCase();
+        if (t.includes("1bhk") || t.includes("1 bhk")) return 1;
+        if (t.includes("2bhk") || t.includes("2 bhk")) return 2;
+        if (t.includes("3bhk") || t.includes("3 bhk")) return 3;
+        if (t.includes("4bhk") || t.includes("4 bhk")) return 4;
+        if (t.includes("5bhk") || t.includes("5 bhk")) return 5;
+        return 2; // default
+      };
 
-      const keepUnits: Unit[] = [];
-      let removedCount = 0;
+      const removedSet = new Set<number>();
 
-      units.forEach((u, i) => {
-        if (!u.geometry || !uBboxes[i]) { keepUnits.push(u); return; }
-        const b = uBboxes[i]!;
-        let isRoadFacing = false;
+      if (units.length <= 3) {
+        // ── ≤3 UNITS: Remove only 1 unit, prefer smallest type (2BHK) ──
+        // Sort ALL units by priority (smallest type first)
+        const sorted = units.map((u, i) => ({ i, priority: getUnitRemovalPriority(u.type) }))
+          .sort((a, b) => a.priority - b.priority);
+        removedSet.add(sorted[0].i);
+        console.log(
+          `[Layout Gen] ≤3 units (${units.length}): removed 1 unit (${units[sorted[0].i].type})`,
+        );
+      } else {
+        // ── >3 UNITS: Remove from BOTH EDGES of building (width ends) ──
+        // For horizontal building: strips run E-W. Edge units are at E end and W end.
+        // For vertical building: strips run N-S. Edge units are at N end and S end.
+        // We find units at EACH end, pick 1 per end (prefer 2BHK), remove from both.
+        const endTol = 0.15; // 15% of span to identify edge units
 
-        // A unit is road-facing if its bounding box touches the outermost edge on the road side
-        if (roadSide === "S") {
-          isRoadFacing = b[1] <= minU_Y + tolY;
-        } else if (roadSide === "N") {
-          isRoadFacing = b[3] >= maxU_Y - tolY;
-        } else if (roadSide === "W") {
-          isRoadFacing = b[0] <= minU_X + tolX;
-        } else if (roadSide === "E") {
-          isRoadFacing = b[2] >= maxU_X - tolX;
-        }
+        // Classify units into "start-end" and "far-end" of the strips
+        let startEndIndices: number[] = [];  // e.g. W end for horizontal, S end for vertical
+        let farEndIndices: number[] = [];     // e.g. E end for horizontal, N end for vertical
 
-        if (isRoadFacing) {
-          removedCount++;
-        } else {
-          keepUnits.push(u);
-        }
+        units.forEach((u, i) => {
+          if (!u.geometry || !uBboxes[i]) return;
+          const b = uBboxes[i]!;
+
+          if (isHorizBuilding) {
+            // Strips run E-W. Width edges are at minX (W) and maxX (E).
+            const spanX = maxU_X - minU_X;
+            if (b[0] <= minU_X + spanX * endTol) startEndIndices.push(i);
+            if (b[2] >= maxU_X - spanX * endTol) farEndIndices.push(i);
+          } else {
+            // Strips run N-S. Width edges are at minY (S) and maxY (N).
+            const spanY = maxU_Y - minU_Y;
+            if (b[1] <= minU_Y + spanY * endTol) startEndIndices.push(i);
+            if (b[3] >= maxU_Y - spanY * endTol) farEndIndices.push(i);
+          }
+        });
+
+        // Calculate total area at each end to decide which end to remove
+        const startEndArea = startEndIndices.reduce((sum, i) => {
+          return sum + (units[i].geometry ? turf.area(units[i].geometry!) : units[i].targetArea || 0);
+        }, 0);
+        const farEndArea = farEndIndices.reduce((sum, i) => {
+          return sum + (units[i].geometry ? turf.area(units[i].geometry!) : units[i].targetArea || 0);
+        }, 0);
+
+        // Pick the end with LESS total area (smaller units) and remove all units from that end
+        const chosenEnd = startEndArea <= farEndArea ? startEndIndices : farEndIndices;
+        const chosenLabel = startEndArea <= farEndArea ? "start" : "far";
+        chosenEnd.forEach(i => removedSet.add(i));
+
+        console.log(
+          `[Layout Gen] >3 units (${units.length}): removed ${removedSet.size} units from ${chosenLabel}-end (${startEndArea.toFixed(0)}sqm vs ${farEndArea.toFixed(0)}sqm). Types: ${[...removedSet].map(i => units[i].type).join(', ')}`,
+        );
+      }
+
+      // Build keepUnits from the removal set
+      const keepUnits = units.filter((_, i) => !removedSet.has(i));
+
+      // Compute removed area for amenity tracking
+      let removedAreaSqm = 0;
+      removedSet.forEach(i => {
+        if (units[i].geometry) removedAreaSqm += turf.area(units[i].geometry!);
       });
 
-      // Safety: if ALL or None would be removed (bad detection), keep all
-      if (keepUnits.length === 0 || removedCount === 0) {
+      // Safety: if ALL or None would be removed, keep all
+      if (keepUnits.length === 0 || removedSet.size === 0) {
         console.warn(
-          `[Layout Gen] Ground floor reduction: no valid units found for road side "${roadSide}" — skipping.`,
+          `[Layout Gen] Ground floor reduction: nothing to remove — skipping.`,
         );
         groundFloorUnits = units;
       } else {
         groundFloorUnits = keepUnits;
+        groundFloorRemovedAreaSqm = removedAreaSqm;
         console.log(
-          `[Layout Gen] Ground floor road-side reduction: side=${roadSide}, removed=${removedCount}/${units.length}, remaining=${groundFloorUnits.length}`,
+          `[Layout Gen] Ground floor reduction: removed=${removedSet.size}/${units.length}, removedArea=${Math.round(removedAreaSqm)}m², remaining=${groundFloorUnits.length}`,
         );
       }
     } catch (e) {
@@ -1664,6 +1676,7 @@ export function generateBuildingLayout(
     cores,
     units,
     groundFloorUnits,
+    groundFloorRemovedArea: groundFloorRemovedAreaSqm,
     entrances,
     utilities,
     efficiency: parseFloat(efficiencyPercent),
@@ -1698,6 +1711,7 @@ function generateRetailLayout(
   cores: Core[];
   units: Unit[];
   groundFloorUnits: Unit[];
+  groundFloorRemovedArea: number;
   entrances: any[];
   utilities: UtilityArea[];
   efficiency?: number;
@@ -2013,6 +2027,7 @@ function generateRetailLayout(
     cores,
     units,
     groundFloorUnits: units, // Retail: all units available on ground floor
+    groundFloorRemovedArea: 0, // Commercial: no units removed
     entrances,
     utilities,
     efficiency: parseFloat(efficiency.toFixed(1)),
@@ -2043,6 +2058,7 @@ function generateOfficeLayout(
   cores: Core[];
   units: Unit[];
   groundFloorUnits: Unit[];
+  groundFloorRemovedArea: number;
   entrances: any[];
   utilities: UtilityArea[];
   efficiency?: number;
@@ -2304,6 +2320,7 @@ function generateOfficeLayout(
     cores,
     units,
     groundFloorUnits: units,
+    groundFloorRemovedArea: 0, // Commercial: no units removed
     entrances,
     utilities,
     efficiency: parseFloat(efficiency.toFixed(1)),

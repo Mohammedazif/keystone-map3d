@@ -84,6 +84,26 @@ type BuildingTypology = 'point' | 'slab' | 'lshaped' | 'ushaped' | 'oshaped' | '
 type ParkingTypology = 'none' | 'ug' | 'pod' | 'surface';
 type LandUseType = 'residential' | 'commercial' | 'mixed' | 'institutional';
 
+// Height-wise setback table (NBC / highrise norms)
+// Each entry: maxHeightM = upper bound (inclusive), setbackM = min setback on all sides
+const HEIGHT_SETBACK_TABLE: { maxHeightM: number; setbackM: number }[] = [
+    { maxHeightM: 15, setbackM: 5 },
+    { maxHeightM: 18, setbackM: 6 },
+    { maxHeightM: 24, setbackM: 8 },
+    { maxHeightM: 30, setbackM: 10 },
+    { maxHeightM: 40, setbackM: 12 },
+    { maxHeightM: 50, setbackM: 14 },
+    { maxHeightM: Infinity, setbackM: 16 }, // 55m+
+];
+
+/** Returns the minimum setback (all sides) for a given building height. */
+function getHeightBasedSetback(buildingHeightM: number): number {
+    for (const { maxHeightM, setbackM } of HEIGHT_SETBACK_TABLE) {
+        if (buildingHeightM <= maxHeightM) return setbackM;
+    }
+    return 16;
+}
+
 export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) {
     const { actions, plots, generationParams, designOptions, selectedObjectId } = useBuildingStore(state => ({
         actions: state.actions,
@@ -116,6 +136,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
     const [sideSetback, setSideSetback] = useState<number | undefined>(undefined);
     const [siteCoverage, setSiteCoverage] = useState(0.6);
     const [useFloorLimit, setUseFloorLimit] = useState(true);
+    const [useHeightBasedSetback, setUseHeightBasedSetback] = useState(false);
     const [infillSetback, setInfillSetback] = useState(6);
     const [infillMode, setInfillMode] = useState<'ring' | 'grid' | 'hybrid'>('hybrid');
 
@@ -356,6 +377,22 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             return;
         }
 
+        // Compute effective setback: height-based override if toggle is on
+        const estimatedMaxHeight = floorRange[1] * floorHeight;
+        const heightDerivedSetback = getHeightBasedSetback(estimatedMaxHeight);
+        const effectiveSetback = useHeightBasedSetback
+            ? Math.max(setback, heightDerivedSetback)
+            : setback;
+        const effectiveFront = useHeightBasedSetback
+            ? Math.max(frontSetback ?? 0, heightDerivedSetback) || undefined
+            : frontSetback;
+        const effectiveRear = useHeightBasedSetback
+            ? Math.max(rearSetback ?? 0, heightDerivedSetback) || undefined
+            : rearSetback;
+        const effectiveSide = useHeightBasedSetback
+            ? Math.max(sideSetback ?? 0, heightDerivedSetback) || undefined
+            : sideSetback;
+
         const params: any = {
             typologies: selectedTypologies,
             targetGFA: targetGFA,
@@ -390,10 +427,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             commercialMix,
             allocationMode,
             selectedUtilities,
-            setback,
-            frontSetback,
-            rearSetback,
-            sideSetback,
+            setback: effectiveSetback,
+            frontSetback: effectiveFront,
+            rearSetback: effectiveRear,
+            sideSetback: effectiveSide,
             maxAllowedFAR: targetFAR,
             siteCoverage,
             seedOffset,
@@ -419,6 +456,11 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
             sideSetback,
             paramsSideSetback: params.sideSetback
         });
+
+        // Sync effective setback to store so the orange visualisation lines update
+        if (useHeightBasedSetback && effectiveSetback !== selectedPlot.setback) {
+            actions.updatePlot(selectedPlot.id, { setback: effectiveSetback });
+        }
 
         actions.generateScenarios(selectedPlot.id, params);
     };
@@ -1240,6 +1282,51 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                         />
                                     </div>
 
+                                    {/* Height-Based Setback Toggle */}
+                                    <button
+                                        className="flex items-center justify-between w-full group"
+                                        onClick={() => setUseHeightBasedSetback(v => !v)}
+                                    >
+                                        <div className="flex flex-col items-start gap-0.5">
+                                            <Label className="text-[10px] font-medium text-foreground/80 cursor-pointer">
+                                                Height-Based Setback
+                                            </Label>
+                                            {/* <span className="text-[9px] text-muted-foreground leading-tight">
+                                                NBC / highrise table (overrides if larger)
+                                            </span> */}
+                                        </div>
+                                        <div className={cn(
+                                            'h-4 w-7 rounded-full transition-colors relative shrink-0',
+                                            useHeightBasedSetback ? 'bg-primary' : 'bg-muted-foreground/30'
+                                        )}>
+                                            <div className={cn(
+                                                'h-3 w-3 rounded-full bg-white absolute top-0.5 transition-transform',
+                                                useHeightBasedSetback ? 'translate-x-3.5' : 'translate-x-0.5'
+                                            )} />
+                                        </div>
+                                    </button>
+
+                                      {/* Show computed height-setback when toggle is on */}
+                                    {useHeightBasedSetback && (() => {
+                                        const estH = floorRange[1] * floorHeight;
+                                        const hSb = getHeightBasedSetback(estH);
+                                        const band = HEIGHT_SETBACK_TABLE.find(r => estH <= r.maxHeightM);
+                                        return (
+                                            <div className="flex items-center justify-between rounded-md bg-primary/10 border border-primary/30 px-2.5 py-1.5 text-[10px]">
+                                                <span className="text-muted-foreground">
+                                                    Est. height: <span className="font-medium text-foreground">{estH.toFixed(1)}m</span>
+                                                    {band && band.maxHeightM !== Infinity && (
+                                                        <span className="ml-1">(≤{band.maxHeightM}m)</span>
+                                                    )}
+                                                    {band && band.maxHeightM === Infinity && (
+                                                        <span className="ml-1">(55m+)</span>
+                                                    )}
+                                                </span>
+                                                <span className="font-semibold text-primary">→ {hSb}m setback</span>
+                                            </div>
+                                        );
+                                    })()}
+
                                     <div className="space-y-1.5">
                                         <div className="flex justify-between text-[10px]">
                                             <span className="font-medium text-foreground/80">Setback</span>
@@ -1304,6 +1391,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             </div>
                                         </div>
                                     </div>
+
 
                                     {/* Use Floor Limit Toggle */}
                                     <button
