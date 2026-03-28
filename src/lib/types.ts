@@ -1057,6 +1057,9 @@ export interface ProjectEstimates {
   total_revenue: number;
   potential_profit: number;
   roi_percentage: number;
+  /** Market rate from admin cost params (₹/sqm sellable) */
+  market_rate_per_sqm?: number;
+  sellable_ratio?: number;
 
   timeline: {
     total_months: number;

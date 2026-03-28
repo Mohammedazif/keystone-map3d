@@ -68,6 +68,9 @@ export class RegulationEngine {
         let groundCoverageArea = 0;
 
         // Plot Area
+        let totalSellableArea = 0;
+        let fallbackGFA = 0;
+
         this.project.plots.forEach(plot => {
             consumedPlotArea += plot.area;
 
@@ -83,9 +86,18 @@ export class RegulationEngine {
                 if (fsiFloors === 0) fsiFloors = b.numFloors; // Fallback
 
                 totalBuiltUpArea += (b.area * fsiFloors);
+
+                // Sellable Area Calculation
+                if (b.units && b.units.length > 0) {
+                    const bSellable = b.units.reduce((sum, u) => sum + (u.targetArea || 0), 0);
+                    totalSellableArea += bSellable;
+                } else {
+                    fallbackGFA += (b.area * fsiFloors);
+                }
             });
         });
 
+        const finalSellableArea = totalSellableArea + (fallbackGFA * 0.70);
 
 
         const totalPlotArea = this.project.totalPlotArea || consumedPlotArea;
@@ -102,7 +114,7 @@ export class RegulationEngine {
             groundCoveragePct,
 
             // Estimates (will be refined by detailed calculation)
-            sellableArea: totalBuiltUpArea * 0.70,
+            sellableArea: finalSellableArea,
             circulationArea: totalBuiltUpArea * 0.15,
             coreArea: totalBuiltUpArea * 0.10,
         };

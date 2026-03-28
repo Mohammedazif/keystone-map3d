@@ -751,7 +751,18 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
     const totalFootprint = buildingsInfo.reduce((s, b) => s + b.footprintArea, 0);
     const achievedFAR = totalPlotArea > 0 ? totalGFA / totalPlotArea : 0;
     const groundCoveragePct = totalPlotArea > 0 ? (totalFootprint / totalPlotArea) * 100 : 0;
-    const sellableArea = totalGFA * 0.70;
+    let sellableArea = 0;
+    let fallbackGFA = 0;
+    selectedPlot.buildings.forEach(b => {
+        if (b.units && b.units.length > 0) {
+            const buildingSellable = b.units.reduce((sum, u) => sum + (u.targetArea || 0), 0);
+            sellableArea += buildingSellable;
+        } else {
+            const fsiFloors = b.floors ? b.floors.filter(f => f.type !== 'Parking').length : b.numFloors;
+            fallbackGFA += (b.area * Math.max(1, fsiFloors));
+        }
+    });
+    sellableArea += (fallbackGFA * 0.70);
     const openSpace = Math.max(0, totalPlotArea - totalFootprint);
     const efficiency = totalGFA > 0 ? sellableArea / totalGFA : 0;
     const totalUnits = buildingsInfo.reduce((s, b) => s + b.unitCount, 0);

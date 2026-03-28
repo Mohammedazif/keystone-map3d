@@ -83,23 +83,77 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
 
     // User-Defined Underwriting vs Fallback
     const uw = project.underwriting || {};
-    const requestedLoan = uw.requestedLoanAmount || 0;
-    const requestedEquity = uw.promoterEquity || 0;
     
-    // Loan structure
-    const totalCap = requestedLoan + requestedEquity || totalCost;
-    const loanPct = requestedLoan && totalCap ? requestedLoan / totalCap : 0.45;
-    const loanAmount = requestedLoan || (totalCost * loanPct);
-    const equityAmount = requestedEquity || (totalCost - loanAmount);
+    // --- True Total Project Cost Calculation (Fully Loaded) ---
+    const landCost = uw.actualLandPurchaseCost || (cb?.earthwork ? cb.earthwork * 0.4 : 0);
+    const stampDuty = landCost * 0.065;
+    const landTotal = landCost + stampDuty; // 6.5% stamp duty already includes 0.5% legal fee
+    
+    // Site Dev (align with dashboard)
+    const sitePlotArea = plot.area || stats.totalPlotArea || 0;
+    const roadMin = 50 * Math.max(0, sitePlotArea) * 0.15 * 0.8;
+    const parkingMin = 1500 * Math.max(0, sitePlotArea) * 0.1 * 0.8;
+    const boundaryMin = 3000 * Math.sqrt(Math.max(0, sitePlotArea)) * 4 * 0.8;
+    const siteDev = roadMin + parkingMin + boundaryMin;
+
+    // Use simulated P50 if available, else fallback
+    const constructionAmt = sim ? (sim.cost_p50 + siteDev) : (cb ? (cb.structure + cb.finishing + cb.services + cb.earthwork * 0.2 + siteDev) : totalCost * 0.555);
+    
+    const professionalAmt = 19500000; // 1.95 Cr
+    const approvalsAmt = 4500000; // 0.45 Cr
+    const marketingAmt = 34000000; // 3.4 Cr
     
     const targetInterestRate = uw.targetInterestRate ?? 10.0;
     const loanTenure = uw.loanTenureMonths || (sim ? Math.round(sim.time_p50) : (tl ? Math.round(tl.total_months) : 36));
 
-    const grossMargin = totalRev > 0 ? ((totalRev - totalCost) / totalRev) * 100 : 0;
+    const contingencyAmt = cb?.contingency || totalCost * 0.0465;
+
+    // Fixed Soft Costs
+    const fixedSoftCosts = professionalAmt + approvalsAmt + marketingAmt + contingencyAmt;
+
+    const requestedLoan = uw.requestedLoanAmount || 0;
+    const requestedEquity = uw.promoterEquity || 0;
+    
+    // Estimate Grand Total to figure out loan amounts
+    const interimGrandTotal = landTotal + constructionAmt + fixedSoftCosts + 48000000;
+
+    let loanAmount = 0;
+    let equityAmount = 0;
+
+    // We must ensure Sources = Uses (interimGrandTotal). User inputs serve as overrides.
+    if (requestedLoan > 0 && requestedEquity > 0) {
+        loanAmount = requestedLoan;
+        // User entered both, but they might not cover the full cost. Force equity to cover any remainder.
+        equityAmount = Math.max(landTotal + requestedEquity, interimGrandTotal - loanAmount);
+    } else if (requestedEquity > 0) {
+        // User entered a specific cash equity amount. Total equity = Land Value + Fresh Cash
+        equityAmount = landTotal + requestedEquity;
+        loanAmount = Math.max(0, interimGrandTotal - equityAmount);
+    } else if (requestedLoan > 0) {
+        loanAmount = requestedLoan;
+        equityAmount = Math.max(landTotal, interimGrandTotal - loanAmount);
+    } else {
+        loanAmount = interimGrandTotal * 0.45;
+        equityAmount = interimGrandTotal * 0.55;
+    }
+    
+    const loanPct = loanAmount / (loanAmount + equityAmount || 1);
+
+    // Recalculate true grand total with precise finance Amt 
+    const financeAmt = loanAmount > 0 ? loanAmount * (targetInterestRate / 100) * (loanTenure / 12) : 48000000;
+    
+    // Final Fully Loaded Cost (Matches Dashboard P50 + Soft Costs)
+    const trueGrandTotal = landTotal + constructionAmt + fixedSoftCosts + financeAmt;
+    
+    const grossMargin = totalRev > 0 ? ((totalRev - trueGrandTotal) / totalRev) * 100 : 0;
     const totalMonths = loanTenure;
-    const costRange = sim ? `${crore(sim.cost_p10)} – ${crore(sim.cost_p90)}` : (totalCost ? crore(totalCost) : 'Pending');
+    
+    // Range including fully loaded soft costs
+    const costRange = sim 
+        ? `${crore(sim.cost_p10 + siteDev + landTotal + fixedSoftCosts + financeAmt)} – ${crore(sim.cost_p90 + siteDev + landTotal + fixedSoftCosts + financeAmt)}` 
+        : (trueGrandTotal ? crore(trueGrandTotal) : 'Pending');
     const avgUnitPrice = totalUnits > 0 ? totalRev / totalUnits : 0;
-    const breakEvenUnits = totalCost > 0 && avgUnitPrice > 0 ? Math.ceil(totalCost / avgUnitPrice * 0.45) : Math.ceil(totalUnits * 0.45);
+    const breakEvenUnits = trueGrandTotal > 0 && avgUnitPrice > 0 ? Math.ceil(trueGrandTotal / avgUnitPrice * 0.45) : Math.ceil(totalUnits * 0.45);
     const sqftArea = totalCarpet * 10.764;
     const pricePerSqft = sqftArea > 0 ? totalRev / sqftArea : 0;
 
@@ -165,7 +219,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                             ['Total Saleable Area', `${fmt(totalCarpet)} sq.m (${fmt(sqftArea)} sq.ft)`],
                             ['Unit Configuration', `${totalUnits} Apartments (${Object.entries(units).map(([k,v]) => `${v}× ${k}`).join(', ')})`],
                             ['Building Structure', `${towers} Tower${towers > 1 ? 's' : ''}, G+${maxFloors} floors`],
-                            ['Total Project Cost', totalCost ? crore(totalCost) : 'Pending'],
+                            ['Total Project Cost', costRange],
                             ['Debt Component', `${crore(loanAmount)} (${(loanPct * 100).toFixed(1)}% of Total Cost)`],
                             ['Equity Component', `${crore(equityAmount)} (${((1 - loanPct) * 100).toFixed(1)}% of Total Cost)`],
                             ['Loan Tenure', `${totalMonths} months (Construction period)`],
@@ -383,7 +437,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                             ['Total Units', `${totalUnits} apartments`, 'Computed'],
                             ['Unit Types', Object.entries(units).map(([k,v]) => `${k}: ${v}`).join(', ') || 'Mixed', 'From allocation'],
                             ['Carpet Area/Unit', `${totalUnits > 0 ? fmt(totalCarpet / totalUnits) : '—'} sq.m avg`, 'Computed'],
-                            ['Loading Factor', `~${(100 - carpetEff).toFixed(0)}%`, 'Estimated'],
+                            ['Loading Factor', `~${(100 - carpetEff).toFixed(0)}%`, metrics?.sellableArea ? 'Computed' : 'Estimated'],
                             ['Total Built-up Area', `${fmt(builtUp)} sq.m`, 'Computed'],
                             ['Structure Type', 'RCC frame structure', 'As per seismic zone'],
                             ['Foundation', maxHeight > 30 ? 'Pile foundation recommended' : 'Raft foundation recommended', 'Based on height'],
@@ -756,35 +810,34 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                             <tbody>
                                 {([
                                     ['1. LAND ACQUISITION', '', '', ''],
-                                    ['Land purchase cost', uw.actualLandPurchaseCost || cb.earthwork * 0.4, '', 'Estimated land value'],
-                                    ['Stamp duty & registration', (uw.actualLandPurchaseCost || cb.earthwork * 0.4) * 0.065, '', '6.5% of land value (5% stamp + 1% reg + 0.5% legal)'],
-                                    ['Legal & professional fees', 0.2 * 10000000, '', 'Title verification'],
-                                    ['Sub-total: Land', (uw.actualLandPurchaseCost || cb.earthwork * 0.4) * 1.065 + 2000000, '', ''],
+                                    ['Land purchase cost', landCost, '', 'Estimated land value'],
+                                    ['Stamp duty & registration', stampDuty, '', '6.5% of land value (5% stamp + 1% reg + 0.5% legal charges)'],
+                                    ['Sub-total: Land', landTotal, '', ''],
 
                                     ['2. CONSTRUCTION COSTS', '', '', ''],
                                     ['Civil & structural work', cb.structure, '', `₹${fmt(cb.structure / sqftArea)}/sq.ft × ${fmt(sqftArea)} sq.ft`],
                                     ['Finishing & interiors', cb.finishing, '', 'Premium specifications'],
                                     ['MEP / Services', cb.services, '', 'Elevators, fire safety, electrical'],
                                     ['External dev & landscaping', cb.earthwork * 0.2, '', 'Common areas, driveways'],
-                                    ['Sub-total: Construction', cb.structure + cb.finishing + cb.services + (cb.earthwork * 0.2), '', ''],
+                                    ['Sub-total: Construction', constructionAmt, '', ''],
 
                                     ['3. PROFESSIONAL FEES', '', '', ''],
-                                    ['Architect & Structural', 1.05 * 10000000, '', 'Design & certification'],
-                                    ['PMC / Supervision', 0.9 * 10000000, '', 'Third-party management'],
-                                    ['Sub-total: Professional', 1.95 * 10000000, '', ''],
+                                    ['Architect & Structural', 10500000, '', 'Design & certification'],
+                                    ['PMC / Supervision', 9000000, '', 'Third-party management'],
+                                    ['Sub-total: Professional', professionalAmt, '', ''],
 
                                     ['4. STATUTORY APPROVALS', '', '', ''],
-                                    ['Building plan, RERA, Environment', 0.45 * 10000000, '', 'Various authorities'],
-                                    ['Sub-total: Approvals', 0.45 * 10000000, '', ''],
+                                    ['Building plan, RERA, Environment', 4500000, '', 'Various authorities'],
+                                    ['Sub-total: Approvals', approvalsAmt, '', ''],
 
                                     ['5. MARKETING & SALES', '', '', ''],
-                                    ['Branding, marketing, comm.', 3.4 * 10000000, '', '@ ~3.5% of gross sales'],
-                                    ['Sub-total: Marketing', 3.4 * 10000000, '', ''],
+                                    ['Branding, marketing, comm.', marketingAmt, '', '@ ~3.5% of gross sales'],
+                                    ['Sub-total: Marketing', marketingAmt, '', ''],
 
                                     ['6. FINANCING COSTS & CONTINGENCY', '', '', ''],
-                                    ['Interest & Processing', 4.8 * 10000000, '', 'Term loan interest'],
-                                    ['Contingency reserve & overheads', cb.contingency, '', '~5% buffer'],
-                                    ['Sub-total: Finance & Contingency', cb.contingency + 48000000, '', ''],
+                                    ['Interest & Processing', financeAmt, '', 'Term loan interest'],
+                                    ['Contingency reserve & overheads', contingencyAmt, '', '~5% buffer'],
+                                    ['Sub-total: Finance & Contingency', financeAmt + contingencyAmt, '', ''],
                                 ] as [string, number | string, string, string][]).map(([k, v, pctOverride, basis], i) => {
                                     const isHeader = typeof v === 'string' && v === '';
                                     const isSub = k.startsWith('Sub-total');
@@ -792,12 +845,12 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                         <tr key={i} className={isHeader ? 'bg-slate-100 font-bold' : isSub ? 'bg-slate-50 font-semibold' : ''}>
                                             <TD className={isHeader || isSub ? '' : 'pl-4'}>{k}</TD>
                                             <TD>{isHeader ? '' : crore(v as number)}</TD>
-                                            <TD>{isHeader ? '' : pctOverride || (totalCost > 0 ? pct((v as number) / totalCost * 100) : '—')}</TD>
+                                            <TD>{isHeader ? '' : pctOverride || (trueGrandTotal > 0 ? pct((v as number) / trueGrandTotal * 100) : '—')}</TD>
                                             <TD className="text-[9px] text-slate-500">{basis}</TD>
                                         </tr>
                                     );
                                 })}
-                                <tr className="bg-slate-200 font-bold"><TD>TOTAL PROJECT COST</TD><TD>{crore(totalCost)}</TD><TD>100%</TD><TD> </TD></tr>
+                                <tr className="bg-slate-200 font-bold"><TD>TOTAL PROJECT COST</TD><TD>{crore(trueGrandTotal)}</TD><TD>100%</TD><TD> </TD></tr>
                             </tbody>
                         </table>
                     </>
@@ -811,26 +864,15 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     const L = (n: number) => (n / 100000).toFixed(2);
                     const pL = (n: number, total: number) => total > 0 ? ((n / total) * 100).toFixed(2) + '%' : '—';
 
-                    // ── Land costs from form ──
-                    const landCost   = uw.actualLandPurchaseCost   || 0;
-                    const stampDuty  = landCost * 0.065;
-                    const landTotal  = landCost + stampDuty;
-
                     // ── Equity sub-breakdown ──
                     const cashEquity = Math.max(0, equityAmount - landTotal);
 
-                    // ── Uses: derive from cost_breakdown or fallback % of totalCost ──
-                    const constructionAmt  = cb ? (cb.structure + cb.finishing + cb.services + cb.earthwork * 0.2) : totalCost * 0.555;
-                    const professionalAmt  = totalCost * 0.0297;
-                    const approvalsAmt     = totalCost * 0.0069;
-                    const marketingAmt     = totalCost * 0.0519;
-                    const financeAmt       = loanAmount * (targetInterestRate / 100) * (loanTenure / 12);
-                    const contingencyAmt   = cb?.contingency || totalCost * 0.0465;
+                    // ── Uses: derive from global calculations ──
                     const gstAmt           = totalCost * 0.0229;
                     const workingCapAmt    = totalCost * 0.0093;
 
-                    const usesTotal = landTotal + constructionAmt + professionalAmt + approvalsAmt + marketingAmt + financeAmt + contingencyAmt + gstAmt + workingCapAmt;
-                    const grandTotal = totalCost || usesTotal;
+                    const usesTotal = trueGrandTotal + gstAmt + workingCapAmt;
+                    const grandTotal = trueGrandTotal;
 
                     const deRatio = equityAmount > 0 ? (loanAmount / equityAmount) : 0;
                     const deHealthy = deRatio <= 1.0;
@@ -964,26 +1006,37 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     </tbody>
                 </table>
                 <div className="bg-slate-50 border border-slate-200 p-2 rounded mb-3 mt-1 text-[9px]">
-                    <strong>Break-even Analysis:</strong> Minimum price required to cover all costs: <strong>₹{fmt(totalCost / Math.max(1, sqftArea))} / sq.ft</strong>. Safety margin at base case pricing: <strong>{pct((totalRev - totalCost) / totalRev * 100)}</strong>.
+                    <strong>Break-even Analysis:</strong> Minimum price required to cover all active costs: <strong>₹{fmt(trueGrandTotal / Math.max(1, sqftArea))} / sq.ft</strong>. Safety margin at base case pricing: <strong>{pct((totalRev - trueGrandTotal) / totalRev * 100)}</strong>.
                 </div>
 
                 <SH2 className="!mt-2">5.4 Profitability Analysis (Base Case)</SH2>
                 <table className="w-full border-collapse mb-2"><thead><tr><TH>Financial Metric</TH><TH>Amount (₹ Cr)</TH><TH>Calculation</TH></tr></thead>
                     <tbody>
-                        {([
-                            ['Gross Revenue', crore(totalRev), `${totalUnits} units × ${crore(avgUnitPrice)} avg`],
-                            ['Less: Total Project Cost', crore(totalCost), 'Excluding land value appreciation'],
-                            ['Gross Profit (Before Tax)', crore(profit), 'Revenue - Cost'],
-                            ['Gross Profit Margin', pct(grossMargin), '(Profit ÷ Revenue) × 100'],
-                            ['Return on Investment (ROI)', pct(roi), '(Profit ÷ Cost) × 100'],
-                            ['Return on Equity (ROE)', pct(profit / Math.max(1, equityAmount) * 100), 'Profit ÷ Equity investment'],
-                        ] as [string, string, string][]).map(([k, v, c], i) => (
-                            <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}><TD className="font-semibold">{k}</TD><TD>{v}</TD><TD className="text-slate-500 text-[9px]">{c}</TD></tr>
-                        ))}
+                        {(() => {
+                            const trueProfit = totalRev - trueGrandTotal;
+                            const trueROI = trueGrandTotal > 0 ? (trueProfit / trueGrandTotal) * 100 : 0;
+                            return ([
+                                ['Gross Revenue', crore(totalRev), `${totalUnits} units × ${crore(avgUnitPrice)} avg`],
+                                ['Less: Total Project Cost', crore(trueGrandTotal), 'Includes land, construction & soft costs'],
+                                ['Gross Profit (Before Tax)', crore(trueProfit), 'Revenue - Cost'],
+                                ['Gross Profit Margin', pct(grossMargin), '(Profit ÷ Revenue) × 100'],
+                                ['Return on Investment (ROI)', pct(trueROI), '(Profit ÷ Cost) × 100'],
+                                ['Return on Equity (ROE)', pct(trueProfit / Math.max(1, equityAmount) * 100), 'Profit ÷ Equity investment'],
+                            ] as [string, string, string][]).map(([k, v, c], i) => (
+                                <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}><TD className="font-semibold">{k}</TD><TD>{v}</TD><TD className="text-slate-500 text-[9px]">{c}</TD></tr>
+                            ));
+                        })()}
                     </tbody>
                 </table>
                 <div className="bg-slate-50 border border-slate-200 p-2 rounded mb-3 text-[9px]">
-                    <strong>Tax Considerations:</strong> Corporate tax @ 25.17%: <strong>{crore(profit * 0.2517)}</strong>. Net Profit After Tax (PAT): <strong>{crore(profit * 0.7483)}</strong>. Net Profit Margin: <strong>{pct((profit * 0.7483) / totalRev * 100)}</strong>. Net ROE: <strong>{pct((profit * 0.7483) / equityAmount * 100)}</strong>
+                    {(() => {
+                        const trueProfit = totalRev - trueGrandTotal;
+                        return (
+                            <>
+                                <strong>Tax Considerations:</strong> Corporate tax @ 25.17%: <strong>{crore(trueProfit * 0.2517)}</strong>. Net Profit After Tax (PAT): <strong>{crore(trueProfit * 0.7483)}</strong>. Net Profit Margin: <strong>{pct((trueProfit * 0.7483) / totalRev * 100)}</strong>. Net ROE: <strong>{pct((trueProfit * 0.7483) / Math.max(1, equityAmount) * 100)}</strong>
+                            </>
+                        );
+                    })()}
                 </div>
 
                 <p className="text-[10px] font-bold mb-1">Cash Flow Analysis (Year-wise)</p>
@@ -991,7 +1044,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     <tbody>
                         {(() => {
                             const inflows = [totalRev * 0.31 + loanAmount * 0.15, totalRev * 0.38 + loanAmount * 0.5, totalRev * 0.23 + loanAmount * 0.35, totalRev * 0.08];
-                            const outflows = [totalCost * 0.4, totalCost * 0.4, totalCost * 0.15, totalCost * 0.05];
+                            const outflows = [trueGrandTotal * 0.4, trueGrandTotal * 0.4, trueGrandTotal * 0.15, trueGrandTotal * 0.05];
                             let cum = 0;
                             return [1, 2, 3, 4].map(y => {
                                 const net = inflows[y - 1] - outflows[y - 1];
@@ -1239,14 +1292,114 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 })()}
 
                 {(() => {
-                    const exec = [
-                        ['Timeline delays', 'High (4/5)', 'High (4/5)', '4.0 - High', '- Penalty clauses - Monthly monitoring - 6-month buffer'],
-                        ['Cost overruns', 'High (4/5)', 'High (4/5)', '4.0 - High', '- Fixed-price contracts - 5% contingency - Material caps'],
-                        ['Quality issues', 'Medium (3/5)', 'High (4/5)', '3.5 - High', '- Third-party PMC - Quality certification - Inspections'],
-                        ['Labor shortages', 'Medium (3/5)', 'Medium (3/5)', '3.0 - Medium', '- Multiple contractors - Worker welfare - Mechanization'],
-                        ['Material supply disruptions', 'Medium (3/5)', 'Medium (3/5)', '3.0 - Medium', '- Advance procurement - Multiple suppliers - On-site storage'],
-                        ['Structural failures', 'Low (2/5)', 'Critical (5/5)', '3.5 - High', '- Certified engineer - Soil testing - Third-party audit'],
-                        ['Contractor default', 'Low (2/5)', 'Critical (5/5)', '3.5 - High', '- DD of contractor - Performance guarantee - Milestone payments'],
+                    // ── Dynamic helpers ──────────────────────────────────────────
+                    const scoreLabel = (s: number) => {
+                        if (s >= 4.5) return `${s.toFixed(1)} - Critical`;
+                        if (s >= 3.5) return `${s.toFixed(1)} - High`;
+                        if (s >= 2.5) return `${s.toFixed(1)} - Medium`;
+                        return `${s.toFixed(1)} - Low`;
+                    };
+                    const probLabel = (s: number) => {
+                        if (s >= 4.5) return 'Very High (5/5)';
+                        if (s >= 3.5) return 'High (4/5)';
+                        if (s >= 2.5) return 'Medium (3/5)';
+                        if (s >= 1.5) return 'Low (2/5)';
+                        return 'Very Low (1/5)';
+                    };
+                    const impLabel = (s: number) => {
+                        if (s >= 4.5) return 'Critical (5/5)';
+                        if (s >= 3.5) return 'High (4/5)';
+                        if (s >= 2.5) return 'Medium (3/5)';
+                        return 'Low (2/5)';
+                    };
+
+                    // ── Simulation-driven signals ─────────────────────────────────
+                    // 1. Timeline risk: driven by P90-P10 variance as % of P50
+                    const timeVariancePct = sim && sim.time_p50 > 0
+                        ? (sim.time_p90 - sim.time_p10) / sim.time_p50
+                        : 0.5; // default: moderate variance
+                    const timelineProbScore = timeVariancePct > 0.5 ? 4.5 : timeVariancePct > 0.3 ? 4.0 : timeVariancePct > 0.2 ? 3.0 : 2.0;
+                    const timelineImpactScore = totalMonths > 42 ? 4.5 : totalMonths > 30 ? 4.0 : totalMonths > 18 ? 3.0 : 2.5;
+                    const timelineScore = (timelineProbScore + timelineImpactScore) / 2;
+                    const totalTimeline = sim ? `${sim.time_p10.toFixed(0)}–${sim.time_p90.toFixed(0)} months range` : `${totalMonths}mo projected`;
+
+                    // 2. Cost overrun risk: P90-P10 cost spread as % of P50
+                    const costVariancePct = sim && sim.cost_p50 > 0
+                        ? (sim.cost_p90 - sim.cost_p10) / sim.cost_p50
+                        : 0.3;
+                    const costProbScore = costVariancePct > 0.35 ? 4.5 : costVariancePct > 0.2 ? 4.0 : costVariancePct > 0.1 ? 3.0 : 2.0;
+                    const costImpactScore = trueGrandTotal > 300e7 ? 4.5 : trueGrandTotal > 200e7 ? 4.0 : 3.5;
+                    const costScore = (costProbScore + costImpactScore) / 2;
+                    const costSpread = sim ? `±${((costVariancePct / 2) * 100).toFixed(0)}% cost variance (P10–P90)` : 'Simulation pending';
+
+                    // 3. Quality risk: driven by number of towers & total GFA
+                    const qualityProbScore = towers > 8 ? 4.0 : towers > 5 ? 3.5 : towers > 2 ? 3.0 : 2.0;
+                    const qualityImpactScore = 4.0; // always high for high-rise residential
+                    const qualityScore = (qualityProbScore + qualityImpactScore) / 2;
+
+                    // 4. Labor shortage: driven by total floors (complexity) & footprint
+                    const totalBuildingFloors = (estimates?.breakdown || []).reduce((s: number, b: any) => s + (b.floors || 0), 0);
+                    const laborProbScore = totalBuildingFloors > 120 ? 4.0 : totalBuildingFloors > 60 ? 3.5 : totalBuildingFloors > 30 ? 3.0 : 2.0;
+                    const laborImpactScore = totalMonths > 36 ? 3.5 : 3.0;
+                    const laborScore = (laborProbScore + laborImpactScore) / 2;
+
+                    // 5. Material supply: driven by GFA size (larger project needs more supply chain)
+                    const builtArea = stats?.totalBuiltUpArea || 0;
+                    const matProbScore = builtArea > 80000 ? 3.5 : builtArea > 50000 ? 3.0 : 2.5;
+                    const matImpactScore = 3.0;
+                    const matScore = (matProbScore + matImpactScore) / 2;
+
+                    // 6. Structural failure: always low prob, always critical impact (seismic zone)
+                    const structScore = 3.5;
+
+                    // 7. Contractor default: driven by loan size vs. market
+                    const contractorProbScore = loanAmount > 200e7 ? 3.0 : loanAmount > 100e7 ? 2.5 : 2.0;
+                    const contractorImpactScore = 5.0;
+                    const contractorScore = (contractorProbScore + contractorImpactScore) / 2;
+
+                    const exec: [string, string, string, string, string][] = [
+                        [
+                            'Timeline delays',
+                            probLabel(timelineProbScore), impLabel(timelineImpactScore),
+                            scoreLabel(timelineScore),
+                            `- Penalty clauses - Monthly monitoring - 6-month buffer (${totalTimeline})`
+                        ],
+                        [
+                            'Cost overruns',
+                            probLabel(costProbScore), impLabel(costImpactScore),
+                            scoreLabel(costScore),
+                            `- Fixed-price contracts - 5% contingency - Material caps (${costSpread})`
+                        ],
+                        [
+                            'Quality issues',
+                            probLabel(qualityProbScore), impLabel(qualityImpactScore),
+                            scoreLabel(qualityScore),
+                            `- Third-party PMC - Quality certification - Inspections (${towers} towers, high-rise)`
+                        ],
+                        [
+                            'Labor shortages',
+                            probLabel(laborProbScore), impLabel(laborImpactScore),
+                            scoreLabel(laborScore),
+                            `- Multiple contractors - Worker welfare - Mechanization (${totalBuildingFloors} total floors)`
+                        ],
+                        [
+                            'Material supply disruptions',
+                            probLabel(matProbScore), impLabel(matImpactScore),
+                            scoreLabel(matScore),
+                            `- Advance procurement - Multiple suppliers - On-site storage (${fmt(builtArea)} sq.m GFA)`
+                        ],
+                        [
+                            'Structural failures',
+                            'Low (2/5)', 'Critical (5/5)',
+                            scoreLabel(structScore),
+                            '- Certified engineer - Soil testing - Third-party structural audit'
+                        ],
+                        [
+                            'Contractor default',
+                            probLabel(contractorProbScore), 'Critical (5/5)',
+                            scoreLabel(contractorScore),
+                            `- DD of contractor - Performance guarantee - Milestone payments (Loan: ${crore(loanAmount)})`
+                        ],
                     ];
                     return (
                         <div className="mb-3">
@@ -2211,8 +2364,11 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
 
                     const deRatio = equityAmount > 0 ? loanAmount / equityAmount : 99;
                     const equityPct = totalCost > 0 ? equityAmount / totalCost * 100 : 0;
-                    const costPerSqft = builtUp > 0 ? totalCost / (builtUp * 10.764) : 0;
-                    const revenuePerSqft = builtUp > 0 ? totalRev / (builtUp * 10.764) : 0;
+                    const costPerSqft = sqftArea > 0 ? totalCost / sqftArea : 0;
+                    // Use the top-level pricePerSqft (carpet-area based) — no need to recompute with wrong GFA denominator
+                    // Min threshold: break-even realization = trueGrandTotal / saleable sqft + 20% margin
+                    const minViableRate = sqftArea > 0 ? Math.round((trueGrandTotal / sqftArea) * 1.20) : 12000;
+                    const minRateLabel = `Min ₹${Math.round(minViableRate / 100) * 100 >= 10000 ? (minViableRate / 1000).toFixed(1) + 'k' : fmt(minViableRate)}/sq.ft`;
 
                     const subjectBadge = `${use} Project ← (This Project)`;
 
@@ -2264,7 +2420,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                                 ['Pre-Sales', `30% = ${crore(totalRev * 0.30)}`, `${crore(totalRev * 0.31)} projected (31%)`, true],
                                                 ['LTV on Land', 'Max 70%', '[Depends on valuation]', null],
                                                 ['Construction Cost', '<₹4,000/sq.ft', costPerSqft > 0 ? `₹${fmt(costPerSqft)}/sq.ft` : '—', costPerSqft < 4000 || costPerSqft === 0],
-                                                ['Sales Realization', 'Min ₹12,000/sq.ft', revenuePerSqft > 0 ? `₹${fmt(revenuePerSqft)}/sq.ft` : '—', revenuePerSqft >= 12000 || revenuePerSqft === 0],
+                                                ['Sales Realization', minRateLabel, pricePerSqft > 0 ? `₹${fmt(pricePerSqft)}/sq.ft` : '—', pricePerSqft >= minViableRate || pricePerSqft === 0],
                                                 ['Gross Margin', 'Min 20%', pct(grossMargin), grossMargin >= 20],
                                                 ['Project IRR', 'Min 18%', '28-32% (est.)', true],
                                                 ['Professional Team', 'Architect, Engineer, PMC', '[TBD]', null],

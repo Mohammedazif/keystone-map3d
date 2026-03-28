@@ -517,6 +517,8 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
             total_revenue: totalRev,
             potential_profit: profit,
             roi_percentage: roi,
+            market_rate_per_sqm: costParam.market_rate_per_sqm,
+            sellable_ratio: costParam.sellable_ratio,
             timeline: {
                 total_months: maxTimelineMonths,
                 phases: criticalPathPhases

@@ -1,4 +1,5 @@
 import React from "react";
+import * as turf from "@turf/turf";
 import type {
   Project,
   Plot,
@@ -14,6 +15,12 @@ interface FeasibilityReportProps {
   metrics?: AdvancedKPIs | null;
   estimates?: ProjectEstimates | null;
   generationParams?: AlgoParams;
+  /** Pre-computed site-level quantities from the dashboard (avoids re-deriving geometry) */
+  siteCosts?: {
+    totalPerimeter: number;   // meters — plot boundary perimeter
+    roadArea: number;         // m²
+    parkingArea: number;      // m² — surface parking only
+  };
 }
 
 /* ── tiny helpers ─────────────────────────────────────────── */
@@ -104,6 +111,7 @@ export function FeasibilityReport({
   metrics,
   estimates,
   generationParams,
+  siteCosts,
 }: FeasibilityReportProps) {
   const stats = plot.developmentStats;
   let units = stats?.units?.breakdown || {};
@@ -149,8 +157,46 @@ export function FeasibilityReport({
     (stats?.maxBuildableArea ? (stats.maxBuildableArea / plotArea) * 100 : 0);
   const totalCarpet = metrics?.sellableArea ?? builtUp * 0.65;
   const carpetEff = builtUp ? (totalCarpet / builtUp) * 100 : 65;
-  const parkReq = metrics?.parking?.required ?? Math.ceil(totalUnits * 1.5);
+  const parkReqBase = Math.ceil(totalUnits * 1.5);
+  const parkReqGuest = Math.ceil(parkReqBase * 0.1);
+  const parkReq = parkReqBase + parkReqGuest; // Overriding backend metrics to ensure report consistency with text labels
   const parkProv = metrics?.parking?.provided ?? 0;
+
+  // ── Site-level cost inputs — prefer dashboard-computed values via siteCosts prop ──
+  const roadArea = siteCosts?.roadArea ?? metrics?.roadArea ?? Math.round(plotArea * 0.08);
+  const surfaceParkingArea = siteCosts?.parkingArea ?? (plot.parkingAreas || []).reduce(
+    (s: number, pa: any) => s + (pa.area || 0), 0,
+  );
+  const plotPerimeter = siteCosts?.totalPerimeter ?? (() => {
+    try {
+      const coords = plot.geometry?.geometry?.coordinates?.[0]
+        || (plot.geometry as any)?.coordinates?.[0];
+      if (!coords || coords.length < 3) return Math.round(Math.sqrt(plotArea * 4) * 2);
+      const line = turf.lineString(coords as any);
+      return Math.round(turf.length(line, { units: "meters" }));
+    } catch {
+      return Math.round(Math.sqrt(plotArea * 4) * 2);
+    }
+  })();
+  // Amenity area: use same source as Section 9 (groundFloorRemovedArea = actual removed amenity space)
+  const amenityArea = (() => {
+    const realRemoved = (plot.buildings || []).reduce(
+      (s: number, b: any) => s + (b.groundFloorRemovedArea || 0), 0,
+    );
+    if (realRemoved > 0) return Math.round(realRemoved);
+    // Fallback: same as Section 9 (footprint minus core, times towers)
+    const fp = Math.round((builtUp || 10080) / maxFloors / towers);
+    return (fp - Math.round(fp * 0.2)) * towers;
+  })();
+  const balconyArea = (plot.buildings || []).reduce(
+    (s: number, b: any) => s + (b.units || []).reduce(
+      (u: number, un: any) => u + (un.balconyArea || 0), 0,
+    ), 0,
+  ) || Math.round(totalCarpet * 0.11);
+  const landscapeArea = Math.round(
+    plotArea - (plot.buildings || []).reduce((s: number, b: any) => s + (b.area || 0), 0)
+    - surfaceParkingArea - roadArea,
+  );
 
   const greenItems = metrics?.compliance?.greenItems || [];
   const hasRWH =
@@ -622,21 +668,29 @@ export function FeasibilityReport({
             </tr>
           </thead>
           <tbody>
-            {Object.entries(units).map(([type, count], i) => (
-              <tr key={i} className={i % 2 === 0 ? "bg-slate-50" : ""}>
-                <TD className="font-semibold text-left">{type}</TD>
-                <TD>~{Math.round(totalCarpet / (totalUnits || 1))} sq.m</TD>
-                <TD>{count as number}</TD>
-                <TD>
-                  {((Number(count) / (totalUnits || 1)) * 100).toFixed(0)}%
-                </TD>
-                <TD className="text-left">
-                  {type.includes("3") || type.includes("4")
-                    ? "Mid-premium, families"
-                    : "Standard"}
-                </TD>
-              </tr>
-            ))}
+            {Object.entries(units).map(([type, count], i) => {
+              const typeTotal = tArea[type];
+              const typeCount = Number(count) || 1;
+              const perTypeAvg = typeTotal && typeTotal > 0
+                ? Math.round(typeTotal / typeCount)
+                : type.includes("4") ? 145 : type.includes("3") ? 120 : type.includes("2") ? 90 : type.includes("1") ? 60 : Math.round(totalCarpet / (totalUnits || 1));
+              
+              return (
+                <tr key={i} className={i % 2 === 0 ? "bg-slate-50" : ""}>
+                  <TD className="font-semibold text-left">{type}</TD>
+                  <TD>~{perTypeAvg} sq.m</TD>
+                  <TD>{count as number}</TD>
+                  <TD>
+                    {((Number(count) / (totalUnits || 1)) * 100).toFixed(0)}%
+                  </TD>
+                  <TD className="text-left">
+                    {type.includes("3") || type.includes("4")
+                      ? "Mid-premium, families"
+                      : "Standard"}
+                  </TD>
+                </tr>
+              );
+            })}
             {Object.keys(units).length === 0 && (
               <tr className="bg-slate-50">
                 <TD className="font-semibold text-left">3BHK</TD>
@@ -669,7 +723,14 @@ export function FeasibilityReport({
             {Object.keys(units).length <= 1 && (
               <li>Single product simplifies marketing</li>
             )}
-            <li>Mix aligns with high demand in Gurugram</li>
+            <li>
+              Mix aligns with high demand in{" "}
+              {typeof plot.location === "string" && plot.location
+                ? plot.location.split(",")[0]
+                : typeof project.location === "string" && project.location
+                  ? project.location.split(",")[0]
+                  : "the local micro-market"}
+            </li>
             <li>Size adequate for target segment</li>
           </ul>
         </div>
@@ -752,9 +813,7 @@ export function FeasibilityReport({
               <tbody>
                 <tr className="bg-slate-50">
                   <TD>Required (1.5 ECS/unit)</TD>
-                  <TD className="text-center">
-                    {Math.round(parkReq * 0.91)} ECS
-                  </TD>
+                  <TD className="text-center">{parkReqBase} ECS</TD>
                   <TD
                     rowSpan={3}
                     className="text-center align-middle font-bold text-green-700 border-l border-slate-200"
@@ -764,9 +823,7 @@ export function FeasibilityReport({
                 </tr>
                 <tr className="bg-slate-50 border-b border-slate-200">
                   <TD>Guest (10%)</TD>
-                  <TD className="text-center">
-                    {Math.round(parkReq * 0.09)} ECS
-                  </TD>
+                  <TD className="text-center">{parkReqGuest} ECS</TD>
                 </tr>
                 <tr className="font-bold bg-slate-100 border-b border-slate-300">
                   <TD className="text-slate-800">Total Required</TD>
@@ -1600,7 +1657,13 @@ export function FeasibilityReport({
               ["Unpaved Area", "≥20% of open spaces", "25% unpaved"],
               ["Solid Waste", "Separate wet/dry bins", "At ground level"],
               ["Energy", "LED/solar in common areas", "All LED + Solar"],
-              ["DG Exhaust", "10m from building or 3m above", "12m away"],
+              [
+                "DG Exhaust",
+                "10m from building or 3m above",
+                generationParams?.vastuCompliant
+                  ? "South-East (Agni) peripheral parking, ≥10m away"
+                  : "Peripheral parking, ≥10m away",
+              ],
               [
                 "Green Cover",
                 "1 tree per 80 sq.m",
@@ -2528,6 +2591,7 @@ export function FeasibilityReport({
                       <tr>
                         <TH>Type</TH>
                         <TH>Carpet (sq.m)</TH>
+                        <TH>Built-up (sq.m)</TH>
                         <TH>Units/Floor</TH>
                       </tr>
                     </thead>
@@ -2537,6 +2601,7 @@ export function FeasibilityReport({
                           const uCarpet = tArea[type]
                             ? Math.round(tArea[type] / Number(count))
                             : avgUnitCarpet;
+                          const uBuiltUp = Math.round(uCarpet / (carpetEff / 100));
                           const unitsPerFloor = Math.round(
                             Number(count) / Math.max(1, maxFloors * towers),
                           );
@@ -2547,6 +2612,7 @@ export function FeasibilityReport({
                             >
                               <TD className="font-semibold">{type}</TD>
                               <TD className="text-center">{uCarpet}</TD>
+                              <TD className="text-center text-blue-800">{uBuiltUp}</TD>
                               <TD className="text-center font-semibold text-blue-700">
                                 {unitsPerFloor}
                               </TD>
@@ -2557,6 +2623,7 @@ export function FeasibilityReport({
                         <tr className="bg-slate-50">
                           <TD className="font-semibold">3 BHK</TD>
                           <TD className="text-center">{avgUnitCarpet}</TD>
+                          <TD className="text-center text-blue-800">{avgBuiltUp}</TD>
                           <TD className="text-center font-semibold text-blue-700">
                             {Math.round(
                               netFloorArea /
@@ -3220,201 +3287,150 @@ export function FeasibilityReport({
       {/* ═══ PAGE 11 — SUSTAINABILITY & ENVIRONMENT ═══ */}
       <div className="report-page">
         <SH>11. Sustainability & Environment</SH>
+        {(() => {
+          // ── Infrastructure engine (mirrors feasibility-dashboard KPI formulas) ──
+          const occupants = totalUnits * 4;
+          const totalLoadKW = occupants * 0.8 * 0.7;              // kW peak
+          const essentialLoad = totalLoadKW * 0.4;
+          const solarCapKW = Math.round(totalLoadKW * 0.25);       // 25% of peak
+          const solarPanels = Math.ceil(solarCapKW / 0.335);        // 335W panels
+          const solarAreaM2 = Math.round(solarCapKW * 10);
+          const solarGenDay = Math.round(solarCapKW * 4);           // kWh/day (4 peak sun hrs)
+          const solarGenYear = Math.round(solarGenDay * 365);
 
-        <div className="grid grid-cols-2 gap-4 mb-4 text-[10px]">
-          <div>
-            <SH2 className="!mt-0">11.1 Energy Conservation (ECBC & Solar)</SH2>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              Solar Power System
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5 mb-2">
-              <li>
-                <strong>Capacity:</strong> 10 kWp Grid-tied with net metering
-                (exceeds 1% code)
-              </li>
-              <li>
-                <strong>System:</strong> 30 Monocrystalline 335W panels (70 sq.m
-                rooftop area)
-              </li>
-              <li>
-                <strong>Generation:</strong> ~50 kWh/day (Annual: 18,250
-                kWh/year)
-              </li>
-              <li>
-                <strong>Savings:</strong> &gt;30% of common area electricity
-                (Payback: ~2.5 years)
-              </li>
-            </ul>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              ECBC Compliance (EPI: &lt;100 kWh/sq.m/yr)
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li>
-                <strong>Envelope:</strong> Flyash bricks (U: 1.2), Roof
-                insulation (U: 0.4)
-              </li>
-              <li>
-                <strong>Glazing:</strong> Double-glazed WWR 30% (SHGC 0.25, VLT
-                0.6)
-              </li>
-              <li>
-                <strong>Lighting:</strong> 100% LED, Motion sensors, &lt;10
-                W/sq.m
-              </li>
-              <li>
-                <strong>HVAC (Common):</strong> VRV systems (COP &gt;3.5), HRV
-                fresh air
-              </li>
-              <li>
-                <strong>Pumps/Motors:</strong> IE3 class motors, VFDs on pumps
-                &gt;5 HP
-              </li>
-            </ul>
-          </div>
-          <div>
-            <SH2 className="!mt-0">11.2 Water Conservation</SH2>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              Rainwater Harvesting
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5 mb-2">
-              <li>
-                <strong>Catchment Potential:</strong>{" "}
-                {fmt(
-                  plot.buildings?.[0]?.area
-                    ? plot.buildings[0].area * towers
-                    : 720,
-                )}{" "}
-                sq.m (roof) + 800 sq.m (open)
-              </li>
-              <li>
-                <strong>Annual Capture:</strong> ~850 cubic meters/year (700mm
-                rainfall, 0.8 runoff)
-              </li>
-              <li>
-                <strong>Infrastructure:</strong>{" "}
-                {Math.max(4, Math.ceil(plotArea / 3000))} Recharge Bores (150mm
-                dia, 20m depth)
-              </li>
-              <li>
-                <strong>Storage:</strong> 20,000L underground tank + Sand/Mesh
-                filtration
-              </li>
-            </ul>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              Water Efficiency & STP
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li>
-                <strong>Fixtures:</strong> Aerators, dual-flush WCs, sensor taps
-                (26% reduction)
-              </li>
-              <li>
-                <strong>STP Tech:</strong> 25 KLD Extended Aeration + MBR
-                (Outlet BOD &lt;10 mg/L)
-              </li>
-              <li>
-                <strong>Zero Discharge:</strong> 100% sewage treated & reused
-                on-site
-              </li>
-              <li>
-                <strong>Potable Savings:</strong> 15,000 L/day (Annual: ~5.4
-                lakhs)
-              </li>
-            </ul>
-          </div>
-        </div>
+          // STP (NBC: 120 L/person/day sewage, 1.2 factor)
+          const stpKLD = Math.round((occupants * 120 * 1.2) / 1000);
+          const stpReuseKLD = Math.round(stpKLD * 0.8);
+          const potableSavingsLDay = stpReuseKLD * 1000;
+          const potableSavingsAnnualLakhs = ((potableSavingsLDay * 365) / 100000).toFixed(1);
 
-        <SH2>11.3 Comprehensive Waste Management</SH2>
-        <div className="grid grid-cols-2 gap-4 mb-4 text-[10px]">
-          <div>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              Solid Waste Processing (OWC)
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5 mb-2">
-              <li>
-                <strong>Technology:</strong> Aerobic composting with microbial
-                culture
-              </li>
-              <li>
-                <strong>Capacity:</strong> 50 kg/day (1.5m × 1.0m × 1.2m unit in
-                basement)
-              </li>
-              <li>
-                <strong>Process:</strong> Shredding → Microbial mixing → 15-20
-                days retention
-              </li>
-              <li>
-                <strong>Output:</strong> 10 kg compost/day (3.65 tonnes
-                annually)
-              </li>
-            </ul>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              Dry Waste & Zero Waste Target
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li>
-                <strong>Segregation:</strong> 3-bin system (Wet/Dry/Reject) per
-                floor
-              </li>
-              <li>
-                <strong>Target:</strong> Organic 100% composted, Dry 90%
-                recycled, Landfill &lt;10%
-              </li>
-              <li>
-                <strong>Categories:</strong> Paper/plastic sold, E-waste
-                quarterly drive
-              </li>
-            </ul>
-          </div>
-          <div>
-            <strong className="block text-slate-800 mb-1 border-b pb-1">
-              Construction Waste & Green Premium
-            </strong>
-            <ul className="list-disc pl-4 space-y-0.5 mb-2">
-              <li>
-                <strong>C&D Segregation:</strong> Concrete (crushed for base),
-                Metal (rebar), Wood (formwork)
-              </li>
-              <li>
-                <strong>Target:</strong> 80% waste diverted from landfill during
-                construction
-              </li>
-              <li>
-                <strong>Green Incentive:</strong> 9% Additional FAR (for 3-star
-                GRIHA equivalent)
-              </li>
-              <li>
-                <strong>Operational ROI:</strong> &lt;2 years on ₹8-10 lakhs
-                certification cost
-              </li>
-            </ul>
+          // RWH
+          const roofArea = (plot.buildings || []).reduce((s: number, b: any) => s + (b.area || 0), 0);
+          const annualRainfall = 1200; // mm
+          const rwhRunoff = Math.round(roofArea * (annualRainfall / 1000) * 0.85);
+          const rwhBores = Math.max(4, Math.ceil(plotArea / 3000));
+          const rwhStorageLitres = Math.round(rwhRunoff * 0.15 * 1000); // m³ → litres
+          const openCatchment = Math.round(plotArea * 0.15);
 
-            {stats?.greenAnalysis && (
-              <div className="mt-2 bg-green-50 border border-green-200 p-2 rounded">
-                <strong className="text-green-800 block mb-1">
-                  Live Green Analysis:{" "}
-                  {(stats.greenAnalysis as any).overallScore} /{" "}
-                  {(stats.greenAnalysis as any).maxScore}
-                </strong>
-                {(() => {
-                  const items = (
-                    (stats.greenAnalysis as any).categories || []
-                  ).flatMap((c: any) => c.items || []);
-                  return items.slice(0, 3).map((item: any, i: number) => (
-                    <div
-                      key={i}
-                      className="flex justify-between text-[9px] text-green-900 border-t border-green-100/50 pt-0.5 mt-0.5"
-                    >
+          // OWC
+          const owcKgDay = Math.round(occupants * 0.3);
+          const owcCompost = Math.round(owcKgDay * 0.2);
+          const owcTonnesAnnual = ((owcCompost * 365) / 1000).toFixed(2);
+
+          return (
+            <>
+              <div className="grid grid-cols-2 gap-4 mb-4 text-[10px]">
+                <div>
+                  <SH2 className="!mt-0">11.1 Energy Conservation (ECBC & Solar)</SH2>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">Solar Power System</strong>
+                  <ul className="list-disc pl-4 space-y-0.5 mb-2">
+                    <li>
+                      <strong>Capacity:</strong> {solarCapKW} kWp Grid-tied with net metering (exceeds 1% code)
+                    </li>
+                    <li>
+                      <strong>System:</strong> {solarPanels} Monocrystalline 335W panels ({solarAreaM2} sq.m rooftop area)
+                    </li>
+                    <li>
+                      <strong>Generation:</strong> ~{solarGenDay} kWh/day (Annual: {fmt(solarGenYear)} kWh/year)
+                    </li>
+                    <li>
+                      <strong>Savings:</strong> &gt;30% of common area electricity (Payback: ~2.5 years)
+                    </li>
+                  </ul>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">ECBC Compliance (EPI: &lt;100 kWh/sq.m/yr)</strong>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    <li><strong>Envelope:</strong> Flyash bricks (U: 1.2), Roof insulation (U: 0.4)</li>
+                    <li><strong>Glazing:</strong> Double-glazed WWR 30% (SHGC 0.25, VLT 0.6)</li>
+                    <li><strong>Lighting:</strong> 100% LED, Motion sensors, &lt;10 W/sq.m</li>
+                    <li><strong>HVAC (Common):</strong> VRV systems (COP &gt;3.5), HRV fresh air</li>
+                    <li><strong>Pumps/Motors:</strong> IE3 class motors, VFDs on pumps &gt;5 HP</li>
+                  </ul>
+                </div>
+                <div>
+                  <SH2 className="!mt-0">11.2 Water Conservation</SH2>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">Rainwater Harvesting</strong>
+                  <ul className="list-disc pl-4 space-y-0.5 mb-2">
+                    <li>
+                      <strong>Catchment Potential:</strong> {fmt(roofArea)} sq.m (roof) + {fmt(openCatchment)} sq.m (open)
+                    </li>
+                    <li>
+                      <strong>Annual Capture:</strong> ~{fmt(rwhRunoff)} cubic meters/year ({annualRainfall}mm rainfall, 0.85 runoff)
+                    </li>
+                    <li>
+                      <strong>Infrastructure:</strong> {rwhBores} Recharge Bores (150mm dia, 20m depth)
+                    </li>
+                    <li>
+                      <strong>Storage:</strong> {fmt(rwhStorageLitres)}L underground tank + Sand/Mesh filtration
+                    </li>
+                  </ul>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">Water Efficiency & STP</strong>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    <li><strong>Fixtures:</strong> Aerators, dual-flush WCs, sensor taps (26% reduction)</li>
+                    <li>
+                      <strong>STP Tech:</strong> {stpKLD} KLD Extended Aeration + MBR (Outlet BOD &lt;10 mg/L)
+                    </li>
+                    <li><strong>Zero Discharge:</strong> 100% sewage treated & reused on-site</li>
+                    <li>
+                      <strong>Potable Savings:</strong> {fmt(potableSavingsLDay)} L/day (Annual: ~₹{potableSavingsAnnualLakhs} lakhs)
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              <SH2>11.3 Comprehensive Waste Management</SH2>
+              <div className="grid grid-cols-2 gap-4 mb-4 text-[10px]">
+                <div>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">Solid Waste Processing (OWC)</strong>
+                  <ul className="list-disc pl-4 space-y-0.5 mb-2">
+                    <li><strong>Technology:</strong> Aerobic composting with microbial culture</li>
+                    <li>
+                      <strong>Capacity:</strong> {owcKgDay} kg/day (1.5m × 1.0m × 1.2m unit in basement)
+                    </li>
+                    <li><strong>Process:</strong> Shredding → Microbial mixing → 15-20 days retention</li>
+                    <li>
+                      <strong>Output:</strong> {owcCompost} kg compost/day ({owcTonnesAnnual} tonnes annually)
+                    </li>
+                  </ul>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">Dry Waste & Zero Waste Target</strong>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    <li><strong>Segregation:</strong> 3-bin system (Wet/Dry/Reject) per floor</li>
+                    <li><strong>Target:</strong> Organic 100% composted, Dry 90% recycled, Landfill &lt;10%</li>
+                    <li><strong>Categories:</strong> Paper/plastic sold, E-waste quarterly drive</li>
+                  </ul>
+                </div>
+                <div>
+                  <strong className="block text-slate-800 mb-1 border-b pb-1">Construction Waste & Green Premium</strong>
+                  <ul className="list-disc pl-4 space-y-0.5 mb-2">
+                    <li><strong>C&D Segregation:</strong> Concrete (crushed for base), Metal (rebar), Wood (formwork)</li>
+                    <li><strong>Target:</strong> 80% waste diverted from landfill during construction</li>
+                    <li><strong>Green Incentive:</strong> 9% Additional FAR (for 3-star GRIHA equivalent)</li>
+                    <li><strong>Operational ROI:</strong> &lt;2 years on ₹8-10 lakhs certification cost</li>
+                  </ul>
+                  {stats?.greenAnalysis && (
+                    <div className="mt-2 bg-green-50 border border-green-200 p-2 rounded">
+                      <strong className="text-green-800 block mb-1">
+                        Live Green Analysis:{" "}
+                        {(stats.greenAnalysis as any).overallScore} /{" "}
+                        {(stats.greenAnalysis as any).maxScore}
+                      </strong>
+                      {(() => {
+                        const items = ((stats.greenAnalysis as any).categories || []).flatMap((c: any) => c.items || []);
+                        return items.slice(0, 3).map((item: any, i: number) => (
+                          <div key={i} className="flex justify-between text-[9px] text-green-900 border-t border-green-100/50 pt-0.5 mt-0.5">
+
                       <span>
                         {item.title}: {item.score}
                       </span>
                     </div>
                   ));
                 })()}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        </>
+      );
+    })()}
       </div>
       <PageBreak />
 
@@ -3469,7 +3485,7 @@ export function FeasibilityReport({
                         </tr>
                         <tr>
                           <TD>Balconies</TD>
-                          <TD>{fmt(totalCarpet * 0.11)} sqm</TD>
+                          <TD>{fmt(balconyArea)} sqm</TD>
                           <TD>
                             {crore(
                               (cb.structure + cb.finishing) * 0.08 * simRatio10,
@@ -3482,7 +3498,7 @@ export function FeasibilityReport({
                         </tr>
                         <tr>
                           <TD>Ground floor amenities</TD>
-                          <TD>560 sqm</TD>
+                          <TD>{fmt(amenityArea)} sqm</TD>
                           <TD>
                             {crore(
                               (cb.structure + cb.finishing) * 0.02 * simRatio10,
@@ -3583,84 +3599,54 @@ export function FeasibilityReport({
                       <tbody>
                         <tr>
                           <TD>Landscaping (hard+soft)</TD>
-                          <TD>880 sqm</TD>
+                          <TD>{fmt(landscapeArea)} sqm</TD>
                           <TD>
-                            {crore(880 * 8000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
+                            {crore(landscapeArea * 6000).replace(/₹ | Cr/g, "")}{" "}
                             –{" "}
-                            {crore(880 * 8000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
+                            {crore(landscapeArea * 8000).replace(/₹ | Cr/g, "")}
                           </TD>
                         </tr>
                         <tr>
-                          <TD>Swimming pool</TD>
-                          <TD>200 sqm</TD>
+                          <TD>Surface Parking</TD>
+                          <TD>{fmt(surfaceParkingArea)} sqm</TD>
                           <TD>
-                            {crore(200 * 20000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
+                            {crore(surfaceParkingArea * 5000).replace(/₹ | Cr/g, "")}{" "}
                             –{" "}
-                            {crore(200 * 20000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
+                            {crore(surfaceParkingArea * 10000).replace(/₹ | Cr/g, "")}
                           </TD>
                         </tr>
                         <tr>
                           <TD>Boundary wall</TD>
-                          <TD>180 LM</TD>
+                          <TD>{fmt(plotPerimeter)} LM</TD>
                           <TD>
-                            {crore(180 * 5000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
+                            {crore(plotPerimeter * 9000).replace(/₹ | Cr/g, "")}{" "}
                             –{" "}
-                            {crore(180 * 5000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
+                            {crore(plotPerimeter * 12000).replace(/₹ | Cr/g, "")}
                           </TD>
                         </tr>
                         <tr>
                           <TD>Roads & paving</TD>
-                          <TD>400 sqm</TD>
+                          <TD>{fmt(roadArea)} sqm</TD>
                           <TD>
-                            {crore(400 * 4000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
+                            {crore(roadArea * 5000).replace(/₹ | Cr/g, "")}{" "}
                             –{" "}
-                            {crore(400 * 4000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
+                            {crore(roadArea * 10000).replace(/₹ | Cr/g, "")}
                           </TD>
                         </tr>
-                        <tr className="bg-slate-50 font-semibold">
-                          <TD colSpan={2}>Sub-total (External)</TD>
-                          <TD>
-                            {crore(
-                              (880 * 8000 +
-                                200 * 20000 +
-                                180 * 5000 +
-                                400 * 4000) *
-                                simRatio10,
-                            ).replace(/₹ | Cr/g, "")}{" "}
-                            –{" "}
-                            {crore(
-                              (880 * 8000 +
-                                200 * 20000 +
-                                180 * 5000 +
-                                400 * 4000) *
-                                simRatio90,
-                            ).replace(/₹ | Cr/g, "")}
-                          </TD>
-                        </tr>
+                        {(() => {
+                          const extMin = landscapeArea * 6000 + surfaceParkingArea * 5000 + plotPerimeter * 9000 + roadArea * 5000;
+                          const extMax = landscapeArea * 8000 + surfaceParkingArea * 10000 + plotPerimeter * 12000 + roadArea * 10000;
+                          return (
+                            <tr className="bg-slate-50 font-semibold">
+                              <TD colSpan={2}>Sub-total (External)</TD>
+                              <TD>
+                                {crore(extMin).replace(/₹ | Cr/g, "")}{" "}
+                                –{" "}
+                                {crore(extMax).replace(/₹ | Cr/g, "")}
+                              </TD>
+                            </tr>
+                          );
+                        })()}
                       </tbody>
                     </table>
                   </div>
@@ -3677,131 +3663,32 @@ export function FeasibilityReport({
                         </tr>
                       </thead>
                       <tbody>
-                        <tr>
-                          <TD>Lifts ({towers * 3} nos.)</TD>
-                          <TD>Lumpsum</TD>
-                          <TD>
-                            {crore(towers * 3 * 1500000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(towers * 3 * 1500000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
-                        <tr>
-                          <TD>DG set (500 kVA)</TD>
-                          <TD>Lumpsum</TD>
-                          <TD>
-                            {crore(500 * 7000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(500 * 7000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
-                        <tr>
-                          <TD>Solar power ({towers * 10} kWp)</TD>
-                          <TD>Lumpsum</TD>
-                          <TD>
-                            {crore(towers * 10 * 60000 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(towers * 10 * 60000 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
-                        <tr>
-                          <TD>STP Common</TD>
-                          <TD>Lumpsum</TD>
-                          <TD>
-                            {crore(45 * 33333 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(45 * 33333 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
-                        <tr>
-                          <TD>Water supply & plumb.</TD>
-                          <TD>{fmt(totalCarpet)} sqm</TD>
-                          <TD>
-                            {crore(cb.services * 0.4 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(cb.services * 0.4 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
-                        <tr>
-                          <TD>Electrical inst.</TD>
-                          <TD>{fmt(totalCarpet)} sqm</TD>
-                          <TD>
-                            {crore(cb.services * 0.5 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(cb.services * 0.5 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
-                        <tr>
-                          <TD>HVAC / Fire / Sec.</TD>
-                          <TD>Common + Site</TD>
-                          <TD>
-                            {crore(cb.services * 0.1 * simRatio10).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}{" "}
-                            –{" "}
-                            {crore(cb.services * 0.1 * simRatio90).replace(
-                              /₹ | Cr/g,
-                              "",
-                            )}
-                          </TD>
-                        </tr>
+                        {estimates?.simulation?.utility_costs?.map((u: any) => (
+                          <tr key={u.label}>
+                            <TD>{u.label}</TD>
+                            <TD>{u.unit}</TD>
+                            <TD>
+                              {u.minAmount && u.maxAmount
+                                ? `${crore(u.minAmount).replace(/₹ | Cr/g, "")} – ${crore(u.maxAmount).replace(/₹ | Cr/g, "")}`
+                                : crore(u.amount).replace(/₹ | Cr/g, "")}
+                            </TD>
+                          </tr>
+                        ))}
+                        {(!estimates?.simulation?.utility_costs || estimates.simulation.utility_costs.length === 0) && (
+                          <tr>
+                            <TD colSpan={3} className="text-center italic text-muted-foreground p-3">
+                              Run simulation to populate utilities.
+                            </TD>
+                          </tr>
+                        )}
                         <tr className="bg-slate-50 font-semibold">
                           <TD colSpan={2}>Sub-total (Services)</TD>
                           <TD>
-                            {crore(
-                              (towers * 3 * 1500000 +
-                                500 * 7000 +
-                                towers * 10 * 60000 +
-                                45 * 33333 +
-                                cb.services) *
-                                simRatio10,
-                            ).replace(/₹ | Cr/g, "")}{" "}
-                            –{" "}
-                            {crore(
-                              (towers * 3 * 1500000 +
-                                500 * 7000 +
-                                towers * 10 * 60000 +
-                                45 * 33333 +
-                                cb.services) *
-                                simRatio90,
-                            ).replace(/₹ | Cr/g, "")}
+                            {estimates?.simulation?.total_utility_cost_min && estimates?.simulation?.total_utility_cost_max
+                              ? `${crore(estimates.simulation.total_utility_cost_min).replace(/₹ | Cr/g, "")} – ${crore(estimates.simulation.total_utility_cost_max).replace(/₹ | Cr/g, "")}`
+                              : estimates?.simulation?.total_utility_cost 
+                                ? crore(estimates.simulation.total_utility_cost).replace(/₹ | Cr/g, "") 
+                                : "-"}
                           </TD>
                         </tr>
                       </tbody>
@@ -3946,17 +3833,21 @@ export function FeasibilityReport({
                     <ul className="list-disc pl-4 space-y-0.5 mb-2">
                       <li>
                         <strong>Target Price:</strong> ₹
-                        {fmt(
-                          totalRev && totalCarpet
-                            ? Math.round(totalRev / (totalCarpet * 10.764))
-                            : 11000,
-                        )}{" "}
-                        per sq.ft (Dynamic Market Input)
+                        {(() => {
+                          const ratePerSqm = estimates?.market_rate_per_sqm;
+                          if (ratePerSqm) return fmt(Math.round(ratePerSqm / 10.764));
+                          if (totalRev && totalCarpet) return fmt(Math.round(totalRev / (totalCarpet * 10.764)));
+                          return fmt(11000);
+                        })()}{" "}
+                        per sq.ft
                       </li>
                       <li>
                         <strong>Total Saleable (Carpet):</strong>{" "}
-                        {fmt(totalCarpet)} sq.m ({fmt(totalCarpet * 10.764)}{" "}
-                        sq.ft)
+                        {(() => {
+                          const ratePerSqm = estimates?.market_rate_per_sqm;
+                          const saleableArea = ratePerSqm && totalRev ? Math.round(totalRev / ratePerSqm) : totalCarpet;
+                          return <>{fmt(saleableArea)} sq.m ({fmt(Math.round(saleableArea * 10.764))} sq.ft)</>;
+                        })()}
                       </li>
                     </ul>
                     <table className="w-full border-collapse mt-2">
@@ -3967,7 +3858,9 @@ export function FeasibilityReport({
                           </TD>
                           <TD className="text-right">
                             {crore(
-                              totalRev || totalCarpet * 11000 * 10.764,
+                              totalRev || (estimates?.market_rate_per_sqm
+                                ? totalCarpet * estimates.market_rate_per_sqm
+                                : totalCarpet * 11000 * 10.764),
                             ).replace(/₹ | Cr/g, "")}
                           </TD>
                         </tr>
@@ -3977,34 +3870,47 @@ export function FeasibilityReport({
                           </TD>
                           <TD className="text-right">
                             {sim
-                              ? `${crore(sim.cost_p10 + totalCost * 0.15 * simRatio10 + actualLandCost + totalCost * 0.02 * simRatio10).replace(/₹ | Cr/g, "")} – ${crore(sim.cost_p90 + totalCost * 0.15 * simRatio90 + actualLandCost + totalCost * 0.02 * simRatio90).replace(/₹ | Cr/g, "")}`
-                              : crore(
-                                  totalCost * 1.17 + actualLandCost,
-                                ).replace(/₹ | Cr/g, "")}
+                              ? `${crore(sim.cost_p10 + actualLandCost).replace(/₹ | Cr/g, "")} – ${crore(sim.cost_p90 + actualLandCost).replace(/₹ | Cr/g, "")}`
+                              : crore(totalCost * 1.17 + actualLandCost).replace(/₹ | Cr/g, "")}
                           </TD>
                         </tr>
-                        <tr className="font-bold bg-green-50">
-                          <TD className="font-bold">Gross Profit Range</TD>
-                          <TD className="font-bold text-green-700 text-right">
-                            {sim
-                              ? `${crore((totalRev || totalCarpet * 11000 * 10.764) - (sim.cost_p90 + totalCost * 0.15 * simRatio90 + actualLandCost + totalCost * 0.02 * simRatio90)).replace(/₹ | Cr/g, "")} – ${crore((totalRev || totalCarpet * 11000 * 10.764) - (sim.cost_p10 + totalCost * 0.15 * simRatio10 + actualLandCost + totalCost * 0.02 * simRatio10)).replace(/₹ | Cr/g, "")}`
-                              : crore(
-                                  (totalRev || totalCarpet * 11000 * 10.764) -
-                                    (totalCost * 1.17 + actualLandCost),
-                                ).replace(/₹ | Cr/g, "")}
-                          </TD>
-                        </tr>
-                        <tr className="font-bold bg-blue-50">
-                          <TD className="font-bold text-blue-800">
-                            Return on Investment (ROI)
-                          </TD>
-                          <TD className="font-bold text-blue-800 text-right">
-                            {sim
-                              ? `${(((((totalRev || totalCarpet * 11000 * 10.764) - (sim.cost_p90 + totalCost * 0.15 * simRatio90 + actualLandCost + totalCost * 0.02 * simRatio90)) * 0.8) / ((sim.cost_p90 + totalCost * 0.15 * simRatio90 + actualLandCost + totalCost * 0.02 * simRatio90) * 0.4)) * 100).toFixed(1)}% – ${(((((totalRev || totalCarpet * 11000 * 10.764) - (sim.cost_p10 + totalCost * 0.15 * simRatio10 + actualLandCost + totalCost * 0.02 * simRatio10)) * 0.8) / ((sim.cost_p10 + totalCost * 0.15 * simRatio10 + actualLandCost + totalCost * 0.02 * simRatio10) * 0.4)) * 100).toFixed(1)}%`
-                              : `${(((((totalRev || totalCarpet * 11000 * 10.764) - (totalCost * 1.17 + actualLandCost)) * 0.8) / ((totalCost * 1.17 + actualLandCost) * 0.4)) * 100).toFixed(1)}%`}
-                          </TD>
-                        </tr>
+                        {(() => {
+                          const baseRev = totalRev || (estimates?.market_rate_per_sqm
+                            ? totalCarpet * estimates.market_rate_per_sqm
+                            : totalCarpet * 11000 * 10.764);
+                          // Match dashboard: totalCostWithLand = sim.cost + landCostWithStamp (actualLandCost)
+                          const bestCost  = sim ? sim.cost_p10 + actualLandCost : totalCost * 1.17 + actualLandCost;
+                          const worstCost = sim ? sim.cost_p90 + actualLandCost : totalCost * 1.17 + actualLandCost;
+                          const profitBest  = baseRev - bestCost;
+                          const profitWorst = baseRev - worstCost;
+                          const roiBest  = bestCost  > 0 ? (profitBest  / bestCost)  * 100 : 0;
+                          const roiWorst = worstCost > 0 ? (profitWorst / worstCost) * 100 : 0;
+                          return (
+                            <>
+                              <tr className="font-bold bg-green-50">
+                                <TD className="font-bold">Gross Profit Range</TD>
+                                <TD className={`font-bold text-right ${profitWorst < 0 ? "text-red-600" : "text-green-700"}`}>
+                                  {sim
+                                    ? `${crore(profitWorst).replace(/₹ | Cr/g, "")} – ${crore(profitBest).replace(/₹ | Cr/g, "")}`
+                                    : crore(profitBest).replace(/₹ | Cr/g, "")}
+                                </TD>
+                              </tr>
+                              <tr className="font-bold bg-blue-50">
+                                <TD className="font-bold text-blue-800">
+                                  Return on Investment (ROI)
+                                </TD>
+                                <TD className="font-bold text-blue-800 text-right">
+                                  {sim
+                                    ? `${roiWorst.toFixed(1)}% – ${roiBest.toFixed(1)}%`
+                                    : `${roiBest.toFixed(1)}%`}
+                                </TD>
+                              </tr>
+                            </>
+                          );
+                        })()}
                       </tbody>
+
+
                     </table>
                   </div>
                   <div>
@@ -4022,11 +3928,15 @@ export function FeasibilityReport({
                       </thead>
                       <tbody>
                         {[-10, 0, 10].map((pct, i) => {
-                          const baseRev =
-                            totalRev || totalCarpet * 11000 * 10.764;
+                          const baseRev = totalRev || (estimates?.market_rate_per_sqm
+                            ? totalCarpet * estimates.market_rate_per_sqm
+                            : totalCarpet * 11000 * 10.764);
                           const adjRev = baseRev * (1 + pct / 100);
                           const fullCost = totalCost * 1.17 + actualLandCost;
                           const adjProfit = (adjRev - fullCost) * 0.8;
+                          const basePricePerSqft = estimates?.market_rate_per_sqm
+                            ? Math.round(estimates.market_rate_per_sqm / 10.764)
+                            : (totalRev && totalCarpet ? Math.round(totalRev / (totalCarpet * 10.764)) : 11000);
                           return (
                             <tr
                               key={i}
@@ -4040,7 +3950,7 @@ export function FeasibilityReport({
                                 {pct >= 0 ? "+" : ""}
                                 {pct}%
                                 {pct === 0
-                                  ? ` (₹${fmt(totalRev && totalCarpet ? Math.round(totalRev / (totalCarpet * 10.764)) : 11000)})`
+                                  ? ` (₹${fmt(basePricePerSqft)})`
                                   : ""}
                               </TD>
                               <TD>{crore(adjRev)}</TD>
@@ -4071,7 +3981,9 @@ export function FeasibilityReport({
                       <br />
                       Break-even Cost: +
                       {(
-                        ((totalRev || totalCarpet * 11000 * 10.764) /
+                        ((totalRev || (estimates?.market_rate_per_sqm
+                          ? totalCarpet * estimates.market_rate_per_sqm
+                          : totalCarpet * 11000 * 10.764)) /
                           (totalCost * 1.17 + actualLandCost) -
                           1) *
                         100
@@ -6407,33 +6319,49 @@ export function FeasibilityReport({
             <strong className="block text-slate-700 mb-1 border-b pb-1">
               Foundation
             </strong>
-            <ul className="list-disc pl-3 space-y-[1px] text-slate-600 mb-2">
-              <li>
-                <strong>Type:</strong> Deep raft foundation (500mm thick)
-              </li>
-              <li>
-                <strong>Depth:</strong> 8–10m (medium dense sand, SBC 300
-                kN/sq.m)
-              </li>
-              <li>
-                <strong>Est. Load:</strong> ~
-                {fmt(Math.round(maxFloors * 305 * towers))} tonnes total (
-                {fmt(Math.round(maxFloors * 305))} per tower)
-              </li>
-              <li>
-                <strong>Safety Factor:</strong> &gt;3 ✔
-              </li>
-              <li>
-                <strong>Towers:</strong> {towers} ×{" "}
-                {Math.round(builtUp / towers / totalLevels)} sq.m plate each
-              </li>
-            </ul>
+            {(() => {
+              // Dynamic foundation recommendation based on building height
+              const isHighRise = maxFloors >= 15;
+              const isMidRise  = maxFloors >= 7 && maxFloors < 15;
+              const foundationType = isHighRise
+                ? `Piled raft foundation (600mm dia. bored piles)`
+                : isMidRise
+                ? `Deep raft foundation (500mm thick)`
+                : `Isolated/combined footing`;
+              const foundDepth = isHighRise ? `12–18m` : isMidRise ? `8–10m` : `3–5m`;
+              return (
+                <ul className="list-disc pl-3 space-y-[1px] text-slate-600 mb-2">
+                  <li>
+                    <strong>Type:</strong> {foundationType}
+                  </li>
+                  <li>
+                    <strong>Depth:</strong> {foundDepth} (medium dense sand, SBC 300 kN/sq.m)
+                  </li>
+                  <li>
+                    <strong>Est. Load:</strong> ~
+                    {fmt(Math.round(maxFloors * 305 * towers))} tonnes total (
+                    {fmt(Math.round(maxFloors * 305))} per tower)
+                  </li>
+                  <li>
+                    <strong>Safety Factor:</strong> &gt;3 ✔
+                  </li>
+                  <li>
+                    <strong>Towers:</strong> {towers} ×{" "}
+                    {fmt(Math.round(builtUp / towers / totalLevels))} sq.m plate each
+                  </li>
+                </ul>
+              );
+            })()}
             <strong className="block text-slate-700 mb-1 border-b pb-1">
               Structural System (SMRF)
             </strong>
             <ul className="list-disc pl-3 space-y-[1px] text-slate-600 mb-2">
               <li>Special Moment Resisting Frame (R = 5.0)</li>
-              <li>Concrete: M30 (columns/beams), M25 (slabs)</li>
+              <li>
+                Concrete: {maxFloors >= 20 ? "M40 (columns), M35 (beams), M30 (slabs)" :
+                  maxFloors >= 10 ? "M35 (columns/beams), M30 (slabs)" :
+                  "M30 (columns/beams), M25 (slabs)"}
+              </li>
               <li>Steel: Fe500D (earthquake-resistant)</li>
               <li>Design: IS 456, IS 1893, IS 13920 ✔</li>
             </ul>
@@ -6491,53 +6419,43 @@ export function FeasibilityReport({
                 </tr>
               </thead>
               <tbody>
-                {[
-                  ...(hasSolar
-                    ? [
-                        [
-                          "Solar Power",
-                          `${towers * 10} kWp (rooftop, ${towers} towers)`,
-                          "₹1.8L/year savings",
-                        ],
-                      ]
-                    : [
-                        [
-                          "Solar Power",
-                          "Not yet configured",
-                          "Recommend addition",
-                        ],
-                      ]),
-                  [
-                    "ECBC Compliance",
-                    "Insulation, double glazing, shading",
-                    "~29% energy reduction",
-                  ],
-                  ...(hasSTP
-                    ? [
-                        [
-                          "STP",
-                          `${Math.round(totalUnits * 0.135)} KLD, 100% reuse`,
-                          "Zero discharge",
-                        ],
-                      ]
-                    : [["STP", "Not yet configured", "Recommend addition"]]),
-                  ...(hasRWH
-                    ? [
-                        [
-                          "Rainwater Harvesting",
-                          `${towers * 2} bores, 20,000L tank`,
-                          "851 cu.m/year recharge",
-                        ],
-                      ]
-                    : [
-                        [
-                          "Rainwater Harvesting",
-                          "Not yet configured",
-                          "Recommend addition",
-                        ],
-                      ]),
-                  ["LED Lighting", "100% common areas", "₹1.2L/year savings"],
-                ].map(([f, s, b], i) => (
+                {(() => {
+                  // ── Replicate EXACT dashboard formulas (feasibility-dashboard.tsx:1580-1625) ──
+                  const occupants = totalUnits * 4; // same as dashboard activeTotalOccupants
+                  const roofAreaCalc = Math.round(
+                    (plot.buildings || []).reduce((s: number, b: any) => s + (b.area || 0), 0)
+                  ) || Math.round(builtUp / Math.max(1, maxFloors));
+                  
+                  // Solar PV: 25% of peak load (occupants × 0.8kW/person × 0.7 diversity)
+                  const totalLoadKW = occupants * 0.8 * 0.7;
+                  const solarKW = Math.round(totalLoadKW * 0.25);
+                  
+                  // STP: occupants × 120L sewage × 1.2 safety factor / 1000
+                  const stpKLD = Math.round((occupants * 120 * 1.2) / 1000);
+                  
+                  // Water demand: occupants × 135L/person/day
+                  const dailyWaterKL = Math.round((occupants * 135) / 1000);
+                  // STP treated reuse: 80% of STP capacity
+                  const stpReuse = Math.round(stpKLD * 0.8);
+                  
+                  // RWH: roofArea × annualRainfall(1200mm) × 0.85 runoff coefficient
+                  const annualRainfall = 1200;
+                  const rwhM3 = Math.round(roofAreaCalc * (annualRainfall / 1000) * 0.85);
+
+                  return [
+                    ...(hasSolar
+                      ? [["Solar Power", `${solarKW} kWp (rooftop, ${roofAreaCalc} m² roof)`, `₹${Math.round(solarKW * 0.8)}K/year savings`]]
+                      : [["Solar Power", "Not yet configured", "Recommend addition"]]),
+                    ["ECBC Compliance", "Insulation, double glazing, shading", "~29% energy reduction"],
+                    ...(hasSTP
+                      ? [["STP", `${stpKLD} KLD, 100% reuse`, "Zero discharge"]]
+                      : [["STP", "Not yet configured", "Recommend addition"]]),
+                    ...(hasRWH
+                      ? [["Rainwater Harvesting", `${towers * 2} bores, 20,000L tank`, `${fmt(rwhM3)} cu.m/year recharge`]]
+                      : [["Rainwater Harvesting", "Not yet configured", "Recommend addition"]]),
+                    ["LED Lighting", "100% common areas", "₹1.2L/year savings"],
+                  ];
+                })().map(([f, s, b], i) => (
                   <tr key={i} className={i % 2 === 0 ? "bg-slate-50" : ""}>
                     <TD className="font-semibold">{f}</TD>
                     <TD>{s}</TD>

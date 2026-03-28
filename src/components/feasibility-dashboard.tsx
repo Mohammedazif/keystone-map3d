@@ -1883,44 +1883,53 @@ function MetricsTab() {
 
       {/* ══════════ PARKING ══════════ */}
       <Section title="🅿️ Parking Summary">
-        <Row
-          label="Total Spaces"
-          value={totalParkingSpaces}
-          accent="text-primary"
-          formula={`Surface (${allParkingAreas.reduce((s, p) => s + (p.capacity || 0), 0)}) + Building floors (${allParkingFloors.reduce((s, f) => s + (f.parkingCapacity || 0), 0)})`}
-        />
-        <Row
-          label="Required"
-          value={metrics.parking.required}
-          formula={`Total Units (${metrics.totalUnits}) × parking ratio`}
-        />
-        <Row
-          label="Status"
-          value={
-            totalParkingSpaces >= metrics.parking.required
-              ? "✓ Compliant"
-              : "✗ Deficit"
-          }
-          accent={
-            totalParkingSpaces >= metrics.parking.required
-              ? "text-green-400"
-              : "text-red-400"
-          }
-        />
-        <Row label="Basement" value={metrics.parking.breakdown.basement} />
-        <Row label="Stilt" value={metrics.parking.breakdown.stilt} />
-        <Row label="Surface" value={metrics.parking.breakdown.surface} />
-        {allParkingFloors.reduce((s, f) => s + (f.evStations || 0), 0) > 0 && (
-          <Row
-            label="EV Charging Points"
-            value={allParkingFloors.reduce(
-              (s, f) => s + (f.evStations || 0),
-              0,
-            )}
-            accent="text-cyan-400"
-            formula="Units × 1.5 × 0.2 (split across basements)"
-          />
-        )}
+        {(() => {
+          const parkBase = Math.ceil((allUnits.length || metrics.totalUnits) * 1.5);
+          const parkGuest = Math.ceil(parkBase * 0.1);
+          const parkTotal = parkBase + parkGuest;
+          return (
+            <>
+              <Row
+                label="Total Spaces"
+                value={totalParkingSpaces}
+                accent="text-primary"
+                formula={`Surface (${allParkingAreas.reduce((s, p) => s + (p.capacity || 0), 0)}) + Building floors (${allParkingFloors.reduce((s, f) => s + (f.parkingCapacity || 0), 0)})`}
+              />
+              <Row
+                label="Required (1.5 ECS)"
+                value={parkBase}
+                formula={`Total Units (${allUnits.length || metrics.totalUnits}) × 1.5 ECS/unit`}
+              />
+              <Row
+                label="Guest (10%)"
+                value={parkGuest}
+                formula={`${parkBase} × 10% guest parking`}
+              />
+              <Row
+                label="Total Required"
+                value={parkTotal}
+                accent="text-amber-400"
+                formula={`${parkBase} base + ${parkGuest} guest`}
+              />
+              <Row
+                label="Status"
+                value={totalParkingSpaces >= parkTotal ? "✓ Compliant" : "✗ Deficit"}
+                accent={totalParkingSpaces >= parkTotal ? "text-green-400" : "text-red-400"}
+              />
+              <Row label="Basement" value={metrics.parking.breakdown.basement} />
+              <Row label="Stilt" value={metrics.parking.breakdown.stilt} />
+              <Row label="Surface" value={metrics.parking.breakdown.surface} />
+              {allParkingFloors.reduce((s, f) => s + (f.evStations || 0), 0) > 0 && (
+                <Row
+                  label="EV Charging Points"
+                  value={allParkingFloors.reduce((s, f) => s + (f.evStations || 0), 0)}
+                  accent="text-cyan-400"
+                  formula="Units × 1.5 × 0.2 (split across basements)"
+                />
+              )}
+            </>
+          );
+        })()}
       </Section>
 
       {/* ══════════ EFFICIENCY ══════════ */}
@@ -4404,6 +4413,23 @@ export function FeasibilityDashboard() {
   const { estimates: simEstimates, isLoading: simLoading } =
     useProjectEstimates(activeProjectData, metricsForSim);
 
+  // ─── Site Costs logic from Dashboard lifted for the Report ───
+  const roadArea = metricsForSim?.roadArea || 0;
+  const parkingArea = (activeProjectData?.plots || [])
+    .flatMap((p) => p.parkingAreas || [])
+    .reduce((s, pa) => s + (pa.area || 0), 0);
+  const totalPerimeter = (activeProjectData?.plots || []).reduce((s, p) => {
+    try {
+      const coords = (p.geometry as any)?.geometry?.coordinates?.[0];
+      if (!coords || coords.length === 0) return s;
+      const line = turf.lineString(coords);
+      const len = turf.length(line as any, { units: "meters" }) || 0;
+      return s + len;
+    } catch {
+      return s;
+    }
+  }, 0);
+
   // demo
   const plot = plots[0];
 
@@ -4697,6 +4723,11 @@ export function FeasibilityDashboard() {
             metrics={metricsForSim}
             estimates={simEstimates}
             generationParams={generationParams}
+            siteCosts={{
+              totalPerimeter: Math.round(totalPerimeter),
+              roadArea: Math.round(roadArea),
+              parkingArea: Math.round(parkingArea),
+            }}
           />
         )}
         {activeProject && selectedPlot && reportType === "underwriting" && (
