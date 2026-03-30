@@ -23,7 +23,7 @@ export enum BuildingIntendedUse {
 
 export interface Core {
   id: string;
-  type: 'Lift' | 'Stair' | 'Service' | 'Lobby';
+  type: 'Lift' | 'Stair' | 'Service' | 'Lobby' | 'Circulation';
   geometry: Feature<Polygon>;
   floorId?: string;
 }

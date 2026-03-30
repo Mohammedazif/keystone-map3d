@@ -73,16 +73,30 @@ function renderBuildingSubItems(b: import('@/lib/types').Building, componentVisi
                     ))}
                 </div>
             )}
-            {b.cores && b.cores.length > 0 && (
-                <div className="pl-8 space-y-1 pb-2">
-                    <div className={cn("flex items-center text-xs cursor-pointer transition-colors group", componentVisibility.cores ? "text-primary font-medium" : "text-muted-foreground hover:text-primary")}
-                        onClick={(e) => { e.stopPropagation(); actions.toggleComponentVisibility('cores'); }} title={componentVisibility.cores ? "Hide Cores" : "Show Only Cores"}>
-                        <Box className="h-3.5 w-3.5 mr-1.5 shrink-0" style={{ color: '#9370DB' }} />
-                        <span className="flex-1 truncate">Cores ({b.cores.length})</span>
-                        <span className="shrink-0 ml-1">{componentVisibility.cores ? <Eye className="h-3 w-3 text-primary" /> : <EyeOff className="h-3 w-3 text-muted-foreground/40" />}</span>
+            {b.cores && b.cores.length > 0 && (() => {
+                const regularCores = b.cores.filter(c => c.type !== 'Circulation');
+                const circCores = b.cores.filter(c => c.type === 'Circulation');
+                return (
+                    <div className="pl-8 space-y-1 pb-2">
+                        {regularCores.length > 0 && (
+                            <div className={cn("flex items-center text-xs cursor-pointer transition-colors group", componentVisibility.cores ? "text-primary font-medium" : "text-muted-foreground hover:text-primary")}
+                                onClick={(e) => { e.stopPropagation(); actions.toggleComponentVisibility('cores'); }} title={componentVisibility.cores ? "Hide Cores" : "Show Only Cores"}>
+                                <Box className="h-3.5 w-3.5 mr-1.5 shrink-0" style={{ color: '#9370DB' }} />
+                                <span className="flex-1 truncate">Cores ({regularCores.length})</span>
+                                <span className="shrink-0 ml-1">{componentVisibility.cores ? <Eye className="h-3 w-3 text-primary" /> : <EyeOff className="h-3 w-3 text-muted-foreground/40" />}</span>
+                            </div>
+                        )}
+                        {circCores.length > 0 && (
+                            <div className={cn("flex items-center text-xs cursor-pointer transition-colors group group-circ", componentVisibility.cores ? "text-primary font-medium" : "text-muted-foreground hover:text-primary")}
+                                onClick={(e) => { e.stopPropagation(); actions.toggleComponentVisibility('cores'); }} title={componentVisibility.cores ? "Hide Circulation" : "Show Only Circulation"}>
+                                <Box className="h-3.5 w-3.5 mr-1.5 shrink-0" style={{ color: '#78909C' }} />
+                                <span className="flex-1 truncate">Circulation ({circCores.length})</span>
+                                <span className="shrink-0 ml-1">{componentVisibility.cores ? <Eye className="h-3 w-3 text-primary" /> : <EyeOff className="h-3 w-3 text-muted-foreground/40" />}</span>
+                            </div>
+                        )}
                     </div>
-                </div>
-            )}
+                );
+            })()}
             {b.units && b.units.length > 0 && (
                 <div className="pl-8 space-y-1 pb-2">
                     <div className={cn("flex items-center text-xs cursor-pointer transition-colors group", componentVisibility.units ? "text-primary font-medium" : "text-muted-foreground hover:text-primary")}

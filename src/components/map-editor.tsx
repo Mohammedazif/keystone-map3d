@@ -3445,6 +3445,13 @@ export function MapEditor({
                 coreBase = shouldLiftForBasements ? totalBasementHeight : 0;
               }
 
+              let trueArea = 0, trueLength = 0, trueWidth = 0;
+              try {
+                trueArea = planarArea(core.geometry);
+                const pd = planarDimensions(core.geometry);
+                trueLength = pd.length; trueWidth = pd.width;
+              } catch(e) {}
+
               features.push({
                 ...core.geometry,
                 properties: {
@@ -3452,6 +3459,10 @@ export function MapEditor({
                   height: visualBuildingTop,
                   base_height: coreBase,
                   coreId: core.id,
+                  type: core.type,
+                  trueArea,
+                  trueLength,
+                  trueWidth
                 },
               } as Feature);
             });
@@ -3463,19 +3474,29 @@ export function MapEditor({
             const usePattern = !(
               uiState.ghostMode || building.internalsVisible === true
             );
-            let patternName = "texture-Institutional";
+            
+            const opacityStr = coreOpacity.toFixed(1);
+            let patternName = `texture-Institutional-${opacityStr}`;
+            let circPatternName = `texture-Circulation-${opacityStr}`;
 
             if (usePattern) {
-              const opacityStr = coreOpacity.toFixed(1);
-              patternName = `texture-Institutional-${opacityStr}`;
               if (!mapInstance.hasImage(patternName)) {
                 const img = generateBuildingTexture(
                   "Institutional",
-                  "#9370DB",
+                  "#9370DB", // Purple for regular cores
                   coreOpacity,
                 );
                 if (img)
                   mapInstance.addImage(patternName, img, { pixelRatio: 2 });
+              }
+              if (!mapInstance.hasImage(circPatternName)) {
+                const imgC = generateBuildingTexture(
+                  "Circulation",
+                  "#78909C", // Slate Gray for corridors
+                  coreOpacity,
+                );
+                if (imgC)
+                  mapInstance.addImage(circPatternName, imgC, { pixelRatio: 2 });
               }
             }
 
@@ -3487,15 +3508,18 @@ export function MapEditor({
                 data: coreGeoData as any,
               });
 
+            const colorExpression = ["case", ["==", ["get", "type"], "Circulation"], "#78909C", "#9370DB"];
+            const patternExpression = ["case", ["==", ["get", "type"], "Circulation"], circPatternName, patternName];
+
             if (!mapInstance.getLayer(layerId)) {
               const paintProps: any = {
-                "fill-extrusion-color": usePattern ? "#ffffff" : "#9370DB",
+                "fill-extrusion-color": usePattern ? "#ffffff" : colorExpression,
                 "fill-extrusion-height": ["get", "height"],
                 "fill-extrusion-base": ["get", "base_height"],
                 "fill-extrusion-opacity": coreOpacity,
               };
               if (usePattern)
-                paintProps["fill-extrusion-pattern"] = patternName;
+                paintProps["fill-extrusion-pattern"] = patternExpression;
               mapInstance.addLayer(
                 {
                   id: layerId,
@@ -3515,7 +3539,7 @@ export function MapEditor({
                 mapInstance.setPaintProperty(
                   layerId,
                   "fill-extrusion-pattern",
-                  patternName,
+                  patternExpression,
                 );
                 mapInstance.setPaintProperty(
                   layerId,
@@ -3531,7 +3555,7 @@ export function MapEditor({
                 mapInstance.setPaintProperty(
                   layerId,
                   "fill-extrusion-color",
-                  "#9370DB",
+                  colorExpression,
                 );
               }
             }
@@ -4540,20 +4564,29 @@ export function MapEditor({
           `;
         } else if (f.layer?.id.startsWith("cores-")) {
           let dims = "";
-          let coreArea = 0;
+          let coreArea = props.trueArea || 0;
           try {
-            const pd = planarDimensions(f);
-            const l = Math.round(pd.length * 10) / 10;
-            const w = Math.round(pd.width * 10) / 10;
-            coreArea = pd.area;
-            dims = `${l.toFixed(1)}m x ${w.toFixed(1)}m`;
+            if (props.trueLength && props.trueWidth) {
+              const l = Math.round(props.trueLength * 10) / 10;
+              const w = Math.round(props.trueWidth * 10) / 10;
+              dims = `${l.toFixed(1)}m x ${w.toFixed(1)}m`;
+            } else {
+              const pd = planarDimensions(f);
+              const l = Math.round(pd.length * 10) / 10;
+              const w = Math.round(pd.width * 10) / 10;
+              coreArea = coreArea || pd.area;
+              dims = `${l.toFixed(1)}m x ${w.toFixed(1)}m`;
+            }
           } catch (e) {
-            coreArea = turf.area(f as any);
+            coreArea = coreArea || turf.area(f as any);
           }
 
+          const isCorridor = props.coreId?.startsWith("corridor-") || props.type === "Circulation";
+          const title = isCorridor ? "Corridor" : "Core";
+          const subtitle = isCorridor ? "Horizontal Circulation" : "Vertical Circulation";
           html = `
-            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">Core</div>
-            <div class="text-xs text-muted-foreground" style="color: #525252;">Vertical Circulation</div>
+            <div class="font-bold text-sm text-neutral-900" style="color: #171717;">${title}</div>
+            <div class="text-xs text-muted-foreground" style="color: #525252;">${subtitle}</div>
             <div class="text-xs mt-1 text-neutral-800" style="color: #262626;">Footprint Area: ${coreArea.toFixed(1)} m²</div>
             ${dims ? `<div class="text-xs text-neutral-600 mt-0.5" style="color: #525252;">Size: ${dims}</div>` : ""}
           `;

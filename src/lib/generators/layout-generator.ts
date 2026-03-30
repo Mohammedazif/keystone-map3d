@@ -1029,6 +1029,23 @@ export function generateBuildingLayout(
       ? turf.buffer(coreGeom, corridorBuffer / 1000, { units: "kilometers" })
       : coreGeom
     : null;
+    
+  // Export corridor for hover/UI visualization
+  if (coreForStrips && coreGeom && corridorBuffer > 0) {
+    try {
+      // @ts-ignore
+      const circRing = turf.difference(coreForStrips, coreGeom);
+      if (circRing && turf.area(circRing) > 5) {
+        cores.push({
+          id: `corridor-standard`,
+          type: "Circulation",
+          geometry: circRing as Feature<Polygon>,
+        });
+      }
+    } catch (e) {
+      console.warn("[Layout Generator] Standard layout circulation ring export failed");
+    }
+  }
   const coreBbox = coreForStrips ? turf.bbox(coreForStrips) : null;
 
   const isHorizontalBuilding = width > depth;
@@ -1864,15 +1881,10 @@ function generateRetailLayout(
   const leasableWidth = turf.distance([lMinX, lMinY], [lMaxX, lMinY], { units: "meters" });
   const leasableDepth = turf.distance([lMinX, lMinY], [lMinX, lMaxY], { units: "meters" });
 
-  // Circulation strip: width mathematically derived to hit the remaining coreCircTarget
-  const targetCircArea = Math.max(0, coreCircTarget - enforcedCoreArea);
-  let circWidthM = 3.5; // fallback minimum
-  if (isHorizontal && leasableWidth > 0) {
-    circWidthM = Math.max(3.5, targetCircArea / leasableWidth);
-  } else if (!isHorizontal && leasableDepth > 0) {
-    circWidthM = Math.max(3.5, targetCircArea / leasableDepth);
-  }
-  console.log(`[Retail Layout] Corridor strip generated at ${circWidthM.toFixed(1)}m wide to fulfill ${targetCircArea.toFixed(0)}m² benchmark target.`);
+  // Circulation strip: fixed 3m width for retail (standard mall corridor width)
+  // The Core+Circulation benchmark (35-50%) is met by core sizing, not corridor inflation
+  const circWidthM = 3.0;
+  console.log(`[Retail Layout] Corridor strip: ${circWidthM}m wide (fixed retail standard).`);
 
   let circPoly: Feature<Polygon>;
   let stripA_bounds: { minX: number; maxX: number; minY: number; maxY: number };
@@ -1902,6 +1914,15 @@ function generateRetailLayout(
 
   // Clip circulation to leasable area
   let clippedCirc = turf.intersect(circPoly, leasablePoly!);
+  
+  // Export corridor for hover/UI visualization
+  if (clippedCirc && turf.area(clippedCirc) > 5) {
+    cores.push({
+      id: "corridor-retail",
+      type: "Circulation",
+      geometry: clippedCirc as Feature<Polygon>,
+    });
+  }
 
   // --- UNIT SUBDIVISION ---
   // Calculate leasable area after core and circulation
@@ -1999,6 +2020,67 @@ function generateRetailLayout(
 
   console.log(`[Retail Layout] Total: ${units.length} retail units placed`);
 
+  // --- INTERNAL UTILITIES ---
+  const shouldInclude = (type: string) => {
+    if (!params.selectedUtilities) return true;
+    const mapping: Record<string, string> = { HVAC: UtilityType.HVAC, "Solar PV": UtilityType.SolarPV, "Rooftop Solar": UtilityType.SolarPV, "EV Charging": UtilityType.EVStation };
+    const mappedType = mapping[type] || type;
+    return params.selectedUtilities.some(u => u === type || (mapping[u] || u) === mappedType);
+  };
+
+  const isPodiumBuilding = params.buildingId?.includes("-podium");
+  if (!isPodiumBuilding && shouldInclude("HVAC")) {
+    try {
+      const hvacTargetArea = Math.max(16, floorArea * (params.numFloors || 5) * 0.015);
+      const hvacSize = Math.sqrt(hvacTargetArea);
+      const centerPt = turf.pointOnFeature(workingPoly);
+      const shiftPt = turf.transformTranslate(centerPt, hvacSize, -90, { units: 'meters' });
+      const finalPt = turf.booleanPointInPolygon(shiftPt, workingPoly) ? shiftPt : centerPt;
+      
+      const [px, py] = finalPt.geometry.coordinates;
+      const degHW = hvacSize / 2 / 111320;
+      const degHD = hvacSize / 2 / 110540;
+      const hvacPoly = turf.bboxPolygon([px - degHW, py - degHD, px + degHW, py + degHD]);
+      
+      utilities.push({ id: `util-hvac-${Math.random().toString(36).substr(2, 5)}`, name: "Rooftop HVAC Unit", type: UtilityType.HVAC, geometry: hvacPoly, centroid: turf.centroid(hvacPoly), area: hvacTargetArea, visible: true });
+    } catch (e) { console.warn("HVAC placement failed", e); }
+  }
+
+  if (!isPodiumBuilding && (shouldInclude("Solar PV") || shouldInclude("Rooftop Solar"))) {
+    try {
+      const solarArea = bboxWidth * bboxDepth * 0.1;
+      const solarSize = Math.sqrt(solarArea);
+      const centerPt = turf.pointOnFeature(workingPoly);
+      const shiftPt = turf.transformTranslate(centerPt, solarSize, 90, { units: 'meters' });
+      const finalPt = turf.booleanPointInPolygon(shiftPt, workingPoly) ? shiftPt : centerPt;
+      
+      const [px, py] = finalPt.geometry.coordinates;
+      const degSW = solarSize / 2 / 111320;
+      const degSD = solarSize / 2 / 110540;
+      const solarPoly = turf.bboxPolygon([px - degSW, py - degSD, px + degSW, py + degSD]);
+      
+      utilities.push({ id: `util-solar-${Math.random().toString(36).substr(2, 5)}`, name: "Rooftop Solar PV", type: UtilityType.SolarPV, geometry: solarPoly, centroid: turf.centroid(solarPoly), area: solarArea, visible: true });
+    } catch (e) { console.warn("Solar placement failed", e); }
+  }
+
+  const isTowerBuilding = params.buildingId?.includes("-tower");
+  if (!isTowerBuilding && shouldInclude("EV Charging")) {
+    try {
+      const evW = Math.max(10, bboxWidth * 0.4), evD = 3.0;
+      const evArea = evW * evD;
+      const centerPt = turf.pointOnFeature(workingPoly);
+      const shiftPt = turf.transformTranslate(centerPt, bboxDepth * 0.3, 180, { units: 'meters' });
+      const finalPt = turf.booleanPointInPolygon(shiftPt, workingPoly) ? shiftPt : centerPt;
+
+      const [px, py] = finalPt.geometry.coordinates;
+      const degEW = evW / 2 / 111320;
+      const degED = evD / 2 / 110540;
+      const evPoly = turf.bboxPolygon([px - degEW, py - degED, px + degEW, py + degED]);
+      
+      utilities.push({ id: `util-ev-${Math.random().toString(36).substr(2, 5)}`, name: "EV Charging Station", type: UtilityType.EVStation, geometry: evPoly, centroid: turf.centroid(evPoly), area: evArea, visible: true });
+    } catch (e) { console.warn("EV placement failed", e); }
+  }
+
   // --- ROTATION BACK ---
   if (rotationAngle !== 0) {
     cores.forEach((c) => {
@@ -2013,6 +2095,30 @@ function generateRetailLayout(
         u.geometry = turf.transformRotate(u.geometry, rotationAngle, { pivot: center });
       }
     });
+    utilities.forEach((u) => {
+      if (u.geometry) {
+        // @ts-ignore
+        u.geometry = turf.transformRotate(u.geometry, rotationAngle, { pivot: center });
+      }
+      if (u.centroid) {
+        // @ts-ignore
+        u.centroid = turf.transformRotate(u.centroid, rotationAngle, { pivot: center });
+      }
+    });
+  }
+
+  // Clip utilities to actual building footprint so they don't float outside
+  for (let i = utilities.length - 1; i >= 0; i--) {
+    try {
+      const clipped = turf.intersect(utilities[i].geometry, buildingPoly);
+      if (clipped && turf.area(clipped) > 1) {
+        utilities[i].geometry = clipped as Feature<Polygon>;
+        utilities[i].centroid = turf.centroid(clipped);
+        utilities[i].area = planarArea(clipped);
+      } else {
+        utilities.splice(i, 1);
+      }
+    } catch (e) { /* keep as-is */ }
   }
 
   // Efficiency
@@ -2190,6 +2296,21 @@ function generateOfficeLayout(
   if (clippedCore) {
     try {
       coreWithCirc = turf.buffer(clippedCore, corridorWidthM / 1000, { units: "kilometers" }) as Feature<Polygon>;
+      
+      // Export corridor for hover/UI visualization
+      try {
+        // @ts-ignore
+        const circRing = turf.difference(coreWithCirc, clippedCore);
+        if (circRing && turf.area(circRing) > 5) {
+          cores.push({
+            id: "corridor-office",
+            type: "Circulation",
+            geometry: circRing as Feature<Polygon>,
+          });
+        }
+      } catch (e) {
+        console.warn("[Office Layout] Circulation ring export failed");
+      }
     } catch (e) {
       console.warn("[Office Layout] Core buffer failed");
     }
@@ -2292,6 +2413,67 @@ function generateOfficeLayout(
 
   console.log(`[Office Layout] Total: ${units.length} office units placed`);
 
+  // --- INTERNAL UTILITIES ---
+  const shouldInclude = (type: string) => {
+    if (!params.selectedUtilities) return true;
+    const mapping: Record<string, string> = { HVAC: UtilityType.HVAC, "Solar PV": UtilityType.SolarPV, "Rooftop Solar": UtilityType.SolarPV, "EV Charging": UtilityType.EVStation };
+    const mappedType = mapping[type] || type;
+    return params.selectedUtilities.some(u => u === type || (mapping[u] || u) === mappedType);
+  };
+  
+  const isPodiumBuilding = params.buildingId?.includes("-podium");
+  if (!isPodiumBuilding && shouldInclude("HVAC")) {
+    try {
+      const hvacTargetArea = Math.max(16, floorArea * (params.numFloors || 5) * 0.015);
+      const hvacSize = Math.sqrt(hvacTargetArea);
+      const centerPt = turf.pointOnFeature(workingPoly);
+      const shiftPt = turf.transformTranslate(centerPt, hvacSize, -90, { units: 'meters' });
+      const finalPt = turf.booleanPointInPolygon(shiftPt, workingPoly) ? shiftPt : centerPt;
+      
+      const [px, py] = finalPt.geometry.coordinates;
+      const degHW = hvacSize / 2 / 111320;
+      const degHD = hvacSize / 2 / 110540;
+      const hvacPoly = turf.bboxPolygon([px - degHW, py - degHD, px + degHW, py + degHD]);
+      
+      utilities.push({ id: `util-hvac-${Math.random().toString(36).substr(2, 5)}`, name: "Rooftop HVAC Unit", type: UtilityType.HVAC, geometry: hvacPoly, centroid: turf.centroid(hvacPoly), area: hvacTargetArea, visible: true });
+    } catch (e) { console.warn("HVAC placement failed", e); }
+  }
+
+  if (!isPodiumBuilding && (shouldInclude("Solar PV") || shouldInclude("Rooftop Solar"))) {
+    try {
+      const solarArea = bboxWidth * bboxDepth * 0.1;
+      const solarSize = Math.sqrt(solarArea);
+      const centerPt = turf.pointOnFeature(workingPoly);
+      const shiftPt = turf.transformTranslate(centerPt, solarSize, 90, { units: 'meters' });
+      const finalPt = turf.booleanPointInPolygon(shiftPt, workingPoly) ? shiftPt : centerPt;
+      
+      const [px, py] = finalPt.geometry.coordinates;
+      const degSW = solarSize / 2 / 111320;
+      const degSD = solarSize / 2 / 110540;
+      const solarPoly = turf.bboxPolygon([px - degSW, py - degSD, px + degSW, py + degSD]);
+      
+      utilities.push({ id: `util-solar-${Math.random().toString(36).substr(2, 5)}`, name: "Rooftop Solar PV", type: UtilityType.SolarPV, geometry: solarPoly, centroid: turf.centroid(solarPoly), area: solarArea, visible: true });
+    } catch (e) { console.warn("Solar placement failed", e); }
+  }
+
+  const isTowerBuilding = params.buildingId?.includes("-tower");
+  if (!isTowerBuilding && shouldInclude("EV Charging")) {
+    try {
+      const evW = Math.max(10, bboxWidth * 0.4), evD = 3.0;
+      const evArea = evW * evD;
+      const centerPt = turf.pointOnFeature(workingPoly);
+      const shiftPt = turf.transformTranslate(centerPt, bboxDepth * 0.3, 180, { units: 'meters' });
+      const finalPt = turf.booleanPointInPolygon(shiftPt, workingPoly) ? shiftPt : centerPt;
+
+      const [px, py] = finalPt.geometry.coordinates;
+      const degEW = evW / 2 / 111320;
+      const degED = evD / 2 / 110540;
+      const evPoly = turf.bboxPolygon([px - degEW, py - degED, px + degEW, py + degED]);
+      
+      utilities.push({ id: `util-ev-${Math.random().toString(36).substr(2, 5)}`, name: "EV Charging Station", type: UtilityType.EVStation, geometry: evPoly, centroid: turf.centroid(evPoly), area: evArea, visible: true });
+    } catch (e) { console.warn("EV placement failed", e); }
+  }
+
   // --- ROTATION BACK ---
   if (rotationAngle !== 0) {
     cores.forEach((c) => {
@@ -2306,6 +2488,23 @@ function generateOfficeLayout(
         u.geometry = turf.transformRotate(u.geometry, rotationAngle, { pivot: center });
       }
     });
+    utilities.forEach((u) => {
+      if (u.geometry) {
+        // @ts-ignore
+        u.geometry = turf.transformRotate(u.geometry, rotationAngle, { pivot: center });
+      }
+      if (u.centroid) {
+        // @ts-ignore
+        u.centroid = turf.transformRotate(u.centroid, rotationAngle, { pivot: center });
+      }
+    });
+  }
+
+  // Clean up: drop utilities that accidentally drifted entirely outside the building
+  for (let i = utilities.length - 1; i >= 0; i--) {
+     if (utilities[i].centroid && !turf.booleanPointInPolygon(utilities[i].centroid!, buildingPoly)) {
+        utilities.splice(i, 1);
+     }
   }
 
   // Efficiency

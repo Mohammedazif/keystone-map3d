@@ -306,18 +306,38 @@ function BuildingProperties() {
                         {showInternals && (
                             <div className="p-3 space-y-3 text-xs">
 
-                                {/* Cores */}
-                                {selectedBuilding.cores && selectedBuilding.cores.length > 0 && (
-                                    <div className="flex items-center gap-2 px-1 py-0.5 text-muted-foreground">
-                                        <Box className="h-3 w-3 shrink-0" style={{ color: '#9370DB' }} />
-                                        <span className="flex-1 font-medium text-foreground">
-                                            Core ({selectedBuilding.cores.length})
-                                        </span>
-                                        <span className="text-muted-foreground font-mono">
-                                            {selectedBuilding.cores.reduce((s, c) => s + planarArea(c.geometry), 0).toFixed(1)} m²
-                                        </span>
-                                    </div>
-                                )}
+                                {/* Cores & Circulation */}
+                                {selectedBuilding.cores && selectedBuilding.cores.length > 0 && (() => {
+                                    const regularCores = selectedBuilding.cores.filter(c => c.type !== 'Circulation');
+                                    const circCores = selectedBuilding.cores.filter(c => c.type === 'Circulation');
+                                    
+                                    return (
+                                        <>
+                                            {regularCores.length > 0 && (
+                                                <div className="flex items-center gap-2 px-1 py-0.5 text-muted-foreground">
+                                                    <Box className="h-3 w-3 shrink-0" style={{ color: '#9370DB' }} />
+                                                    <span className="flex-1 font-medium text-foreground">
+                                                        Core ({regularCores.length})
+                                                    </span>
+                                                    <span className="text-muted-foreground font-mono">
+                                                        {regularCores.reduce((s, c) => s + planarArea(c.geometry), 0).toFixed(1)} m²
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {circCores.length > 0 && (
+                                                <div className="flex items-center gap-2 px-1 py-0.5 text-muted-foreground">
+                                                    <Box className="h-3 w-3 shrink-0" style={{ color: '#78909C' }} />
+                                                    <span className="flex-1 font-medium text-foreground">
+                                                        Circulation ({circCores.length})
+                                                    </span>
+                                                    <span className="text-muted-foreground font-mono">
+                                                        {circCores.reduce((s, c) => s + planarArea(c.geometry), 0).toFixed(1)} m²
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </>
+                                    );
+                                })()}
 
                                 {/* Internal Utilities */}
                                 {selectedBuilding.internalUtilities && selectedBuilding.internalUtilities.length > 0 && (
