@@ -651,8 +651,18 @@ function summarizeAdditiveScore(items: Array<{ maxScore: number; achievedScore: 
 }
 
 function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: DesignParamsForRendering): { buildingsInfo: RenderingBuildingInfo[]; plotInfo: RenderingPlotInfo; summary: RenderingProjectSummary } | null {
-    // Only use buildings from the selected plot, not all plots
-    const allBuildings = selectedPlot.buildings;
+    const buildingsData = selectedPlot.buildings;
+    const getCentroid = (geometry: Feature<Polygon>): { x: number; y: number } => {
+        const centroid = turf.centroid(geometry);
+        return {
+            x: Number(centroid.geometry.coordinates[0].toFixed(8)),
+            y: Number(centroid.geometry.coordinates[1].toFixed(8)),
+        };
+    };
+    const plotOriginCoords = selectedPlot.geometry?.geometry?.coordinates?.[0]?.[0] as [number, number] | undefined;
+    const plotFootprint = selectedPlot.geometry?.geometry?.coordinates
+        ? JSON.parse(JSON.stringify(selectedPlot.geometry.geometry.coordinates))
+        : undefined;
 
     // Compute plot centroid for spatial positioning
     let plotCenterLng = 0, plotCenterLat = 0;
@@ -664,27 +674,26 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
         }
     } catch { /* ignore */ }
 
-    const buildingsInfo: RenderingBuildingInfo[] = allBuildings.map(b => {
+    const buildingsInfo = buildingsData.map((b): RenderingBuildingInfo & { id: string } => {
         let footprintWidth = Math.round(Math.sqrt(b.area));
         let footprintDepth = footprintWidth;
-        let bCenterLng = 0, bCenterLat = 0;
+        const footprint = b.geometry?.geometry?.coordinates
+            ? JSON.parse(JSON.stringify(b.geometry.geometry.coordinates))
+            : [];
+        const center = getCentroid(b.geometry);
+        let bCenterLng = center.x, bCenterLat = center.y;
         try {
-            if (b.geometry) {
-                const bbox = turf.bbox(b.geometry);
-                const sw = turf.point([bbox[0], bbox[1]]);
-                const ne = turf.point([bbox[2], bbox[3]]);
-                const se = turf.point([bbox[2], bbox[1]]);
-                footprintWidth = Math.round(turf.distance(sw, se, { units: 'meters' })) || footprintWidth;
-                footprintDepth = Math.round(turf.distance(se, ne, { units: 'meters' })) || footprintDepth;
-                const bCentroid = turf.centroid(b.geometry);
-                bCenterLng = bCentroid.geometry.coordinates[0];
-                bCenterLat = bCentroid.geometry.coordinates[1];
-            }
+            const bbox = turf.bbox(b.geometry);
+            const sw = turf.point([bbox[0], bbox[1]]);
+            const ne = turf.point([bbox[2], bbox[3]]);
+            const se = turf.point([bbox[2], bbox[1]]);
+            footprintWidth = Math.round(turf.distance(sw, se, { units: 'meters' })) || footprintWidth;
+            footprintDepth = Math.round(turf.distance(se, ne, { units: 'meters' })) || footprintDepth;
         } catch { /* square fallback */ }
 
         // Determine spatial position relative to plot center
         let position: string | undefined;
-        if (allBuildings.length > 1 && plotCenterLng !== 0 && bCenterLng !== 0) {
+        if (buildingsData.length > 1 && plotCenterLng !== 0 && bCenterLng !== 0) {
             const ns = bCenterLat > plotCenterLat ? 'front' : 'back';
             const ew = bCenterLng > plotCenterLng ? 'right' : 'left';
             const latDiff = Math.abs(bCenterLat - plotCenterLat);
@@ -719,15 +728,31 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
             b.units.forEach(u => { unitBreakdown[u.type] = (unitBreakdown[u.type] || 0) + 1; });
         }
 
+        const relativePosition = plotOriginCoords
+            ? {
+                x: Number((bCenterLng - plotOriginCoords[0]).toFixed(8)),
+                y: Number((bCenterLat - plotOriginCoords[1]).toFixed(8)),
+            }
+            : undefined;
+
         return {
+            id: b.id,
             name: b.name, height: b.height, numFloors: aboveGround, basementFloors,
             totalFloors: totalFlrs, floorHeight: b.typicalFloorHeight, footprintArea: b.area,
             footprintWidth, footprintDepth, intendedUse: b.intendedUse,
             typology: designParams.typology, gfa, programMix: b.programMix,
             cores: coreBreakdown, unitCount: b.units?.length || 0, unitBreakdown,
             parkingFloors: parkingFlrs.length, parkingCapacity, evStations, position,
+            footprint,
+            center,
+            relativePosition,
+            rotation: b.alignmentRotation ?? b.originalAlignmentRotation ?? 0,
         };
     });
+
+    if (buildingsInfo.length !== selectedPlot.buildings.length) {
+        throw new Error(`BUILDING COUNT MISMATCH: plot=${selectedPlot.buildings.length}, render=${buildingsInfo.length}`);
+    }
 
     if (buildingsInfo.length === 0) return null;
 
@@ -745,6 +770,8 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
         maxBuildingHeight: selectedPlot.maxBuildingHeight ?? undefined,
         regulationType: selectedPlot.regulation?.type ?? undefined,
         roadAccessSides: allRoadSides.size > 0 ? Array.from(allRoadSides) : undefined,
+        footprint: plotFootprint,
+        origin: plotOriginCoords ? { x: plotOriginCoords[0], y: plotOriginCoords[1] } : undefined,
     };
 
     const totalGFA = buildingsInfo.reduce((s, b) => s + b.gfa, 0);
@@ -879,7 +906,14 @@ function buildRenderRequest(
             hasPodium: boolean;
             podiumFloors: number;
             parkingTypes: string[];
+            layoutConstraint: string;
         };
+        constraints: {
+            layout: string;
+            spacing: string;
+            arrangement: string;
+        };
+        instructions: string;
     };
     summary: RenderingProjectSummary;
 } | null {
@@ -911,7 +945,18 @@ function buildRenderRequest(
                 hasPodium: designParams.hasPodium,
                 podiumFloors: designParams.podiumFloors,
                 parkingTypes: designParams.parkingTypes,
+                layoutConstraint: 'STRICT_PRESERVE',
             },
+            constraints: {
+                layout: 'STRICT_PRESERVE',
+                spacing: 'EXACT',
+                arrangement: 'NO_REORDER',
+            },
+            instructions: `
+    Preserve EXACT building layout from input.
+    Do NOT rearrange, symmetrize, or optimize placement.
+    Use given footprint and positions strictly.
+  `,
         },
         summary,
     };
