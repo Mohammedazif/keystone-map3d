@@ -650,7 +650,22 @@ function summarizeAdditiveScore(items: Array<{ maxScore: number; achievedScore: 
     return { totalScore, maxScore, percentage };
 }
 
-function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: DesignParamsForRendering): { buildingsInfo: RenderingBuildingInfo[]; plotInfo: RenderingPlotInfo; summary: RenderingProjectSummary } | null {
+function collectRenderingData(
+    _plots: Plot[],
+    selectedPlot: Plot,
+    designParams: DesignParamsForRendering
+): {
+    buildingsInfo: Array<RenderingBuildingInfo & {
+        id: string;
+        parts?: Array<{
+            type: 'podium' | 'tower' | 'main';
+            footprint: number[][][];
+            height: number;
+        }>;
+    }>;
+    plotInfo: RenderingPlotInfo & { boundary?: number[][][] };
+    summary: RenderingProjectSummary;
+} | null {
     const buildingsData = selectedPlot.buildings;
     const getCentroid = (geometry: Feature<Polygon>): { x: number; y: number } => {
         const centroid = turf.centroid(geometry);
@@ -659,9 +674,60 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
             y: Number(centroid.geometry.coordinates[1].toFixed(8)),
         };
     };
-    const plotOriginCoords = selectedPlot.geometry?.geometry?.coordinates?.[0]?.[0] as [number, number] | undefined;
-    const plotFootprint = selectedPlot.geometry?.geometry?.coordinates
+    const normalizePoint = (point: [number, number], plotCenter: [number, number]) => {
+        return {
+            x: Number((point[0] - plotCenter[0]).toFixed(8)),
+            y: Number((point[1] - plotCenter[1]).toFixed(8)),
+        };
+    };
+    const normalizePolygon = (coordinates: number[][][], plotCenter: [number, number]): number[][][] => {
+        return coordinates.map(ring =>
+            ring.map(point => {
+                const normalized = normalizePoint([point[0], point[1]], plotCenter);
+                return [normalized.x, normalized.y];
+            })
+        );
+    };
+    const getBuildingFootprint = (building: Building): number[][][] => {
+        return building.geometry?.geometry?.coordinates
+            ? JSON.parse(JSON.stringify(building.geometry.geometry.coordinates))
+            : [];
+    };
+    const getBuildingPartType = (buildingId: string): 'podium' | 'tower' | 'main' => {
+        if (buildingId.endsWith('-podium')) return 'podium';
+        if (buildingId.endsWith('-tower')) return 'tower';
+        return 'main';
+    };
+    const getRelatedBuildingParts = (building: Building) => {
+        const baseId = building.id.endsWith('-podium')
+            ? building.id.replace(/-podium$/, '')
+            : building.id.endsWith('-tower')
+                ? building.id.replace(/-tower$/, '')
+                : building.id;
+        const pairedBuildings = buildingsData.filter(candidate =>
+            candidate.id === baseId ||
+            candidate.id === `${baseId}-podium` ||
+            candidate.id === `${baseId}-tower`
+        );
+        const uniqueBuildings = pairedBuildings.length > 0 ? pairedBuildings : [building];
+
+        return uniqueBuildings.map(partBuilding => ({
+            type: getBuildingPartType(partBuilding.id),
+            footprint: getBuildingFootprint(partBuilding),
+            height: partBuilding.height,
+        }));
+    };
+    const plotBoundary = selectedPlot.geometry?.geometry?.coordinates
         ? JSON.parse(JSON.stringify(selectedPlot.geometry.geometry.coordinates))
+        : undefined;
+    const plotCenterCoords = selectedPlot.geometry
+        ? (() => {
+            const centroid = getCentroid(selectedPlot.geometry);
+            return [centroid.x, centroid.y] as [number, number];
+        })()
+        : ([0, 0] as [number, number]);
+    const plotFootprint = plotBoundary
+        ? normalizePolygon(plotBoundary, plotCenterCoords)
         : undefined;
 
     // Compute plot centroid for spatial positioning
@@ -674,13 +740,24 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
         }
     } catch { /* ignore */ }
 
-    const buildingsInfo = buildingsData.map((b): RenderingBuildingInfo & { id: string } => {
+    const buildingsInfo = buildingsData.map((b): RenderingBuildingInfo & {
+        id: string;
+        parts?: Array<{
+            type: 'podium' | 'tower' | 'main';
+            footprint: number[][][];
+            height: number;
+        }>;
+    } => {
         let footprintWidth = Math.round(Math.sqrt(b.area));
         let footprintDepth = footprintWidth;
-        const footprint = b.geometry?.geometry?.coordinates
-            ? JSON.parse(JSON.stringify(b.geometry.geometry.coordinates))
-            : [];
+        const footprint = getBuildingFootprint(b);
         const center = getCentroid(b.geometry);
+        const parts = getRelatedBuildingParts(b);
+        const partSummary = parts
+            .map(part => `${part.type} ${Math.round(part.height)}m`)
+            .join(', ');
+        const normalizedCenter = normalizePoint([center.x, center.y], plotCenterCoords);
+        const normalizedFootprint = normalizePolygon(footprint, plotCenterCoords);
         let bCenterLng = center.x, bCenterLat = center.y;
         try {
             const bbox = turf.bbox(b.geometry);
@@ -728,25 +805,26 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
             b.units.forEach(u => { unitBreakdown[u.type] = (unitBreakdown[u.type] || 0) + 1; });
         }
 
-        const relativePosition = plotOriginCoords
-            ? {
-                x: Number((bCenterLng - plotOriginCoords[0]).toFixed(8)),
-                y: Number((bCenterLat - plotOriginCoords[1]).toFixed(8)),
-            }
-            : undefined;
+        const relativePosition = normalizedCenter;
 
         return {
             id: b.id,
-            name: b.name, height: b.height, numFloors: aboveGround, basementFloors,
+            name: parts.length > 1 ? `${b.name} (${partSummary})` : b.name,
+            height: b.height, numFloors: aboveGround, basementFloors,
             totalFloors: totalFlrs, floorHeight: b.typicalFloorHeight, footprintArea: b.area,
             footprintWidth, footprintDepth, intendedUse: b.intendedUse,
             typology: designParams.typology, gfa, programMix: b.programMix,
             cores: coreBreakdown, unitCount: b.units?.length || 0, unitBreakdown,
-            parkingFloors: parkingFlrs.length, parkingCapacity, evStations, position,
-            footprint,
-            center,
+            parkingFloors: parkingFlrs.length, parkingCapacity, evStations,
+            position: parts.length > 1 && position ? `${position}; composite massing: ${partSummary}` : position,
+            footprint: normalizedFootprint,
+            center: normalizedCenter,
             relativePosition,
             rotation: b.alignmentRotation ?? b.originalAlignmentRotation ?? 0,
+            parts: parts.map(part => ({
+                ...part,
+                footprint: normalizePolygon(part.footprint, plotCenterCoords),
+            })),
         };
     });
 
@@ -762,7 +840,7 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
     const allRoadSides = new Set<string>();
     selectedPlot.roadAccessSides?.forEach(s => allRoadSides.add(s));
 
-    const plotInfo: RenderingPlotInfo = {
+    const plotInfo: RenderingPlotInfo & { boundary?: number[][][] } = {
         plotArea: totalPlotArea, subPlotCount: 1, setback: selectedPlot.setback,
         location: (selectedPlot.location as string) || 'unspecified',
         greenAreas: totalGreenAreas, parkingAreas: totalParkingAreas,
@@ -771,7 +849,8 @@ function collectRenderingData(_plots: Plot[], selectedPlot: Plot, designParams: 
         regulationType: selectedPlot.regulation?.type ?? undefined,
         roadAccessSides: allRoadSides.size > 0 ? Array.from(allRoadSides) : undefined,
         footprint: plotFootprint,
-        origin: plotOriginCoords ? { x: plotOriginCoords[0], y: plotOriginCoords[1] } : undefined,
+        origin: { x: 0, y: 0 },
+        boundary: plotBoundary,
     };
 
     const totalGFA = buildingsInfo.reduce((s, b) => s + b.gfa, 0);
@@ -898,7 +977,7 @@ function buildRenderRequest(
 ): {
     renderInput: {
         buildings: RenderingBuildingInfo[];
-        plot: RenderingPlotInfo;
+        plot: RenderingPlotInfo & { boundary?: number[][][] };
         design: {
             landUse: string;
             unitMix: Record<string, number>;
@@ -913,6 +992,7 @@ function buildRenderRequest(
             spacing: string;
             arrangement: string;
         };
+        plotShapeDescription: string;
         instructions: string;
     };
     summary: RenderingProjectSummary;
@@ -952,10 +1032,18 @@ function buildRenderRequest(
                 spacing: 'EXACT',
                 arrangement: 'NO_REORDER',
             },
+            plotShapeDescription: 'Irregular polygon site with non-rectangular edges',
             instructions: `
-    Preserve EXACT building layout from input.
+    The site boundary is irregular and must be strictly preserved.
+    All buildings must lie within the given polygon boundary.
+    Do NOT convert the layout into rectangular or symmetric arrangements.
+    Do NOT introduce central courtyards unless explicitly defined.
+    Preserve exact building positions and spacing.
+    Render ALL buildings exactly as provided.
+    Preserve layout, spacing, and structure.
     Do NOT rearrange, symmetrize, or optimize placement.
-    Use given footprint and positions strictly.
+    Respect multi-part buildings (podium + tower).
+    Use given footprint polygons, center positions, rotations, and parts strictly.
   `,
         },
         summary,
