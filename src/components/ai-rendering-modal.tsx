@@ -65,13 +65,13 @@ export function AiRenderingModal() {
     setImgError(false);
   }
 
-  const downloadFilename = useCallback((suffix: string) => {
+  const downloadFilename = useCallback((suffix: string, ext = 'png') => {
     const p = aiRenderingResult?.plot;
     const b = aiRenderingResult?.buildings;
     const location = p?.location?.replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '') || 'Site';
     const use = b?.[0]?.intendedUse?.replace(/[^a-zA-Z0-9]+/g, '-') || 'Mixed';
     const date = new Date().toISOString().slice(0, 10);
-    return `${location}_${use}_ArchViz${suffix}_${date}.png`;
+    return `${location}_${use}_ArchViz${suffix}_${date}.${ext}`;
   }, [aiRenderingResult]);
 
   const downloadBlob = useCallback((blob: Blob, filename: string) => {
@@ -85,12 +85,31 @@ export function AiRenderingModal() {
     URL.revokeObjectURL(url);
   }, []);
 
-  const handleDownloadImage = useCallback(async () => {
+  const handleDownloadImage = useCallback(async (format: 'png' | 'jpeg') => {
     if (!aiRenderingUrl) return;
     try {
-      const res = await fetch(aiRenderingUrl);
-      const blob = await res.blob();
-      downloadBlob(blob, downloadFilename(''));
+      // Force full original resolution via image elements
+      const img = new window.Image();
+      img.crossOrigin = 'anonymous';
+      img.src = aiRenderingUrl;
+      await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = reject; });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+
+      // Create white background for JPEG exports
+      if (format === 'jpeg') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      ctx.drawImage(img, 0, 0);
+
+      // Export full quality
+      canvas.toBlob(blob => {
+        if (blob) downloadBlob(blob, downloadFilename('', format));
+      }, `image/${format}`, 1.0);
     } catch {
       window.open(aiRenderingUrl, '_blank');
     }
@@ -269,20 +288,23 @@ export function AiRenderingModal() {
   return (
     <Dialog open={true} onOpenChange={open => { if (!open) handleClose(); }}>
       <DialogContent 
-        className="max-w-5xl w-full max-h-[90vh] overflow-y-auto"
+        className="max-w-5xl w-full max-h-[90vh] overflow-y-auto scrollbar-thin"
         onInteractOutside={(e) => e.preventDefault()}
       >
-        <DialogHeader className="flex flex-row items-start justify-between space-y-0 pr-8">
-          <div>
-            <DialogTitle>AI Architectural Rendering</DialogTitle>
-            <DialogDescription>
-              Photorealistic rendering based on your design parameters.
-            </DialogDescription>
-          </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={handleMinimize} title="Minimize">
-            <Minus className="h-4 w-4" />
-          </Button>
+        <DialogHeader className="pr-12">
+          <DialogTitle>AI Architectural Rendering</DialogTitle>
+          <DialogDescription>
+            Photorealistic rendering based on your design parameters.
+          </DialogDescription>
         </DialogHeader>
+        <button
+          onClick={handleMinimize}
+          className="absolute right-11 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          title="Minimize"
+        >
+          <Minus className="h-4 w-4" />
+          <span className="sr-only">Minimize</span>
+        </button>
 
         {/* Image section */}
         <div className="mt-2">
@@ -345,10 +367,14 @@ export function AiRenderingModal() {
                   <ChevronDown className="h-3 w-3 ml-1.5" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={handleDownloadImage}>
+              <DropdownMenuContent align="end" className="z-[150]">
+                <DropdownMenuItem onClick={() => handleDownloadImage('png')}>
                   <Image className="h-4 w-4 mr-2" />
-                  Image Only
+                  Image Only (PNG)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleDownloadImage('jpeg')}>
+                  <Image className="h-4 w-4 mr-2" />
+                  Image Only (JPEG)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={handleDownloadWithDetails}>
                   <FileText className="h-4 w-4 mr-2" />

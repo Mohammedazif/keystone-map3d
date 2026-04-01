@@ -58,9 +58,93 @@ function createArchitecturalPrompt(input: GenerateRenderingInput): string {
     const p = group.podium;
     const t = group.tower;
 
-    const use = b.intendedUse || 'Residential';
+    // For composite (podium-tower) buildings, the podium may have the mixed-use data
+    // while the tower is pure Residential. Check both parts.
+    const overallUse = isComposite
+      ? (p.intendedUse === 'Mixed-Use' || t.intendedUse === 'Mixed-Use' ? 'Mixed-Use' : b.intendedUse || 'Residential')
+      : (b.intendedUse || 'Residential');
+    const use = overallUse;
     const gfH = b.groundFloorHeight || b.floorHeight || 3.5;
     const tfH = b.floorHeight || 3.5;
+
+    // For composite buildings, merge floor allocations from podium + tower
+    // Podium has the mixed floors (Retail, Institutional, Hospitality, Office)
+    // Tower has the Residential floors (only residential acts as tower)
+    let allocs = b.floorUseAllocation;
+    if (isComposite) {
+      const podiumAllocs = p.floorUseAllocation || [];
+      const towerAllocs = t.floorUseAllocation || [];
+      const merged: { use: string; floors: string; count: number }[] = [];
+
+      // Add podium zones
+      if (podiumAllocs.length > 0) {
+        // Podium has per-floor allocation → use it directly
+        merged.push(...podiumAllocs);
+      } else if (p.intendedUse && p.intendedUse !== 'Residential') {
+        // Podium has a single non-residential use
+        merged.push({ use: p.intendedUse, floors: `F1-${p.numFloors}`, count: p.numFloors });
+      }
+
+      // Add tower zones
+      if (towerAllocs.length > 0) {
+        // Tower has its own per-floor allocation (rare, but possible)
+        merged.push(...towerAllocs);
+      } else if (t.numFloors > 0) {
+        // Tower is single-use (typically Residential) → add it as one zone
+        const towerUse = t.intendedUse || 'Residential';
+        const startF = p.numFloors + 1;
+        const endF = p.numFloors + t.numFloors;
+        merged.push({ use: towerUse, floors: startF === endF ? `F${startF}` : `F${startF}-${endF}`, count: t.numFloors });
+      }
+
+      if (merged.length > 0) allocs = merged;
+
+      // Debug: trace the merge
+      console.log(`[AI Prompt] Composite building:`,
+        `podium.intendedUse=${p.intendedUse}, podium.floorUseAllocation=${JSON.stringify(p.floorUseAllocation)},`,
+        `tower.intendedUse=${t.intendedUse}, tower.floorUseAllocation=${JSON.stringify(t.floorUseAllocation)},`,
+        `merged allocs=${JSON.stringify(allocs)}, overallUse=${use}`
+      );
+    } else {
+      // Debug: non-composite building
+      console.log(`[AI Prompt] Simple building:`,
+        `intendedUse=${b.intendedUse}, floorUseAllocation=${JSON.stringify(b.floorUseAllocation)},`,
+        `programMix=${JSON.stringify(b.programMix)}`
+      );
+    }
+
+    // Formatting mixed-use allocation if present — with VISUAL CUES per zone
+    // Map use types to explicit visual descriptions so the AI renders distinct facades
+    const useVisualCues: Record<string, string> = {
+      'Retail': 'large glass shopfronts with signage and awnings',
+      'Office': 'sleek glass curtain wall with uniform rectangular windows, no balconies',
+      'Residential': 'private balconies with railings, varied window sizes',
+      'Hospitality': 'hotel-style: smaller uniform window grid, ornamental facade bands, entrance canopy',
+      'Institutional': 'civic stone-clad facade, tall arched windows, prominent entrance portico',
+      'Public': 'civic stone-clad facade, tall arched windows, prominent entrance portico',
+      'Commercial': 'commercial glass facade with aluminum framing',
+      'Retail/Office': 'glass shopfronts at ground, office glass curtain wall above',
+      'Mixed-Use': 'mixed facade treatments',
+    };
+    function describeUseZone(useName: string): string {
+      const cue = useVisualCues[useName] || useVisualCues[useName.split('/')[0]] || '';
+      return cue ? `${useName} (${cue})` : useName;
+    }
+
+    let allocString = '';
+    if (allocs && allocs.length > 0) {
+      // Precise per-floor allocation with visual cues
+      allocString = ` Vertical zones bottom→top: ${allocs.map((a: any) => `${a.floors} ${describeUseZone(a.use)}`).join('; ')}.`;
+    } else if ((b.programMix || p?.programMix) && use === 'Mixed-Use') {
+      // Fallback: use programMix percentages with visual cues
+      const mix = b.programMix || p?.programMix;
+      const parts: string[] = [];
+      if (mix.residential > 0) parts.push(`${mix.residential}% ${describeUseZone('Residential')}`);
+      if (mix.commercial > 0) parts.push(`${mix.commercial}% ${describeUseZone('Commercial')}`);
+      if (mix.hospitality > 0) parts.push(`${mix.hospitality}% ${describeUseZone('Hospitality')}`);
+      if (mix.institutional > 0) parts.push(`${mix.institutional}% ${describeUseZone('Institutional')}`);
+      if (parts.length > 1) allocString = ` Vertical zones bottom→top: ${parts.join('; ')}.`;
+    }
 
     if (isComposite) {
       const pGfH = p.groundFloorHeight || p.floorHeight || gfH;
@@ -69,10 +153,10 @@ function createArchitecturalPrompt(input: GenerateRenderingInput): string {
       const podH = pGfH + (p.numFloors - 1) * pTfH;
       const towH = t.numFloors * tTfH;
       const totalH = Math.round(podH + towH);
-      return `${use}, podium-tower: ${p.numFloors}F podium (${Math.round(podH)}m, GF ${pGfH}m) + ${t.numFloors}F tower (${Math.round(towH)}m) = ${totalH}m total. Podium wider than tower.`;
+      return `${use}, podium-tower: ${p.numFloors}F podium (${Math.round(podH)}m, GF ${pGfH}m) + ${t.numFloors}F tower (${Math.round(towH)}m) = ${totalH}m total. Podium wider than tower.${allocString}`;
     } else {
       const totalH = Math.round(gfH + (b.numFloors - 1) * tfH);
-      return `${use}, ${b.numFloors}F, ${totalH}m tall (GF ${gfH}m, upper ${tfH}m). ${Math.round(b.footprintWidth || 0)}×${Math.round(b.footprintDepth || 0)}m footprint.`;
+      return `${use}, ${b.numFloors}F, ${totalH}m tall (GF ${gfH}m, upper ${tfH}m). ${Math.round(b.footprintWidth || 0)}×${Math.round(b.footprintDepth || 0)}m footprint.${allocString}`;
     }
   }
 
@@ -81,7 +165,8 @@ function createArchitecturalPrompt(input: GenerateRenderingInput): string {
     const isComposite = group.podium && group.tower;
     const b = group.tower || group.main || group.podium;
     if (isComposite) {
-      return `composite_${group.podium.numFloors}_${group.tower.numFloors}_${b.intendedUse}_${b.floorHeight}_${b.groundFloorHeight || ''}`;
+      // Include BOTH podium and tower intendedUse to avoid grouping mixed-use podiums with residential ones
+      return `composite_${group.podium.numFloors}_${group.tower.numFloors}_${group.podium.intendedUse}_${b.intendedUse}_${b.floorHeight}_${b.groundFloorHeight || ''}`;
     }
     return `simple_${b.numFloors}_${b.intendedUse}_${b.floorHeight}_${b.groundFloorHeight || ''}`;
   }
@@ -111,10 +196,24 @@ function createArchitecturalPrompt(input: GenerateRenderingInput): string {
   const plotDesc = `${Math.round(plot.plotArea)}sqm, ${plot.setback}m setback${plot.greenAreas > 0 ? `, ${plot.greenAreas} green areas` : ''}${plot.parkingAreas > 0 ? `, ${plot.parkingAreas} parking zones` : ''}`;
 
   // ── Materials (compact) ─────────────────────────────────────────
-  const primaryUse = buildings[0].intendedUse;
-  let materials = 'glass, concrete, modern facades';
-  if (primaryUse === 'Residential') materials = 'glass facades, balconies, warm window lighting';
-  else if (primaryUse === 'Commercial' || primaryUse === 'Office') materials = 'glass curtain walls, steel, aluminum';
+  const uniqueUseTypes = new Set(buildings.map((b: any) => b.intendedUse));
+  const materialParts: string[] = [];
+  const useMaterials: Record<string, string> = {
+    'Residential': 'glass facades, balconies with railings, warm window lighting',
+    'Commercial': 'glass curtain walls, steel, aluminum framing',
+    'Office': 'sleek glass curtain wall, uniform rectangular windows',
+    'Retail': 'large glass shopfronts, signage, awnings',
+    'Mixed-Use': 'retail shopfronts at ground level, glass curtain walls for office floors, residential balconies on upper floors',
+    'Hospitality': 'hotel entrance canopy, glass lobby, uniform window grid, ornamental facade bands',
+    'Institutional': 'institutional stone cladding, tall arched windows, prominent entrance portico',
+    'Public': 'civic stone-clad facade, tall arched windows, prominent entrance portico',
+  };
+  for (const use of uniqueUseTypes) {
+    if (useMaterials[use]) materialParts.push(`${use}: ${useMaterials[use]}`);
+  }
+  const materials = materialParts.length > 1
+    ? `Each building uses distinct materials per its use: ${materialParts.join('. ')}`
+    : materialParts[0] || 'glass, concrete, modern facades';
 
   // ── Peripheral zones (compact) ──────────────────────────────────
   const hasParking = plot.parkingAreas > 0;
@@ -152,7 +251,7 @@ function createArchitecturalPrompt(input: GenerateRenderingInput): string {
   // ── Image-to-image prefix ──────────────────────────────────────
   const hasControlImage = !!input.controlImageBase64;
   const img2imgPrefix = hasControlImage
-    ? `Reference image is a 2D site plan. Extrude all ${numBuildings} footprints into 3D buildings preserving exact positions. `
+    ? `Reference image is a 2D site plan showing EXACTLY ${numBuildings} black building footprints. Extrude ONLY these ${numBuildings} dark footprints into 3D buildings preserving exact positions and sizes. White/empty areas in the reference are open space — keep them as landscaped gardens or paved areas, NOT buildings. `
     : '';
 
   // ── User overrides (from the Generation Panel prompt box) ──────
@@ -161,15 +260,24 @@ function createArchitecturalPrompt(input: GenerateRenderingInput): string {
     ? `Style: ${userStyle}.`
     : `Materials: ${materials}. Style: professional architectural visualization, photorealistic, daytime, blue sky, 4K.\nCamera: elevated bird's-eye isometric view showing ALL ${numBuildings} buildings clearly. No building hidden behind another.`;
 
+  // ── Spatial arrangement ──────────────────────────────────────────
+  // Detect if buildings are arranged in a perimeter pattern (empty center)
+  let layoutNote = '';
+  if (numBuildings >= 4 && plot.greenAreas > 0) {
+    layoutNote = `Buildings are arranged along the PERIMETER of the plot. The center of the plot is an open landscaped courtyard/garden — do NOT place any buildings in the center. `;
+  } else if (numBuildings >= 4) {
+    layoutNote = `Buildings are positioned around the edges of the plot with open space between them. `;
+  }
+
   // ── Compose final prompt (target <5000 chars) ──────────────────
   const prompt = `${img2imgPrefix}Photorealistic 3D architectural rendering, ${plot.location}. ${numBuildings} buildings on ${plotDesc}.
 
-${peripheralDesc}${compositeNote}${uniformNote}
+${peripheralDesc}${compositeNote}${uniformNote}${layoutNote}
 ${buildingDescriptions}
 
 ${styleSection}
 
-CONSTRAINTS: Exactly ${numBuildings} separate standalone buildings. Each building physically independent with clear space between them. Do not merge or add buildings.`;
+CONSTRAINTS: Exactly ${numBuildings} separate standalone buildings. Each building physically independent with clear space between them. Do not merge or add buildings. Follow the reference image positions EXACTLY — do not add, remove, or reposition any building.`;
 
   return prompt;
 }

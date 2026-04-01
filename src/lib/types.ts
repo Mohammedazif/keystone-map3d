@@ -586,6 +586,8 @@ export interface RenderingBuildingInfo {
   typology: string;
   gfa: number;             // gross floor area (footprint × totalFloors)
   programMix?: { residential: number; commercial: number; hospitality: number; institutional: number };
+  /** Per-floor use allocation for mixed-use buildings, e.g. [{use:'Retail',floors:'1-2'},{use:'Office',floors:'3-5'}] */
+  floorUseAllocation?: { use: string; floors: string; count: number }[];
   cores: { lifts: number; stairs: number; service: number; lobbies: number };
   unitCount: number;
   unitBreakdown: Record<string, number>;  // e.g. { '2BHK': 10, '3BHK': 8 }

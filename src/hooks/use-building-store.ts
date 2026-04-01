@@ -818,6 +818,66 @@ function collectRenderingData(
 
         const relativePosition = normalizedCenter;
 
+        // Extract per-floor use allocation for mixed-use buildings
+        let floorUseAllocation: { use: string; floors: string; count: number }[] | undefined;
+        if (b.floors && b.floors.length > 0) {
+            const aboveGroundFloors = b.floors
+                .filter(f => (f.level === undefined || f.level >= 0) && f.type !== 'Parking')
+                .sort((a, f2) => (a.level ?? 0) - (f2.level ?? 0));
+
+            if (aboveGroundFloors.some(f => f.intendedUse)) {
+                // Group consecutive floors by intendedUse
+                const groups: { use: string; startFloor: number; endFloor: number; count: number }[] = [];
+                let currentUse = '';
+                let startIdx = 0;
+
+                aboveGroundFloors.forEach((f, idx) => {
+                    const use = f.intendedUse || b.intendedUse || 'Mixed-Use';
+                    if (use !== currentUse) {
+                        if (currentUse) {
+                            groups.push({ use: currentUse, startFloor: startIdx + 1, endFloor: idx, count: idx - startIdx });
+                        }
+                        currentUse = use;
+                        startIdx = idx;
+                    }
+                });
+                // Push last group
+                if (currentUse) {
+                    groups.push({ use: currentUse, startFloor: startIdx + 1, endFloor: aboveGroundFloors.length, count: aboveGroundFloors.length - startIdx });
+                }
+
+                // Only include if there are multiple use types (truly mixed)
+                const uniqueUses = new Set(groups.map(g => g.use));
+                if (uniqueUses.size > 1) {
+                    floorUseAllocation = groups.map(g => ({
+                        use: g.use,
+                        floors: g.startFloor === g.endFloor ? `F${g.startFloor}` : `F${g.startFloor}-${g.endFloor}`,
+                        count: g.count,
+                    }));
+                }
+            }
+        }
+
+        // Determine the actual intendedUse — override to 'Mixed-Use' if floors show multiple uses
+        let resolvedIntendedUse: string = b.intendedUse;
+        if (floorUseAllocation && floorUseAllocation.length > 1) {
+            // Floors have multiple distinct uses → definitely mixed
+            resolvedIntendedUse = 'Mixed-Use';
+        } else if (b.programMix && b.intendedUse === 'Mixed-Use') {
+            // Only apply programMix override if building is already labeled Mixed-Use
+            // (avoids overriding plot-wise single-purpose buildings that carry programMix from params)
+            const nonZero = Object.values(b.programMix).filter(v => v > 0).length;
+            if (nonZero > 1) resolvedIntendedUse = 'Mixed-Use';
+        }
+
+        // Debug: trace rendering data extraction
+        console.log(`[RenderData] Building "${b.id}" (${b.name}):`,
+            `native intendedUse=${b.intendedUse},`,
+            `resolved=${resolvedIntendedUse},`,
+            `floors=${b.floors?.length || 0},`,
+            `floorUseAllocation=${floorUseAllocation ? JSON.stringify(floorUseAllocation) : 'undefined'}`
+        );
+
         return {
             id: b.id,
             name: parts.length > 1 ? `${b.name} (${partSummary})` : b.name,
@@ -825,8 +885,9 @@ function collectRenderingData(
             totalFloors: totalFlrs, floorHeight: b.typicalFloorHeight,
             groundFloorHeight: b.groundFloorHeight || b.typicalFloorHeight,
             footprintArea: b.area,
-            footprintWidth, footprintDepth, intendedUse: b.intendedUse,
+            footprintWidth, footprintDepth, intendedUse: resolvedIntendedUse,
             typology: designParams.typology, gfa, programMix: b.programMix,
+            floorUseAllocation,
             cores: coreBreakdown, unitCount: b.units?.length || 0, unitBreakdown,
             parkingFloors: parkingFlrs.length, parkingCapacity, evStations,
             position: parts.length > 1 && position ? `${position}; composite massing: ${partSummary}` : position,
@@ -2999,7 +3060,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                         id: `floor-${id}-${currentFloorIndex}`,
                                         height: currentFloorIndex === 0 ? groundFloorHeight : floorHeight,
                                         color: colors[k] || '#cccccc',
-                                        type: 'Occupied',
+                                        type: 'General' as const,
                                         intendedUse: type,
                                         level: currentFloorIndex
                                     });
@@ -3038,7 +3099,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                                         id: `floor-${id}-${currentFloorIndex}`,
                                         height: currentFloorIndex === 0 ? groundFloorHeight : floorHeight,
                                         color: colors[k] || '#cccccc',
-                                        type: 'Occupied',
+                                        type: 'General' as const,
                                         intendedUse: type,
                                         level: currentFloorIndex
                                     });
@@ -3131,7 +3192,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     if (params.landUse === 'mixed' && params.allocationMode === 'floor' && params.hasPodium && intendedUse === BuildingIntendedUse.MixedUse) {
                         const mix = params.programMix || { residential: 40, commercial: 40, institutional: 10, hospitality: 10 };
                         const commFloors = Math.round(floors * (mix.commercial / 100));
-                        const retailFloors = commFloors > 0 ? Math.max(1, Math.floor(commFloors * 0.4)) : 0;
+                        // Use the same retail/office split as the floor generator (line 3034)
+                        const defaultRetailPct = params.commercialMix ? (params.commercialMix.retail / 100) : 0.4;
+                        const retailFloors = commFloors > 0
+                            ? (params.commercialMix ? Math.round(commFloors * defaultRetailPct) : Math.max(1, Math.floor(commFloors * defaultRetailPct)))
+                            : 0;
                         const officeFloors = Math.max(0, commFloors - retailFloors);
                         const instFloors = Math.round(floors * (mix.institutional / 100));
                         const hospFloors = Math.round(floors * (mix.hospitality / 100));
