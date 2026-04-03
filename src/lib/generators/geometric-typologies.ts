@@ -672,8 +672,9 @@ export function generateLShapes(
         return x - Math.floor(x);
     };
 
-    // Helper: Check if polygon is FULLY contained in validArea (>=95% area overlap)
-    function isFullyContained(poly: Feature<Polygon>): boolean {
+    // Helper: Check if polygon is contained in validArea
+    // threshold: 0.95 for edge placement, relaxed for deeper passes
+    function isFullyContained(poly: Feature<Polygon>, threshold = 0.95): boolean {
         try {
             let intersection = null;
             try {
@@ -688,7 +689,7 @@ export function generateLShapes(
                 intersection = turf.intersect(cp, ca);
             }
             if (!intersection) return false;
-            return turf.area(intersection) >= turf.area(poly) * 0.95;
+            return turf.area(intersection) >= turf.area(poly) * threshold;
         } catch (e) {
             return false;
         }
@@ -732,7 +733,7 @@ export function generateLShapes(
     const results: Feature<Polygon>[] = [];
     const usedAreas: Feature<Polygon>[] = [...(obstacles || [])];
 
-    const maxDepthPasses = 3; // edge + 2 inner rings
+    const maxDepthPasses = 6; // enough passes to reach center of large plots
     let depthOffset = 0;
     const attachEnds = preferFarEnd ? ['far', 'start'] : ['start', 'far'];
 
@@ -790,8 +791,9 @@ export function generateLShapes(
 
                         const slab1 = createRect(pStart, edgeData.bearing, s1Len, s1W, inwardTurn);
 
-                        // Slab1 must be fully contained
-                        if (!isFullyContained(slab1)) continue;
+                        // Slab1 must be fully contained (relax for deeper passes)
+                        const containThreshold = depthPass <= 1 ? 0.95 : 0.85;
+                        if (!isFullyContained(slab1, containThreshold)) continue;
 
                         // Slab1 must not collide
                         if (checkCollision(slab1, usedAreas)) continue;
@@ -825,9 +827,9 @@ export function generateLShapes(
                             // Arm starts right at slab1's inner corner (touching, same building)
                             const armStart = armOrigin;
 
-                            // Try arm sizes: SMALLEST first (more likely to fit)
-                            const armLengthOptions = [minBuildingLength, 35, 40, maxBuildingLength];
-                            const armWidthOptions = [minBuildingWidth, maxBuildingWidth];
+                            // Try arm sizes: BIGGEST first for proportional L-shapes, fallback to smaller
+                            const armLengthOptions = [maxBuildingLength, 45, 35, minBuildingLength];
+                            const armWidthOptions = [maxBuildingWidth, minBuildingWidth];
 
                             for (const aLen of armLengthOptions) {
                                 if (slab2) break;
@@ -837,7 +839,7 @@ export function generateLShapes(
                                     const armRect = createRect(armStart, perpBearing, aLen, aW, armDepthTurn);
 
                                     // Arm must be fully contained
-                                    if (!isFullyContained(armRect)) continue;
+                                    if (!isFullyContained(armRect, containThreshold)) continue;
 
                                     // Arm must not collide with existing buildings
                                     if (checkCollision(armRect, usedAreas)) continue;
@@ -854,16 +856,18 @@ export function generateLShapes(
                             }
                         }
 
-                        if (!slab2) continue; // No arm fits â€” try smaller slab1
+                        // For deeper passes (center), allow solo slab if no arm fits
+                        if (!slab2 && depthPass <= 1) continue; // Edge passes: must be L-shape
+                        // Deeper passes: accept solo slab to fill center
 
-                        // âœ… Both slab1 + slab2 fit â€” commit!
+                        // ✅ Both slab1 + slab2 fit — commit!
                         usedAreas.push(slab1);
-                        usedAreas.push(slab2);
+                        if (slab2) usedAreas.push(slab2);
 
                         // Generate layouts for both arms
                         const slabPair: [Feature<Polygon>, number][] = [
                             [slab1, edgeData.bearing],
-                            [slab2, perpBearing]
+                            ...(slab2 ? [[slab2, perpBearing] as [Feature<Polygon>, number]] : [])
                         ];
 
                         for (const [arm, bearing] of slabPair) {
@@ -909,7 +913,7 @@ export function generateLShapes(
 
         console.log(`[L-Gen] Depth pass ${depthPass}: ${placedThisPass} L-shapes placed`);
         if (placedThisPass === 0) break;
-        depthOffset += maxBuildingWidth + rowGap;
+        depthOffset += maxBuildingWidth + Math.max(sideSetback, 3); // tighter rows to fill center
     }
 
     console.log(`[L-Gen] Done: ${results.length} buildings (${Math.round(results.length / 2)} L-shapes)`);
