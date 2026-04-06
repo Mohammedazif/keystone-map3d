@@ -3,7 +3,8 @@ import { planarArea } from './geometry-utils';
 import { generateBuildingLayout } from './layout-generator';
 import { Feature, Polygon, MultiPolygon, Point, LineString } from 'geojson';
 import { UnitTypology } from '../types';
-
+import { applyVariableSetbacks } from './setback-utils';
+import { AlgoParams } from './geometric-typologies-helpers';
 export interface GeometricTypologyParams {
     wingDepth?: number;
     wingLengthA?: number;
@@ -199,11 +200,7 @@ export function generateUShapes(
     console.log(`[generateUShapes] Setbacks -> setback: ${setback}, sideSetback: ${params.sideSetback}`);
 
     // Get Valid Area
-    // @ts-ignore
-    const bufferedPlot = applyVariableSetbacks(plotGeometry, params as AlgoParams);
-    if (!bufferedPlot) return [];
-    // @ts-ignore
-    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
     const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
@@ -359,11 +356,7 @@ export function generateTShapes(
     console.log(`[generateTShapes] Dimensions -> minWidth: ${minBuildingWidth}, maxWidth: ${maxBuildingWidth}`);
 
     // 1. Valid Area
-    // @ts-ignore
-    const bufferedPlot = applyVariableSetbacks(plotGeometry, params as AlgoParams);
-    if (!bufferedPlot) return [];
-    // @ts-ignore
-    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
     const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
@@ -650,12 +643,29 @@ export function generateLShapes(
     const rearSetback = params.rearSetback ?? frontSetback;
     const cornerMargin = Math.max(sideSetback, 3);
     const rowGap = frontSetback + rearSetback;
-    // L-shape arms should TOUCH (same building), gap only between separate L-shapes
+    const armGap = rearSetback; // arm uses rear setback as gap between L-shape arms
+    
+    // --- DIVERSITY LOGIC ---
+    const strategyVariant = seed % 3; // 0: Balanced, 1: Dense, 2: Heavy
+    let sMinLength = minBuildingLength;
+    let sMaxLength = maxBuildingLength;
+    let sMinWidth = minBuildingWidth;
+    let sMaxWidth = maxBuildingWidth;
+
+    if (strategyVariant === 1) {
+        sMaxLength = Math.min(maxBuildingLength, minBuildingLength + 15);
+    } else if (strategyVariant === 2) {
+        sMinWidth = Math.max(minBuildingWidth, maxBuildingWidth - 2);
+        sMinLength = Math.max(minBuildingLength, 40);
+    }
+
+    const dynWidthOptions = strategyVariant === 1 ? [sMinWidth, sMaxWidth] : [sMaxWidth, sMinWidth];
+
     const lShapeSpacing = Math.max(rowGap, sideSetback * 2, 6);
 
     console.log(`[L-Gen] ===== Integrated L-Gen (seed=${seed}) =====`);
-    console.log(`[L-Gen] Dims: W[${minBuildingWidth}-${maxBuildingWidth}] L[${minBuildingLength}-${maxBuildingLength}]`);
-    console.log(`[L-Gen] Setbacks: side=${sideSetback}, front=${frontSetback}, rear=${rearSetback}, lSpacing=${lShapeSpacing}`);
+    console.log(`[L-Gen] Dims: W[${sMinWidth}-${sMaxWidth}] L[${sMinLength}-${sMaxLength}]`);
+    console.log(`[L-Gen] Setbacks: side=${sideSetback}, front=${frontSetback}, rear=${rearSetback}, armGap=${armGap}, lSpacing=${lShapeSpacing}`);
 
     const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
@@ -744,9 +754,9 @@ export function generateLShapes(
             let currentDist = cornerMargin;
             const limitDist = edgeData.length - cornerMargin;
 
-            while (currentDist + minBuildingLength <= limitDist) {
-                const maxAvailLen = Math.min(maxBuildingLength, limitDist - currentDist);
-                if (maxAvailLen < minBuildingLength) break;
+            while (currentDist + sMinLength <= limitDist) {
+                const maxAvailLen = Math.min(sMaxLength, limitDist - currentDist);
+                if (maxAvailLen < sMinLength) break;
 
                 const edgeStart = turf.along(edgeData.edge, currentDist, { units: 'meters' });
 
@@ -754,7 +764,7 @@ export function generateLShapes(
                 let inwardTurn: number | null = null;
                 for (const turn of [90, -90]) {
                     try {
-                        const probe = createRect(edgeStart.geometry.coordinates, edgeData.bearing, minBuildingLength, minBuildingWidth, turn);
+                        const probe = createRect(edgeStart.geometry.coordinates, edgeData.bearing, sMinLength, sMinWidth, turn);
                         // @ts-ignore
                         const inter = turf.intersect(turf.buffer(probe, 0), turf.buffer(validArea, 0));
                         if (inter && turf.area(inter) >= turf.area(probe) * 0.30) {
@@ -777,12 +787,12 @@ export function generateLShapes(
 
                 const perpBearing = edgeData.bearing + inwardTurn;
 
-                // Try slab1 sizes: largest first, then smaller
+                // Try slab1 sizes: dynamic based on strategy
                 let lPlaced = false;
-                const widthOptions = [maxBuildingWidth, minBuildingWidth];
+                const widthOptions = dynWidthOptions;
                 const lengthOptions: number[] = [maxAvailLen];
-                if (maxAvailLen > minBuildingLength + 10) lengthOptions.push(Math.round((maxAvailLen + minBuildingLength) / 2));
-                if (maxAvailLen > minBuildingLength) lengthOptions.push(minBuildingLength);
+                if (maxAvailLen > sMinLength + 10) lengthOptions.push(Math.round((maxAvailLen + sMinLength) / 2));
+                if (maxAvailLen > sMinLength) lengthOptions.push(sMinLength);
 
                 for (const s1Len of lengthOptions) {
                     if (lPlaced) break;
@@ -824,12 +834,15 @@ export function generateLShapes(
                                 armDepthTurn = inwardTurn;
                             }
 
-                            // Arm starts right at slab1's inner corner (touching, same building)
-                            const armStart = armOrigin;
+                            // Arm starts offset from slab1's inner corner by rear setback
+                            const armStart = turf.destination(
+                                turf.point(armOrigin), armGap, perpBearing, { units: 'meters' }
+                            ).geometry.coordinates;
 
-                            // Try arm sizes: BIGGEST first for proportional L-shapes, fallback to smaller
-                            const armLengthOptions = [maxBuildingLength, 45, 35, minBuildingLength];
-                            const armWidthOptions = [maxBuildingWidth, minBuildingWidth];
+                            // Try arm sizes: dynamic based on strategy
+                            const computedArmOptions = [sMaxLength, 45, 35, sMinLength].filter(l => l <= sMaxLength && l >= sMinLength);
+                            const armLengthOptions = strategyVariant === 1 ? computedArmOptions.sort((a,b)=>a-b) : computedArmOptions.sort((a,b)=>b-a);
+                            const armWidthOptions = dynWidthOptions;
 
                             for (const aLen of armLengthOptions) {
                                 if (slab2) break;
@@ -938,11 +951,7 @@ export function generateHShapes(
     console.log(`[generateHShapes] Setbacks -> setback: ${setback}, sideSetback: ${params.sideSetback}`);
 
     // Valid Area
-    // @ts-ignore
-    const bufferedPlot = applyVariableSetbacks(plotGeometry, params as AlgoParams);
-    if (!bufferedPlot) return [];
-    // @ts-ignore
-    const validArea = bufferedPlot as Feature<Polygon | MultiPolygon>;
+    const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
     const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
 
