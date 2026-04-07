@@ -344,180 +344,316 @@ function getMidpoint(coords: number[][]): number[] {
 }
 
 /**
- * Robust "Perimeter-Aligned" T-Shape Generator
+ * T-Shape Generator — Integrated approach:
+ *   For each position on each edge, try to place slab1 (the bar, full rectangle)
+ *   THEN attach a perpendicular stem (slab2) from the CENTER of slab1's inner edge.
+ *   Only commit the T-shape if BOTH parts fit fully inside validArea.
+ *   Advance past the full T-shape to leave room for the next one.
+ *
+ * NO CLIPPING — both arms must be complete, uncut rectangles.
+ * Dimensional constraints: width 20-25m, length 25-55m
  */
-// T-Shape Generator: Junction at Edge Midpoint, Wings Left/Right/In
 export function generateTShapes(
     plotGeometry: Feature<Polygon | MultiPolygon>,
     params: GeometricTypologyParams
 ): Feature<Polygon>[] {
-    const { wingDepth, setback, obstacles, minBuildingWidth = 20, maxBuildingWidth = 25 } = params;
-    console.log(`[generateTShapes] Setbacks -> setback: ${setback}, sideSetback: ${params.sideSetback}`);
-    console.log(`[generateTShapes] Dimensions -> minWidth: ${minBuildingWidth}, maxWidth: ${maxBuildingWidth}`);
+    const {
+        setback, obstacles,
+        minBuildingWidth = 20, maxBuildingWidth = 25,
+        minBuildingLength = 25, maxBuildingLength = 55,
+        sideSetback = 6,
+        frontSetback = 6,
+        seed = 0
+    } = params;
 
-    // 1. Valid Area
+    const rearSetback = params.rearSetback ?? frontSetback;
+    const cornerMargin = Math.max(sideSetback, 3);
+    const rowGap = frontSetback + rearSetback;
+    const armGap = rearSetback; // gap between bar and stem
+
+    // --- DIVERSITY LOGIC ---
+    const strategyVariant = seed % 3; // 0: Balanced, 1: Dense, 2: Heavy
+    let sMinLength = minBuildingLength;
+    let sMaxLength = maxBuildingLength;
+    let sMinWidth = minBuildingWidth;
+    let sMaxWidth = maxBuildingWidth;
+
+    if (strategyVariant === 1) {
+        sMaxLength = Math.min(maxBuildingLength, minBuildingLength + 15);
+    } else if (strategyVariant === 2) {
+        sMinWidth = Math.max(minBuildingWidth, maxBuildingWidth - 2);
+        sMinLength = Math.max(minBuildingLength, 40);
+    }
+
+    const dynWidthOptions = strategyVariant === 1 ? [sMinWidth, sMaxWidth] : [sMaxWidth, sMinWidth];
+
+    const tShapeSpacing = Math.max(rowGap, sideSetback * 2, 6);
+
+    console.log(`[T-Gen] ===== Integrated T-Gen (seed=${seed}) =====`);
+    console.log(`[T-Gen] Dims: W[${sMinWidth}-${sMaxWidth}] L[${sMinLength}-${sMaxLength}]`);
+    console.log(`[T-Gen] Setbacks: side=${sideSetback}, front=${frontSetback}, rear=${rearSetback}, armGap=${armGap}, tSpacing=${tShapeSpacing}`);
+
     const validArea = plotGeometry as Feature<Polygon | MultiPolygon>;
     // @ts-ignore
-    const simplified = turf.simplify(validArea, { tolerance: 0.00005, highQuality: true });
-
-    // Coords
+    const simplified = turf.simplify(validArea, { tolerance: 0.000001, highQuality: true });
     const coords = (simplified.geometry.type === 'Polygon')
         ? simplified.geometry.coordinates[0]
         : (simplified.geometry as MultiPolygon).coordinates[0][0];
 
-    const candidates: { feature: Feature<Polygon | MultiPolygon>, score: number, variantId?: string, parts?: Feature<Polygon>[] }[] = [];
+    if (coords.length < 4) return [];
 
-    const minDepth = minBuildingWidth || 20;
-    const maxDepth = maxBuildingWidth || 25;
+    // Seeded random
+    const sr = (idx: number) => {
+        const x = Math.sin(seed + idx) * 10000;
+        return x - Math.floor(x);
+    };
 
-    // Loop edges to find T-Junction spots
-    for (let i = 0; i < coords.length - 1; i++) {
+    // Helper: Check if polygon is contained in validArea
+    function isFullyContained(poly: Feature<Polygon>, threshold = 0.95): boolean {
         try {
-            // Randomize depth for this T-junction
-            const rand = Math.abs(Math.sin(i * 43.234 + (params.seed || 0) * 12.111));
-            const targetDepth = minDepth + (rand * (maxDepth - minDepth));
-
-            const p1 = coords[i];
-            const p2 = coords[i + 1];
-            const edgeLine = turf.lineString([p1, p2]);
-            const edgeLen = turf.length(edgeLine, { units: 'meters' });
-
-            if (edgeLen < 40) continue;
-
-            // Midpoint
-            const midP = turf.midpoint(turf.point(p1), turf.point(p2));
-            const bearing = turf.bearing(turf.point(p1), turf.point(p2));
-
-            const testPPlus = turf.destination(midP, 5, bearing + 90, { units: 'meters' });
-            // @ts-ignore
-            const isPlusIn = turf.booleanPointInPolygon(testPPlus, validArea);
-            const bearingIn = isPlusIn ? bearing + 90 : bearing - 90;
-
-            // 1. Junction Block (Square at center)
-            const junctionSize = targetDepth;
-            const junctionCenter = turf.destination(midP, junctionSize / 2, bearingIn, { units: 'meters' });
-
-            const halfS = junctionSize / 2;
-            const j1 = turf.destination(junctionCenter, halfS, bearing, { units: 'meters' }); // Right
-            const j2 = turf.destination(junctionCenter, -halfS, bearing, { units: 'meters' }); // Left
-
-            // Front-Left
-            const fl = turf.destination(midP, -halfS, bearing, { units: 'meters' });
-            // Front-Right
-            const fr = turf.destination(midP, halfS, bearing, { units: 'meters' });
-            // Back-Right
-            const br = turf.destination(fr, junctionSize, bearingIn, { units: 'meters' });
-            // Back-Left
-            const bl = turf.destination(fl, junctionSize, bearingIn, { units: 'meters' });
-
-            const junctionPoly = turf.polygon([[
-                fl.geometry.coordinates,
-                fr.geometry.coordinates,
-                br.geometry.coordinates,
-                bl.geometry.coordinates,
-                fl.geometry.coordinates
-            ]]);
-
-
-            if (!turf.booleanContains(validArea, turf.centroid(junctionPoly))) continue;
-            const tParts: Feature<Polygon>[] = [junctionPoly];
-
-            // Wings (Left, Right)
-            const dirLeft = turf.destination(fl, 100, bearing + 180, { units: 'meters' });
-            const dirRight = turf.destination(fr, 100, bearing, { units: 'meters' });
-
-            // Cap Wings (full length along edge)
-            const createWingPoly = (startP: any, dirP: any) => {
-                const b = turf.bearing(startP, dirP);
-                const len = 200; // max extension
-                const pEnd = turf.destination(startP, len, b, { units: 'meters' });
-
-                // Build box
-                const bPerp = bearingIn; // Depth direction
-                const pStartBack = turf.destination(startP, junctionSize, bPerp, { units: 'meters' });
-                const pEndBack = turf.destination(pEnd, junctionSize, bPerp, { units: 'meters' });
-
-                return turf.polygon([[
-                    startP.geometry.coordinates,
-                    pEnd.geometry.coordinates,
-                    pEndBack.geometry.coordinates,
-                    pStartBack.geometry.coordinates,
-                    startP.geometry.coordinates
-                ]]);
-            };
-
-            // Left Wing Base
-            const leftWingBase = createWingPoly(turf.point(fl.geometry.coordinates), dirLeft);
-            // @ts-ignore
-            const leftWingValid = turf.intersect(leftWingBase, validArea);
-
-            // Right Wing Base
-            const rightWingBase = createWingPoly(turf.point(fr.geometry.coordinates), dirRight);
-            // @ts-ignore
-            const rightWingValid = turf.intersect(rightWingBase, validArea);
-
-            // Stem Wing Base (Inward)
-            const stemStartL = bl;
-            const stemStartR = br;
-            const stemDir = turf.destination(midP, 100, bearingIn, { units: 'meters' });
-
-            // Stem Box
-            const stemLen = 200;
-            const stemEndL = turf.destination(bl, stemLen, bearingIn, { units: 'meters' });
-            const stemEndR = turf.destination(br, stemLen, bearingIn, { units: 'meters' });
-
-            const stemBase = turf.polygon([[
-                bl.geometry.coordinates,
-                br.geometry.coordinates,
-                stemEndR.geometry.coordinates,
-                stemEndL.geometry.coordinates,
-                bl.geometry.coordinates
-            ]]);
-            // @ts-ignore
-            const stemValid = turf.intersect(stemBase, validArea);
-
-            // Segment Wings
-            if (leftWingValid) {
-                tParts.push(...segmentWing(leftWingValid as Feature<Polygon>, turf.point(fl.geometry.coordinates), dirLeft, params));
+            let intersection = null;
+            try {
+                // @ts-ignore
+                intersection = turf.intersect(poly, validArea);
+            } catch (e) {
+                // @ts-ignore
+                const cp = turf.buffer(poly, 0);
+                // @ts-ignore
+                const ca = turf.buffer(validArea, 0);
+                // @ts-ignore
+                intersection = turf.intersect(cp, ca);
             }
-            if (rightWingValid) {
-                tParts.push(...segmentWing(rightWingValid as Feature<Polygon>, turf.point(fr.geometry.coordinates), dirRight, params));
-            }
-            if (stemValid) {
-                const backCenter = turf.midpoint(bl, br);
-                const backDir = turf.destination(backCenter, 10, bearingIn);
-                tParts.push(...segmentWing(stemValid as Feature<Polygon>, backCenter, backDir, params));
-            }
+            if (!intersection) return false;
+            return turf.area(intersection) >= turf.area(poly) * threshold;
+        } catch (e) {
+            return false;
+        }
+    }
 
-            if (tParts.length > 1) {
-                const clearedParts = applyCornerClearance(tParts, 3);
+    // Collect valid edges
+    type EdgeData = { edge: Feature<LineString>; length: number; bearing: number; idx: number };
+    const validEdges: EdgeData[] = [];
 
-                const multi = turf.multiPolygon(clearedParts.map(p => p.geometry.coordinates));
+    for (let i = 0; i < coords.length - 1; i++) {
+        const p1 = turf.point(coords[i]);
+        const p2 = turf.point(coords[i + 1]);
+        const length = turf.distance(p1, p2, { units: 'meters' });
+        if (length >= minBuildingLength) {
+            validEdges.push({
+                edge: turf.lineString([coords[i], coords[i + 1]]),
+                length,
+                bearing: turf.bearing(p1, p2),
+                idx: i
+            });
+        }
+    }
 
-                const enforced = enforceMaxFootprint(multi, params.maxFootprint, params.minFootprint);
+    if (validEdges.length === 0) return [];
 
-                if (enforced) {
-                    clearedParts.forEach(p => p.properties = { ...p.properties, subtype: 'tshaped', type: 'generated' });
+    // Sort edges by strategy
+    const strategy = seed % 3;
+    validEdges.sort((a, b) => {
+        if (strategy === 1) return (b.length + sr(a.idx) * 20) - (a.length + sr(b.idx) * 20);
+        if (strategy === 2) return a.length - b.length;
+        return b.length - a.length;
+    });
 
-                    // @ts-ignore
-                    candidates.push({
-                        feature: enforced,
-                        score: turf.area(enforced),
-                        variantId: `T-Edge-${i}`,
-                        parts: clearedParts
-                    });
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // INTEGRATED: Place bar (slab1) + stem (slab2) together as a unit
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    const results: Feature<Polygon>[] = [];
+    const usedAreas: Feature<Polygon>[] = [...(obstacles || [])];
+
+    const maxDepthPasses = 6;
+    let depthOffset = 0;
+
+    for (let depthPass = 0; depthPass < maxDepthPasses; depthPass++) {
+        let placedThisPass = 0;
+
+        for (const edgeData of validEdges) {
+            let currentDist = cornerMargin;
+            const limitDist = edgeData.length - cornerMargin;
+            let edgePlacedCount = 0;
+            const maxPerEdge = 2; // Limit per edge per pass to distribute across all edges
+
+            while (currentDist + sMinLength <= limitDist) {
+                const maxAvailLen = Math.min(sMaxLength, limitDist - currentDist);
+                if (maxAvailLen < sMinLength) break;
+
+                const edgeStart = turf.along(edgeData.edge, currentDist, { units: 'meters' });
+
+                // Determine inward direction
+                let inwardTurn: number | null = null;
+                for (const turn of [90, -90]) {
+                    try {
+                        const probe = createRect(edgeStart.geometry.coordinates, edgeData.bearing, sMinLength, sMinWidth, turn);
+                        // @ts-ignore
+                        const inter = turf.intersect(turf.buffer(probe, 0), turf.buffer(validArea, 0));
+                        if (inter && turf.area(inter) >= turf.area(probe) * 0.30) {
+                            inwardTurn = turn;
+                            break;
+                        }
+                    } catch (e) { }
                 }
+                if (inwardTurn === null) { currentDist += 5; continue; }
+
+                // For deeper passes, offset start point into plot
+                let pStart: number[];
+                if (depthOffset > 0) {
+                    const perpBearingOff = edgeData.bearing + inwardTurn;
+                    const deeper = turf.destination(edgeStart, depthOffset, perpBearingOff, { units: 'meters' });
+                    pStart = deeper.geometry.coordinates;
+                } else {
+                    pStart = edgeStart.geometry.coordinates;
+                }
+
+                const perpBearing = edgeData.bearing + inwardTurn;
+
+                // Try bar (slab1) sizes: dynamic based on strategy
+                let tPlaced = false;
+                const widthOptions = dynWidthOptions;
+                const lengthOptions: number[] = [maxAvailLen];
+                if (maxAvailLen > sMinLength + 10) lengthOptions.push(Math.round((maxAvailLen + sMinLength) / 2));
+                if (maxAvailLen > sMinLength) lengthOptions.push(sMinLength);
+
+                for (const s1Len of lengthOptions) {
+                    if (tPlaced) break;
+                    for (const s1W of widthOptions) {
+                        if (tPlaced) break;
+
+                        const slab1 = createRect(pStart, edgeData.bearing, s1Len, s1W, inwardTurn);
+
+                        // Bar must be fully contained (relax for deeper passes)
+                        const containThreshold = depthPass <= 1 ? 0.95 : 0.85;
+                        if (!isFullyContained(slab1, containThreshold)) continue;
+
+                        // Bar must not collide
+                        if (checkCollision(slab1, usedAreas)) continue;
+
+                        // ——— Now try to attach stem (slab2) perpendicular from CENTER ———
+                        let slab2: Feature<Polygon> | null = null;
+
+                        // Find center of slab1's inner edge
+                        const barMidAlongEdge = turf.destination(
+                            turf.point(pStart), s1Len / 2, edgeData.bearing, { units: 'meters' }
+                        );
+                        const innerEdgeCenter = turf.destination(
+                            barMidAlongEdge, s1W, perpBearing, { units: 'meters' }
+                        );
+
+                        // Stem origin: offset from inner edge center by armGap
+                        const stemOrigin = turf.destination(
+                            innerEdgeCenter, armGap, perpBearing, { units: 'meters' }
+                        ).geometry.coordinates;
+
+                        // Try stem sizes: cap stem to avoid eating deep into center, but ensure valid range
+                        // maxStemLen: 70% of bar length, floored at sMinLength so there's always a valid option
+                        // minStemLen: sMinLength (stems must respect min building length 25m)
+                        const maxStemLen = Math.min(sMaxLength, Math.max(Math.round(s1Len * 0.7), sMinLength));
+                        const minStemLen = sMinLength;
+                        const computedStemLenOptions = [maxStemLen, Math.round((maxStemLen + minStemLen) / 2), minStemLen].filter(l => l <= maxStemLen && l >= minStemLen);
+                        // Deduplicate
+                        const stemLengthOptions = [...new Set(strategyVariant === 1 ? computedStemLenOptions.sort((a, b) => a - b) : computedStemLenOptions.sort((a, b) => b - a))];
+                        const stemWidthOptions = dynWidthOptions;
+
+                        for (const stemLen of stemLengthOptions) {
+                            if (slab2) break;
+                            for (const stemW of stemWidthOptions) {
+                                if (slab2) break;
+
+                                // Stem goes inward (perpBearing), centered on the bar's midpoint
+                                // We need to offset the start so the stem is centered horizontally
+                                const halfStemW = stemW / 2;
+                                const stemStartCentered = turf.destination(
+                                    turf.point(stemOrigin), -halfStemW, edgeData.bearing, { units: 'meters' }
+                                ).geometry.coordinates;
+
+                                // Create stem: along perpBearing direction, with width extending along edgeData.bearing
+                                const stemRect = createRect(stemStartCentered, perpBearing, stemLen, stemW, -inwardTurn);
+
+                                // Stem must be fully contained
+                                if (!isFullyContained(stemRect, containThreshold)) continue;
+
+                                // Stem must not collide with existing buildings
+                                if (checkCollision(stemRect, usedAreas)) continue;
+
+                                // Stem must not overlap bar
+                                try {
+                                    // @ts-ignore
+                                    const overlap = turf.intersect(stemRect, slab1);
+                                    if (overlap && turf.area(overlap) > 1) continue;
+                                } catch (e) { }
+
+                                slab2 = stemRect;
+                            }
+                        }
+
+                        // For deeper passes (center), allow solo slab if no stem fits
+                        if (!slab2 && depthPass <= 1) continue; // Edge passes: must be T-shape
+                        // Deeper passes: accept solo slab to fill center
+
+                        // ✅ Both bar + stem fit — commit!
+                        usedAreas.push(slab1);
+                        if (slab2) usedAreas.push(slab2);
+
+                        // Generate layouts for both arms
+                        const slabPair: [Feature<Polygon>, number][] = [
+                            [slab1, edgeData.bearing],
+                            ...(slab2 ? [[slab2, perpBearing] as [Feature<Polygon>, number]] : [])
+                        ];
+
+                        for (const [arm, bearing] of slabPair) {
+                            try {
+                                const area = planarArea(arm);
+                                const layout = generateBuildingLayout(arm, {
+                                    ...params,
+                                    subtype: 'tshaped',
+                                    unitMix: params.unitMix,
+                                    alignmentRotation: bearing,
+                                    selectedUtilities: params.selectedUtilities
+                                });
+
+                                arm.properties = {
+                                    type: 'generated',
+                                    subtype: 'tshaped',
+                                    area,
+                                    cores: layout.cores,
+                                    units: layout.units,
+                                    entrances: layout.entrances,
+                                    internalUtilities: layout.utilities,
+                                    alignmentRotation: bearing,
+                                    scenarioId: `T-${results.length}`,
+                                    score: area
+                                };
+
+                                results.push(arm);
+                            } catch (e) {
+                                console.warn(`[T-Gen] Layout generation failed:`, e);
+                            }
+                        }
+
+                        console.log(`[T-Gen] T-shape at dist=${currentDist.toFixed(0)}: bar=${s1Len}x${s1W}m, stem=${slab2 ? turf.area(slab2).toFixed(0) : 0}m2`);
+                        tPlaced = true;
+                        placedThisPass++;
+                        edgePlacedCount++;
+                        currentDist += s1Len + tShapeSpacing; // generous spacing for T-shapes
+                    }
+                }
+
+                if (!tPlaced) currentDist += 5;
+                if (edgePlacedCount >= maxPerEdge) break; // Move to next edge
             }
+        }
 
-        } catch (e) { }
+        console.log(`[T-Gen] Depth pass ${depthPass}: ${placedThisPass} T-shapes placed`);
+        if (placedThisPass === 0) break;
+        depthOffset += maxBuildingWidth + Math.max(sideSetback, 3);
     }
 
-    if (candidates.length > 0) {
-        // @ts-ignore
-        return selectDiverseCandidate(candidates, params.seed ?? 0);
-    }
+    console.log(`[T-Gen] Done: ${results.length} buildings (${Math.round(results.length / 2)} T-shapes)`);
 
-    return [];
+    return applyCornerClearance(results, 3);
 }
 
 function segmentWing(
