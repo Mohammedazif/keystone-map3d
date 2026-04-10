@@ -348,12 +348,15 @@ export class RegulationEngine {
         label: string,
         status: 'pass' | 'fail' | 'warn' | 'na',
         detail: string,
-        maxScore: number
+        maxScore: number,
+        forceAchievedPoints?: number
     ): ComplianceItem {
             // New additive scoring: each item contributes points rather than additive weights.
-            // pass -> 1 point, warn -> 0.5 point, fail -> 0 point. We still keep maxScore for legacy point display,
-            // but achievedPoints is the normalized 0-1 contribution used for ranking/percentage calculations.
-            const achievedPoints = status === 'pass' ? 1 : status === 'warn' ? 0.5 : status === 'na' ? 0 : 0;
+            // pass -> 1 point, warn -> 0 (data absent / partially compliant, not yet earned)
+            // fail -> 0 point, na -> 0 (excluded from eligible set by calcAdditiveScore).
+            // forceAchievedPoints can override this for callers that explicitly award partial credit.
+            const computedPoints = status === 'pass' ? 1 : 0;
+            const achievedPoints = forceAchievedPoints !== undefined ? forceAchievedPoints : computedPoints;
 
             return {
                 label,
@@ -376,7 +379,7 @@ export class RegulationEngine {
     const maxScore = eligibleItems.reduce((sum, item) => sum + item.maxScore, 0);
     const totalScore = eligibleItems.reduce((sum, item) => sum + (item.achievedScore || 0), 0);
 
-    // Compute additive ranking points: use the achievedPoints field when present (1 for pass, 0.5 warn, 0 fail)
+    // Compute additive ranking points: use the achievedPoints field when present (1 for pass, 0 for warn/fail/na)
     const pointSum = eligibleItems.reduce((sum, item) => sum + ((item as any).achievedPoints ?? (item.achievedScore > 0 ? 1 : 0)), 0);
     const maxPoints = eligibleItems.length; // each eligible item contributes max 1 point
 
@@ -429,7 +432,8 @@ export class RegulationEngine {
                 'Building Plan Approval',
                 buildingPlanStatus === 'Approved' ? 'pass' : buildingPlanStatus === 'Pending' ? 'warn' : 'fail',
                 buildingPlanStatus,
-                120
+                120,
+                buildingPlanStatus === 'Approved' ? 1 : 0
             ));
         }
 
@@ -439,7 +443,8 @@ export class RegulationEngine {
                 'Environmental Clearance',
                 envClearanceStatus === 'Approved' ? 'pass' : 'warn',
                 envClearanceStatus,
-                80
+                80,
+                envClearanceStatus === 'Approved' ? 1 : 0
             ));
         }
 
@@ -477,7 +482,8 @@ export class RegulationEngine {
                 ? (hasRoadUtility ? 'pass' : 'warn')
                 : 'pass',
             tallestBuilding > 15 ? 'High-rise checks depend on fire access + NOC' : 'Not a high-rise',
-            30
+            30,
+            tallestBuilding > 15 && !hasRoadUtility ? 0 : 1
         ));
 
         // Coverage
@@ -532,22 +538,22 @@ export class RegulationEngine {
             this.project.plots.forEach(p => {
                 if (p.utilityAreas) p.utilityAreas.forEach((u: any) => { if ((u.type || '').toLowerCase().includes('drain') || (u.type || '').toLowerCase().includes('storm')) hasStorm = true; });
             });
-            bylawItems.push(this.createScoreItem('Stormwater / Drainage Plan', hasStorm ? 'pass' : 'warn', hasStorm ? 'Plan present' : 'No dedicated drainage area', 40));
+            bylawItems.push(this.createScoreItem('Stormwater / Drainage Plan', hasStorm ? 'pass' : 'warn', hasStorm ? 'Plan present' : 'No dedicated drainage area', 40, hasStorm ? 1 : 0));
 
             // Waste management
             let hasWaste = false;
             this.project.plots.forEach(p => { if (p.utilityAreas) p.utilityAreas.forEach((u: any) => { if ((u.type || '').toLowerCase().includes('waste') || (u.type || '').toLowerCase().includes('solid')) hasWaste = true; }); });
-            bylawItems.push(this.createScoreItem('Solid Waste Management Plan', hasWaste ? 'pass' : 'warn', hasWaste ? 'Plan present' : 'Not provided', 30));
+            bylawItems.push(this.createScoreItem('Solid Waste Management Plan', hasWaste ? 'pass' : 'warn', hasWaste ? 'Plan present' : 'Not provided', 30, hasWaste ? 1 : 0));
 
             // Sewer / storm connectivity approvals
         const approvalsAny = this.project.underwriting?.approvals as any;
         const sewerOk = !!approvalsAny?.sewerConnection || !!approvalsAny?.drainagePlan;
             if (!sewerOk) {
-                bylawItems.push(this.createScoreItem('Sewer / Drainage Connections', 'warn', 'No approvals found', 20));
+                bylawItems.push(this.createScoreItem('Sewer / Drainage Connections', 'warn', 'No approvals found', 20, 0));
             }
 
             // Utility easements / setbacks for services
-            bylawItems.push(this.createScoreItem('Utility Easements & Service Corridors', 'warn', 'Check service easements & clearances', 30));
+            bylawItems.push(this.createScoreItem('Utility Easements & Service Corridors', 'warn', 'Check service easements & clearances', 30, 0));
         }
 
         // Parking
@@ -595,7 +601,8 @@ export class RegulationEngine {
                 'Fire NOC',
                 fireNocStatus === 'Approved' ? 'pass' : fireNocStatus === 'Pending' ? 'warn' : 'fail',
                 fireNocStatus || 'Missing',
-                50
+                50,
+                fireNocStatus === 'Approved' ? 1 : 0
             ));
         }
 
@@ -604,7 +611,8 @@ export class RegulationEngine {
                 'Soil Investigation Report',
                 soilCoverage ? 'pass' : 'warn',
                 soilCoverage ? 'Soil data available for all buildings' : 'Soil data missing for one or more buildings',
-                50
+                50,
+                soilCoverage ? 1 : 0
             ));
         }
 
@@ -614,7 +622,8 @@ export class RegulationEngine {
                 'Utility Connections Approval',
                 utilityConnectionStatus === 'Approved' ? 'pass' : 'warn',
                 utilityConnectionStatus,
-                20
+                20,
+                utilityConnectionStatus === 'Approved' ? 1 : 0
             ));
         }
 
@@ -624,7 +633,8 @@ export class RegulationEngine {
                 'RERA Registration',
                 reraRegistration !== 'Pending' ? 'pass' : 'warn',
                 reraRegistration,
-                20
+                20,
+                reraRegistration !== 'Pending' ? 1 : 0
             ));
         }
 
@@ -683,15 +693,15 @@ export class RegulationEngine {
         greenItems.push(this.createScoreItem('Energy Efficiency Measures', 'warn', 'Generic checks (lighting, HVAC efficiency) - refine with audit', 100));
 
         // Materials & waste
-        greenItems.push(this.createScoreItem('Construction Waste Management', 'warn', 'No waste plan provided', 40));
-        greenItems.push(this.createScoreItem('Sustainable Materials (low embodied carbon)', 'warn', 'No materials declaration', 60));
+        greenItems.push(this.createScoreItem('Construction Waste Management', 'warn', 'No waste plan provided', 40, 0));
+        greenItems.push(this.createScoreItem('Sustainable Materials (low embodied carbon)', 'warn', 'No materials declaration', 60, 0));
 
         // Indoor environment & amenity
-        greenItems.push(this.createScoreItem('Daylight / Ventilation Targets', 'warn', 'Needs daylight analysis', 80));
-        greenItems.push(this.createScoreItem('Thermal Comfort / Passive Design', 'warn', 'Passive design not analyzed', 60));
+        greenItems.push(this.createScoreItem('Daylight / Ventilation Targets', 'warn', 'Needs daylight analysis', 80, 0));
+        greenItems.push(this.createScoreItem('Thermal Comfort / Passive Design', 'warn', 'Passive design not analyzed', 60, 0));
 
         // Site-level certification readiness (composite)
-        greenItems.push(this.createScoreItem('Documentation & Certification Readiness', this.greenStandards ? 'pass' : 'warn', this.greenStandards ? `Using ${this.greenStandards.name}` : 'No standard attached', 100));
+        greenItems.push(this.createScoreItem('Documentation & Certification Readiness', this.greenStandards ? 'pass' : 'warn', this.greenStandards ? `Using ${this.greenStandards.name}` : 'No standard attached', 100, this.greenStandards ? 1 : 0));
 
         // Replace synthetic bucket with a set of common fallback credits (modeled after IGBC/LEED categories)
         const fallbackCredits = [
@@ -706,8 +716,9 @@ export class RegulationEngine {
 
         fallbackCredits.forEach(c => {
             // Default evaluation is 'warn' so they appear available but not achieved without audits
+            // Using forceAchievedPoints = 0 ensures they don't award unearned points
             // Avoid emitting legacy 'Mapped to standard' text; regulation engine is deprecated for scoring UI
-            greenItems.push(this.createScoreItem(`${c.code} ${c.name}`, this.greenStandards ? 'pass' : 'warn', this.greenStandards ? 'Standard match' : 'Fallback credit', c.points));
+            greenItems.push(this.createScoreItem(`${c.code} ${c.name}`, this.greenStandards ? 'pass' : 'warn', this.greenStandards ? 'Standard match' : 'Fallback credit', c.points, this.greenStandards ? 1 : 0));
         });
 
         // ========== VASTU ==========
@@ -1011,7 +1022,9 @@ export class RegulationEngine {
                 return { status: goodParking.length === parkingAreas.length ? 'pass' : goodParking.length > 0 ? 'warn' : 'fail', detail: `${goodParking.length}/${parkingAreas.length} parking areas in NW/S/W` };
             }
             default:
-                return { status: 'na', detail: item.complianceBasis || 'No automated rule mapped yet' };
+                // Unmapped rules default to 'warn' (0 points) instead of 'na', so they stay in
+                // the eligible score denominator rather than artificially inflating the final percentage.
+                return { status: 'warn', detail: item.complianceBasis || 'No automated rule mapped yet' };
         }
     }
 
@@ -1022,11 +1035,18 @@ export class RegulationEngine {
         if (this.vastuRules?.scorecardItems?.length) {
             return this.vastuRules.scorecardItems.map((item) => {
                 const evaluation = this.evaluateVastuScorecardItem(item);
+                // Force warn → 0 points (same policy as bylaws/green sections).
+                // 'warn' means data is absent or partially compliant — should not award partial credit.
+                // 'na'   → excluded from scoring by calcAdditiveScore (maxScore = 0 items filtered out).
+                // 'pass' → full 1 point.
+                // 'fail' → 0 points.
+                const forcePoints = evaluation.status === 'pass' ? 1 : 0;
                 return this.createScoreItem(
                     `${item.code} ${item.title}`,
                     evaluation.status,
                     evaluation.detail,
-                    item.maxMarks
+                    item.maxMarks,
+                    forcePoints
                 );
             });
         }

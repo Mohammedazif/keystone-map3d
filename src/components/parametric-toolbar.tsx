@@ -262,9 +262,12 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         }
     }, [selectedPlot?.id]);
 
+    const initializedPlotIdRef = useRef<string | null>(null);
+
     // Apply regulations when plot changes
     useEffect(() => {
-        if (selectedPlot?.regulation?.geometry) {
+        if (selectedPlot?.regulation?.geometry && selectedPlot.id !== initializedPlotIdRef.current) {
+            initializedPlotIdRef.current = selectedPlot.id;
             const geomRegs = selectedPlot.regulation.geometry;
 
 
@@ -414,14 +417,15 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
         const effectiveSetback = useHeightBasedSetback
             ? Math.max(setback, heightDerivedSetback)
             : setback;
-        const effectiveFront = useHeightBasedSetback
-            ? Math.max(frontSetback ?? 0, heightDerivedSetback) || undefined
+        // Only override variable setbacks if they were explicitly provided
+        const effectiveFront = useHeightBasedSetback && frontSetback !== undefined
+            ? Math.max(frontSetback, heightDerivedSetback)
             : frontSetback;
-        const effectiveRear = useHeightBasedSetback
-            ? Math.max(rearSetback ?? 0, heightDerivedSetback) || undefined
+        const effectiveRear = useHeightBasedSetback && rearSetback !== undefined
+            ? Math.max(rearSetback, heightDerivedSetback)
             : rearSetback;
-        const effectiveSide = useHeightBasedSetback
-            ? Math.max(sideSetback ?? 0, heightDerivedSetback) || undefined
+        const effectiveSide = useHeightBasedSetback && sideSetback !== undefined
+            ? Math.max(sideSetback, heightDerivedSetback)
             : sideSetback;
 
         const params: any = {

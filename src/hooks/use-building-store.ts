@@ -2166,10 +2166,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         maxBuildingWidth: p.maxBuildingWidth ?? 25,
                         minBuildingLength: p.minBuildingLength ?? 25,
                         maxBuildingLength: p.maxBuildingLength ?? 55,
-                        setback: (hasPeripheralRoad || hasSurfaceParking) ? (p.frontSetback ?? mainSetback) : 0,
-                        sideSetback: p.sideSetback ?? mainSetback,
-                        frontSetback: p.frontSetback ?? mainSetback,
-                        rearSetback: p.rearSetback ?? p.frontSetback ?? mainSetback,
+                        // Main setback is ALREADY applied to shrink the plot boundary.
+                        // Generator-internal setback should only be the EXTRA beyond mainSetback.
+                        // If user explicitly provided directional setbacks, compute the extra; otherwise use small internal spacing defaults.
+                        setback: (hasPeripheralRoad || hasSurfaceParking) ? Math.max(0, (p.frontSetback ?? mainSetback) - mainSetback) : 0,
+                        sideSetback: p.sideSetback != null ? Math.max(0, p.sideSetback - mainSetback) : 6,
+                        frontSetback: p.frontSetback != null ? Math.max(0, p.frontSetback - mainSetback) : 6,
+                        rearSetback: p.rearSetback != null ? Math.max(0, p.rearSetback - mainSetback) : (p.frontSetback != null ? Math.max(0, p.frontSetback - mainSetback) : 6),
                         roadAccessSides: plotStub.roadAccessSides || [],
                         wingLengthA: undefined,
                         wingLengthB: undefined,

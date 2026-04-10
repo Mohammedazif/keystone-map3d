@@ -2866,6 +2866,9 @@ function MultiBuildingBudgetTab({
   const totalRev = estimates.total_revenue;
   const totalUtilities = estimates.simulation?.total_utility_cost || 0;
   const sim = estimates.simulation;
+
+  // ─── Land Cost (must match Budget tab calculation exactly) ───
+  // NOTE: landCostRaw/landCostWithStamp are calculated below after `project` is declared
   const normalizeLookup = (value: any) =>
     value == null ? "" : String(value).toLowerCase().trim();
   const getBuildingDisplayName = (building: any, index: number) => {
@@ -2948,6 +2951,11 @@ function MultiBuildingBudgetTab({
 
   // Prefer authoritative unit counts from the project data (plots/buildings).
   const project = useProjectData();
+
+  // ─── Land Cost (must match Budget tab calculation exactly) ───
+  const landCostRaw = project?.underwriting?.actualLandPurchaseCost || 0;
+  const landCostWithStamp = landCostRaw * 1.065; // +6.5% stamp/registration/legal (same as Budget tab)
+
   const projectBuildings = (project?.plots || []).flatMap(
     (p: any) => p.buildings || [],
   );
@@ -3053,11 +3061,12 @@ function MultiBuildingBudgetTab({
     return groups;
   })();
 
+  // building?.cost?.total lacks the 5% contingency that totalCost has. Multiply by 1.05 so the ratio is exactly 1.0 if all buildings are selected.
   const scopedConstructionCost = usingPlotScope
     ? matchedPlotEstimates.reduce(
         (sum: number, building: any) => sum + (building?.cost?.total || 0),
         0,
-      )
+      ) * 1.05
     : totalCost;
   const scopedUtilityCost = usingPlotScope
     ? matchedPlotEstimates.reduce(
@@ -3065,16 +3074,17 @@ function MultiBuildingBudgetTab({
         0,
       )
     : totalUtilities;
-  const scopedCostShare =
-    totalCost > 0 ? scopedConstructionCost / totalCost : 0;
-  const scopedCostP10 =
-    sim && usingPlotScope && usingEstimateRows
-      ? sim.cost_p10 * scopedCostShare
-      : sim?.cost_p10 || 0;
-  const scopedCostP90 =
-    sim && usingPlotScope && usingEstimateRows
-      ? sim.cost_p90 * scopedCostShare
-      : sim?.cost_p90 || 0;
+  
+  const scopedCostShare = totalCost > 0 ? scopedConstructionCost / totalCost : 1;
+  const scopedUtilityShare = totalUtilities > 0 ? scopedUtilityCost / totalUtilities : 1;
+
+  // Scale the total cost (construction P10/P90 + land) by the share percentage
+  const scopedCostP10 = ((sim?.cost_p10 || 0) + landCostWithStamp) * (usingPlotScope ? scopedCostShare : 1);
+  const scopedCostP90 = ((sim?.cost_p90 || 0) + landCostWithStamp) * (usingPlotScope ? scopedCostShare : 1);
+
+  // Utility cost range from simulation scaled by the utility share
+  const scopedUtilityCostMin = sim?.total_utility_cost_min ? sim.total_utility_cost_min * scopedUtilityShare : scopedUtilityCost;
+  const scopedUtilityCostMax = sim?.total_utility_cost_max ? sim.total_utility_cost_max * scopedUtilityShare : scopedUtilityCost;
 
   const totalUnitsAcross = usingPlotScope
     ? selectedPlotBuildings.reduce(
@@ -3135,20 +3145,22 @@ function MultiBuildingBudgetTab({
         </div>
         <div className="p-2.5 rounded-lg border bg-blue-500/10 border-blue-500/20 text-center">
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
-            Project Cost Range
+            Project Cost (P10–P90)
           </div>
           <div className="text-base font-bold text-blue-400">
             {sim
               ? `${fmtCr(scopedCostP10)} - ${fmtCr(scopedCostP90)}`
-              : `~${fmtCr(scopedConstructionCost)} (est.)`}
+              : `~${fmtCr(scopedConstructionCost + landCostWithStamp)} (est.)`}
           </div>
         </div>
         <div className="p-2.5 rounded-lg border bg-purple-500/10 border-purple-500/20 text-center">
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
-            Utility Cost (est.)
+            Utility Cost (P10–P90)
           </div>
           <div className="text-base font-bold text-purple-400">
-            ~{fmtCr(scopedUtilityCost)}
+            {sim
+              ? `${fmtCr(scopedUtilityCostMin)} - ${fmtCr(scopedUtilityCostMax)}`
+              : `~${fmtCr(scopedUtilityCost)} (est.)`}
           </div>
         </div>
       </div>
@@ -3265,7 +3277,9 @@ function MultiBuildingBudgetTab({
               ~{fmtCr(scopedConstructionCost)}
             </div>
             <div className="text-right text-slate-300">
-              ~{fmtCr(scopedUtilityCost)}
+              {sim
+                ? `${fmtCr(scopedUtilityCostMin)} – ${fmtCr(scopedUtilityCostMax)}`
+                : `~${fmtCr(scopedUtilityCost)}`}
             </div>
             <div className="text-right text-slate-300">100%</div>
             <div className="text-right text-slate-300">
@@ -3344,7 +3358,9 @@ function MultiBuildingBudgetTab({
             Utilities Included
           </div>
           <div className="text-sm font-bold text-amber-300 mb-2">
-            ~{fmtCr(scopedUtilityCost)}
+            {sim
+              ? `${fmtCr(scopedUtilityCostMin)} – ${fmtCr(scopedUtilityCostMax)}`
+              : `~${fmtCr(scopedUtilityCost)}`}
           </div>
           {estimates.simulation?.utility_costs &&
             estimates.simulation.utility_costs.length > 0 && (
@@ -3366,7 +3382,9 @@ function MultiBuildingBudgetTab({
                         {u.label} {displayUnit ? `(${displayUnit})` : ""}
                       </span>
                       <span className="font-semibold">
-                        ~{(u.amount / 10000000).toFixed(2)} Cr
+                        {u.minAmount != null && u.maxAmount != null
+                          ? `${(u.minAmount / 10000000).toFixed(2)} – ${(u.maxAmount / 10000000).toFixed(2)} Cr`
+                          : `~${(u.amount / 10000000).toFixed(2)} Cr`}
                       </span>
                     </div>
                   );
@@ -3935,290 +3953,178 @@ function FeasibilityTab() {
             <CardContent className="p-3 pt-0">
               <div className="space-y-1">
                 {/* Render a flat list for all card items. Each item shows label, status/value text, and status icon only. */}
-                <div className="space-y-2">
-                  {(() => {
-                    const raw = card.items || [];
-                    const flat: any[] = [];
-                    raw.forEach((ri: any) => {
-                      if (!ri) return;
-                      if (Array.isArray(ri)) ri.forEach((x) => flat.push(x));
-                      else if (ri.items && Array.isArray(ri.items))
-                        ri.items.forEach((x: any) => flat.push(x));
-                      else flat.push(ri);
-                    });
-                    return flat.map((item: any, i: number) => {
-                      const rawLabel = String(
-                        item.label || item.code || item.title || "",
-                      );
-                      const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
-                      const code = m ? m[1] : item.code || null;
-                      const title = m
-                        ? m[2]
-                        : item.title || item.label || rawLabel;
+                {/* Responsive tabular layout for readability */}
+                <div className="overflow-x-auto mt-2">
+                  <table className="w-full table-fixed">
+                    <thead>
+                      <tr className="border-b border-border/20 text-[10px] text-muted-foreground uppercase text-right">
+                        <th className="w-[35%] py-1.5 pr-2 font-medium text-left truncate">Requirement</th>
+                        <th className="w-[45%] py-1.5 px-2 font-medium text-left">Observation</th>
+                        <th className="w-[12%] py-1.5 px-2 text-right font-medium">Score</th>
+                        <th className="w-[8%] py-1.5 pl-2 font-medium text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/10">
+                      {(() => {
+                        const raw = card.items || [];
+                        const flat: any[] = [];
+                        raw.forEach((ri: any) => {
+                          if (!ri) return;
+                          if (Array.isArray(ri)) ri.forEach((x) => flat.push(x));
+                          else if (ri.items && Array.isArray(ri.items))
+                            ri.items.forEach((x: any) => flat.push(x));
+                          else flat.push(ri);
+                        });
+                        return flat.map((item: any, i: number) => {
+                          const rawLabel = String(item.label || item.code || item.title || "");
+                          const m = rawLabel.match(/^([A-Z0-9]+)\s+(.*)$/);
+                          const code = m ? m[1] : item.code || null;
+                          const title = m ? m[2] : item.title || item.label || rawLabel;
 
-                      // Determine status text: prefer an explicit value field otherwise fallback to status
-                      const statusText =
-                        item.value !== undefined
-                          ? String(item.value)
-                          : item.status === "na"
-                            ? "Not evaluated"
-                            : item.status;
+                          // Determine status text: prefer an explicit value field otherwise fallback to status
+                          const statusText =
+                            item.value !== undefined
+                              ? String(item.value)
+                              : item.status === "na"
+                                ? "Not evaluated"
+                                : item.status;
 
-                      return (
-                        <div
-                          key={i}
-                          className="flex items-center justify-between gap-3"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              {code && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[11px] font-mono px-1.5 py-0.5"
-                                >
-                                  {code}
-                                </Badge>
-                              )}
-                              <div className="text-sm font-medium truncate">
-                                {title}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="flex-shrink-0 w-[340px] flex flex-col items-end justify-center">
-                            {/* Top: Value or primary display per item type */}
-                            <div className="text-sm text-right">
-                              <div>
-                                {(() => {
-                                  const isBylaw = card.label
-                                    .toLowerCase()
-                                    .includes("bylaw");
-                                  const isVastu = card.label
-                                    .toLowerCase()
-                                    .includes("vastu");
+                          return (
+                            <tr key={i} className="hover:bg-slate-500/5 transition-colors group">
+                              {/* 1. Metric Title + Detail */}
+                              <td className="py-2.5 pr-2 align-top w-full whitespace-normal">
+                                <div className="flex items-start gap-2">
+                                  {code && (
+                                    <Badge variant="outline" className="text-[10px] font-mono px-1 py-0 mt-0.5 whitespace-nowrap">
+                                      {code}
+                                    </Badge>
+                                  )}
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-medium leading-5">
+                                      {title}
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
 
-                                  // CASE 1: Has score and maxScore (Vastu)
-                                  if (
-                                    isVastu &&
-                                    item.score != null &&
-                                    item.maxScore != null
-                                  ) {
-                                    return String(
-                                      `${item.score} / ${item.maxScore}`,
-                                    );
-                                  }
+                              {/* 2. Observation (Value / Detail) */}
+                              <td className="py-2.5 px-3 align-top text-left text-[13px] text-muted-foreground whitespace-normal break-words">
+                                <div className="space-y-1">
+                                  {(() => {
+                                    const isBylaw = card.label.toLowerCase().includes("bylaw");
+                                    const isVastu = card.label.toLowerCase().includes("vastu");
 
-                                  // CASE 2: Numeric comparison (Bylaw) — show value/limit only when both present
-                                  if (
-                                    isBylaw &&
-                                    item.value != null &&
-                                    (item.limit != null ||
-                                      item.limitValue != null ||
-                                      item.threshold != null)
-                                  ) {
-                                    const limit =
-                                      item.limit ??
-                                      item.limitValue ??
-                                      item.threshold;
-                                    return String(`${item.value} / ${limit}`);
-                                  }
+                                    // Display structured score/value if present
+                                    let structuredValue: React.ReactNode = null;
+                                    if (isVastu && item.score != null && item.maxScore != null) {
+                                      structuredValue = <div className="font-medium text-slate-300">{`${item.score} / ${item.maxScore}`}</div>;
+                                    } else if (isBylaw && item.value != null && (item.limit != null || item.limitValue != null || item.threshold != null)) {
+                                      const limit = item.limit ?? item.limitValue ?? item.threshold;
+                                      structuredValue = <div className="font-medium text-slate-300">{`${item.value} / ${limit}`}</div>;
+                                    } else if (typeof item.value === "string" && item.value.trim().length > 0) {
+                                      structuredValue = <div className="font-medium text-slate-300">{item.value}</div>;
+                                    } else if (typeof item.statusText === "string" && item.statusText.trim().length > 0) {
+                                      structuredValue = <div className="font-medium text-slate-300">{item.statusText}</div>;
+                                    } else if (typeof item.compliance === "boolean") {
+                                      structuredValue = <div className="font-medium text-slate-300">{item.compliance ? "Provided" : "Not provided"}</div>;
+                                    }
 
-                                  // CASE 3: Only status/text — show only explicit value text or statusText or compliance when explicitly provided as string/boolean
-                                  if (
-                                    typeof item.value === "string" &&
-                                    item.value.trim().length > 0
-                                  ) {
-                                    return item.value;
-                                  }
-
-                                  if (
-                                    typeof item.statusText === "string" &&
-                                    item.statusText.trim().length > 0
-                                  ) {
-                                    return item.statusText;
-                                  }
-
-                                  if (typeof item.compliance === "boolean") {
-                                    return item.compliance
-                                      ? "Provided"
-                                      : "Not provided";
-                                  }
-
-                                  // If none of the explicit data exists, render nothing (per strict rule)
-                                  return null;
-                                })()}
-                              </div>
-
-                              {/* Points / score subtext (clean, right-aligned) */}
-                              {(() => {
-                                const achievedScore =
-                                  (item as any).achievedScore ??
-                                  item.score ??
-                                  null;
-                                const achievedPoints =
-                                  (item as any).achievedPoints ?? null; // normalized 0..1
-                                const itemMax =
-                                  item.maxScore ?? (item as any).weight ?? null;
-
-                                // Determine total max for this card (preference: summary maxScore, else sum of item maxes)
-                                const cardSummaryMax =
-                                  (card as any).summary?.maxScore ?? null;
-                                let totalMax = cardSummaryMax;
-                                if (totalMax == null) {
-                                  try {
-                                    totalMax =
-                                      (card.items || []).reduce(
-                                        (s: number, it: any) =>
-                                          s + (it.maxScore ?? it.weight ?? 0),
-                                        0,
-                                      ) || null;
-                                  } catch {
-                                    totalMax = null;
-                                  }
-                                }
-
-                                // Compute a numeric achieved value when possible
-                                let numericAchieved: number | null = null;
-                                if (typeof achievedScore === "number")
-                                  numericAchieved = achievedScore;
-                                else if (
-                                  typeof achievedPoints === "number" &&
-                                  typeof itemMax === "number"
-                                )
-                                  numericAchieved =
-                                    Math.round(achievedPoints * itemMax * 100) /
-                                    100;
-
-                                // Render achieved / max (percent)
-                                if (
-                                  typeof numericAchieved === "number" &&
-                                  typeof itemMax === "number"
-                                ) {
-                                  const pct =
-                                    itemMax > 0
-                                      ? (numericAchieved / itemMax) * 100
-                                      : 0;
-                                  return (
-                                    <div className="text-right">
-                                      <div className="text-xs font-medium text-muted-foreground">{`${Math.round(numericAchieved)} / ${Math.round(itemMax)}`}</div>
-                                      {typeof totalMax === "number" &&
-                                        totalMax > 0 && (
-                                          <div className="text-[11px] text-muted-foreground mt-0.5">{`Contribution: +${((numericAchieved / totalMax) * 100).toFixed(1)}%`}</div>
+                                    return (
+                                      <>
+                                        {structuredValue}
+                                        {item.detail && (
+                                          <div className="text-xs leading-5 max-w-[320px]" title={item.detail}>
+                                            {item.detail}
+                                          </div>
                                         )}
-                                    </div>
-                                  );
-                                }
-
-                                // If only achievedPoints present, show that and contribution
-                                if (
-                                  typeof achievedPoints === "number" &&
-                                  typeof totalMax === "number" &&
-                                  totalMax > 0
-                                ) {
-                                  const achievedValue =
-                                    typeof itemMax === "number"
-                                      ? achievedPoints * itemMax
-                                      : achievedPoints;
-                                  const contrib =
-                                    (achievedValue / totalMax) * 100;
-                                  return (
-                                    <div className="text-right">
-                                      <div className="text-xs text-muted-foreground">{`${(achievedPoints * 100).toFixed(0)}%`}</div>
-                                      <div className="text-[11px] text-muted-foreground mt-0.5">{`Contribution: +${contrib.toFixed(1)}%`}</div>
-                                    </div>
-                                  );
-                                }
-
-                                // Fallback: any legacy points field
-                                const legacyPts = (item as any).points;
-                                if (legacyPts != null) {
-                                  const achievedValue =
-                                    typeof legacyPts === "number"
-                                      ? legacyPts
-                                      : parseFloat(String(legacyPts)) || 0;
-                                  if (
-                                    typeof totalMax === "number" &&
-                                    totalMax > 0
-                                  ) {
-                                    return (
-                                      <div className="text-right">
-                                        <div className="text-xs text-muted-foreground">{`${legacyPts} Pts`}</div>
-                                        <div className="text-[11px] text-muted-foreground mt-0.5">{`Contribution: +${((achievedValue / totalMax) * 100).toFixed(1)}%`}</div>
-                                      </div>
+                                      </>
                                     );
+                                  })()}
+                                </div>
+                              </td>
+
+                              {/* 3. Score / Contribution */}
+                              <td className="py-2.5 px-3 align-top text-right min-w-[120px]">
+                                {(() => {
+                                  const achievedScore = (item as any).achievedScore ?? item.score ?? null;
+                                  const achievedPoints = (item as any).achievedPoints ?? null;
+                                  const itemMax = item.maxScore ?? (item as any).weight ?? null;
+                                  const cardSummaryMax = (card as any).summary?.maxScore ?? null;
+                                  
+                                  let totalMax = cardSummaryMax;
+                                  if (totalMax == null) {
+                                    try {
+                                      totalMax = (card.items || []).reduce((s: number, it: any) => s + (it.maxScore ?? it.weight ?? 0), 0) || null;
+                                    } catch { totalMax = null; }
                                   }
-                                  return (
-                                    <div className="text-xs text-muted-foreground">{`${legacyPts} Pts`}</div>
-                                  );
-                                }
 
-                                return null;
-                              })()}
-                            </div>
+                                  let numericAchieved: number | null = null;
+                                  if (typeof achievedScore === "number") numericAchieved = achievedScore;
+                                  else if (typeof achievedPoints === "number" && typeof itemMax === "number")
+                                    numericAchieved = Math.round(achievedPoints * itemMax * 100) / 100;
 
-                            {/* Middle: For Bylaw show item score/percentage if present; for Vastu show score; for rule-based nothing extra */}
-                            <div className="flex items-center gap-3 mt-1">
-                              {(() => {
-                                const isBylaw = card.label
-                                  .toLowerCase()
-                                  .includes("bylaw");
-                                const isVastu = card.label
-                                  .toLowerCase()
-                                  .includes("vastu");
-
-                                if (
-                                  isVastu &&
-                                  item.score != null &&
-                                  item.maxScore != null
-                                ) {
-                                  return (
-                                    <div className="text-sm font-semibold tabular-nums">
-                                      {item.score} / {item.maxScore}
-                                    </div>
-                                  );
-                                }
-
-                                if (isBylaw) {
-                                  if (
-                                    item.score != null &&
-                                    item.maxScore != null
-                                  ) {
+                                  // Special Middle logic from old code (Vastu exact display)
+                                  const isVastu = card.label.toLowerCase().includes("vastu");
+                                  if (isVastu && item.score != null && item.maxScore != null) {
                                     return (
-                                      <div className="text-sm font-semibold tabular-nums">
+                                      <div className="text-[13px] font-semibold tabular-nums text-muted-foreground">
                                         {item.score} / {item.maxScore}
                                       </div>
                                     );
                                   }
+
+                                  if (typeof numericAchieved === "number" && typeof itemMax === "number") {
+                                    return (
+                                      <div>
+                                        <div className="text-[13px] font-medium text-muted-foreground">{`${Math.round(numericAchieved)} / ${Math.round(itemMax)}`}</div>
+                                        {typeof totalMax === "number" && totalMax > 0 && (
+                                          <div className="text-[10px] text-muted-foreground mt-0.5">{`Contribution: +${((numericAchieved / totalMax) * 100).toFixed(1)}%`}</div>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+                                  
+                                  if (typeof achievedPoints === "number" && typeof totalMax === "number" && totalMax > 0) {
+                                    const achievedValue = typeof itemMax === "number" ? achievedPoints * itemMax : achievedPoints;
+                                    const contrib = (achievedValue / totalMax) * 100;
+                                    return (
+                                      <div>
+                                        <div className="text-[13px] text-muted-foreground">{`${(achievedPoints * 100).toFixed(0)}%`}</div>
+                                        <div className="text-[10px] text-muted-foreground mt-0.5">{`Contribution: +${contrib.toFixed(1)}%`}</div>
+                                      </div>
+                                    );
+                                  }
+                                  
+                                  const legacyPts = (item as any).points;
+                                  if (legacyPts != null) {
+                                    const achievedValue = typeof legacyPts === "number" ? legacyPts : parseFloat(String(legacyPts)) || 0;
+                                    if (typeof totalMax === "number" && totalMax > 0) {
+                                      return (
+                                        <div>
+                                          <div className="text-[13px] text-muted-foreground">{`${legacyPts} Pts`}</div>
+                                          <div className="text-[10px] text-muted-foreground mt-0.5">{`Contribution: +${((achievedValue / totalMax) * 100).toFixed(1)}%`}</div>
+                                        </div>
+                                      );
+                                    }
+                                    return <div className="text-[13px] text-muted-foreground">{`${legacyPts} Pts`}</div>;
+                                  }
+
                                   return null;
-                                }
+                                })()}
+                              </td>
 
-                                // Rule-based: never show numeric placeholders unless explicitly present
-                                return null;
-                              })()}
-
-                              {/* Icon must come after value/percentage */}
-                              <div className="flex items-center" aria-hidden>
-                                {getStatusIcon(item.status || statusText)}
-                              </div>
-                            </div>
-
-                            {/* Bottom: Description below, right-aligned, clamp to 2 lines */}
-                            {item.detail && (
-                              <div
-                                className="text-xs text-muted-foreground mt-1 text-right max-w-[320px] overflow-hidden"
-                                style={{
-                                  display: "-webkit-box",
-                                  WebkitLineClamp: 2,
-                                  WebkitBoxOrient: "vertical",
-                                }}
-                              >
-                                {item.detail}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    });
-                  })()}
+                              {/* 4. Status Icon */}
+                              <td className="py-2.5 pl-2 align-top text-center">
+                                <div className="mx-auto flex h-full justify-center pt-0.5" aria-hidden>
+                                  {getStatusIcon(item.status || statusText)}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                    </tbody>
+                  </table>
                 </div>
                 {/* Vastu Load More button */}
                 {card.label.toLowerCase().includes("vastu") && (
@@ -4279,12 +4185,12 @@ function FeasibilityTab() {
                 </div>
                 <div className="text-lg font-bold">
                   {sim
-                    ? `₹${(sim.cost_p10 / 10000000).toFixed(1)} – ${(sim.cost_p90 / 10000000).toFixed(1)} Cr`
-                    : `~₹${((estimates.total_construction_cost || 0) / 10000000).toFixed(2)} Cr`}
+                    ? `₹${((sim.cost_p10 + dashLandCost) / 10000000).toFixed(1)} – ${((sim.cost_p90 + dashLandCost) / 10000000).toFixed(1)} Cr`
+                    : `~₹${(((estimates.total_construction_cost || 0) + dashLandCost) / 10000000).toFixed(2)} Cr`}
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   {sim
-                    ? `Median: ₹${(sim.cost_p50 / 10000000).toFixed(2)} Cr`
+                    ? `Median: ₹${((sim.cost_p50 + dashLandCost) / 10000000).toFixed(2)} Cr`
                     : "Run simulation for range"}
                 </div>
               </div>
@@ -4294,8 +4200,8 @@ function FeasibilityTab() {
                 </div>
                 <div className="text-lg font-bold text-emerald-500">
                   {sim
-                    ? `₹${(((estimates.total_revenue || 0) - sim.cost_p90) / 10000000).toFixed(1)} – ${(((estimates.total_revenue || 0) - sim.cost_p10) / 10000000).toFixed(1)} Cr`
-                    : `~₹${((estimates.potential_profit || 0) / 10000000).toFixed(2)} Cr`}
+                    ? `₹${(((estimates.total_revenue || 0) - sim.cost_p90 - dashLandCost) / 10000000).toFixed(1)} – ${(((estimates.total_revenue || 0) - sim.cost_p10 - dashLandCost) / 10000000).toFixed(1)} Cr`
+                    : `~₹${(((estimates.potential_profit || 0) - dashLandCost) / 10000000).toFixed(2)} Cr`}
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   Est. Revenue: ₹

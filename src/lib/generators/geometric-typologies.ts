@@ -379,15 +379,17 @@ export function generateTShapes(
     let sMaxWidth = maxBuildingWidth;
 
     if (strategyVariant === 1) {
-        sMaxLength = Math.min(maxBuildingLength, minBuildingLength + 15);
+        // Dense: slightly shorter buildings, but keep them architecturally viable
+        sMaxLength = Math.min(maxBuildingLength, minBuildingLength + 20); // 45m max, not 40m
     } else if (strategyVariant === 2) {
+        // Heavy: wider, longer buildings
         sMinWidth = Math.max(minBuildingWidth, maxBuildingWidth - 2);
         sMinLength = Math.max(minBuildingLength, 40);
     }
 
     const dynWidthOptions = strategyVariant === 1 ? [sMinWidth, sMaxWidth] : [sMaxWidth, sMinWidth];
 
-    const tShapeSpacing = Math.max(rowGap, sideSetback * 2, 6);
+    const tShapeSpacing = Math.max(sideSetback, 3); // Tight spacing between T-shapes along an edge
 
     console.log(`[T-Gen] ===== Integrated T-Gen (seed=${seed}) =====`);
     console.log(`[T-Gen] Dims: W[${sMinWidth}-${sMaxWidth}] L[${sMinLength}-${sMaxLength}]`);
@@ -465,19 +467,27 @@ export function generateTShapes(
     const results: Feature<Polygon>[] = [];
     const usedAreas: Feature<Polygon>[] = [...(obstacles || [])];
 
-    const maxDepthPasses = 6;
+    const maxDepthPasses = 5; // More passes to fill deep plots
     let depthOffset = 0;
 
     for (let depthPass = 0; depthPass < maxDepthPasses; depthPass++) {
         let placedThisPass = 0;
 
-        for (const edgeData of validEdges) {
-            let currentDist = cornerMargin;
-            const limitDist = edgeData.length - cornerMargin;
-            let edgePlacedCount = 0;
-            const maxPerEdge = 2; // Limit per edge per pass to distribute across all edges
+        // Initialize edge distances for round-robin placement
+        const edgeDists = new Map<number, number>();
+        validEdges.forEach(e => edgeDists.set(e.idx, cornerMargin));
 
-            while (currentDist + sMinLength <= limitDist) {
+        let keepTrying = true;
+        while (keepTrying) {
+            keepTrying = false;
+
+            for (const edgeData of validEdges) {
+                let currentDist = edgeDists.get(edgeData.idx)!;
+                const limitDist = edgeData.length - cornerMargin;
+
+                let tPlacedForThisEdgeInThisRound = false;
+
+                while (currentDist + sMinLength <= limitDist && !tPlacedForThisEdgeInThisRound) {
                 const maxAvailLen = Math.min(sMaxLength, limitDist - currentDist);
                 if (maxAvailLen < sMinLength) break;
 
@@ -550,7 +560,8 @@ export function generateTShapes(
                         // Try stem sizes: cap stem to avoid eating deep into center, but ensure valid range
                         // maxStemLen: 70% of bar length, floored at sMinLength so there's always a valid option
                         // minStemLen: sMinLength (stems must respect min building length 25m)
-                        const maxStemLen = Math.min(sMaxLength, Math.max(Math.round(s1Len * 0.7), sMinLength));
+                        // Cap stem at 50% of bar to leave interior room for deeper passes
+                        const maxStemLen = Math.min(sMaxLength, Math.max(Math.round(s1Len * 0.5), sMinLength));
                         const minStemLen = sMinLength;
                         const computedStemLenOptions = [maxStemLen, Math.round((maxStemLen + minStemLen) / 2), minStemLen].filter(l => l <= maxStemLen && l >= minStemLen);
                         // Deduplicate
@@ -589,9 +600,8 @@ export function generateTShapes(
                             }
                         }
 
-                        // For deeper passes (center), allow solo slab if no stem fits
-                        if (!slab2 && depthPass <= 1) continue; // Edge passes: must be T-shape
-                        // Deeper passes: accept solo slab to fill center
+                        // Passes 0-1: must be T-shape (bar + stem). Pass 2+: allow solo slab to fill center.
+                        if (!slab2 && depthPass <= 1) continue;
 
                         // ✅ Both bar + stem fit — commit!
                         usedAreas.push(slab1);
@@ -635,20 +645,25 @@ export function generateTShapes(
 
                         console.log(`[T-Gen] T-shape at dist=${currentDist.toFixed(0)}: bar=${s1Len}x${s1W}m, stem=${slab2 ? turf.area(slab2).toFixed(0) : 0}m2`);
                         tPlaced = true;
+                        tPlacedForThisEdgeInThisRound = true;
+                        keepTrying = true; // Something was placed, try another round later
                         placedThisPass++;
-                        edgePlacedCount++;
                         currentDist += s1Len + tShapeSpacing; // generous spacing for T-shapes
                     }
                 }
 
-                if (!tPlaced) currentDist += 5;
-                if (edgePlacedCount >= maxPerEdge) break; // Move to next edge
-            }
-        }
+                if (!tPlaced) {
+                    currentDist += 5;
+                }
+                edgeDists.set(edgeData.idx, currentDist);
+            } // close while(currentDist...)
+        } // close for(edgeData...)
+        } // close while(keepTrying)
 
         console.log(`[T-Gen] Depth pass ${depthPass}: ${placedThisPass} T-shapes placed`);
         if (placedThisPass === 0) break;
-        depthOffset += maxBuildingWidth + Math.max(sideSetback, 3);
+        // Tighter depth stepping: building width + small gap, so inner passes start sooner
+        depthOffset += sMinWidth + Math.max(sideSetback, 3);
     }
 
     console.log(`[T-Gen] Done: ${results.length} buildings (${Math.round(results.length / 2)} T-shapes)`);
