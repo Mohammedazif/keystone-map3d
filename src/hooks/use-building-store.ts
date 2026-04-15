@@ -4584,6 +4584,50 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         },
 
         setMapLocation: (location: string | null) => set({ mapLocation: location }),
+        // Clears the temporary map/editor state used on evaluate land.
+        resetWorkspace: () => set(produce((draft: BuildingState) => {
+            draft.activeProjectId = null;
+            draft.plots = [];
+            draft.drawingPoints = [];
+            draft.mapCommand = null;
+            draft.mapLocation = null;
+            draft.selectedObjectId = null;
+            draft.hoveredObjectId = null;
+            draft.zoneDefinition = {
+                isDefining: false,
+                geometry: null,
+                centroid: null,
+                activePlotId: null,
+            };
+            draft.drawingState = {
+                isDrawing: false,
+                objectType: null,
+                activePlotId: null,
+                roadWidth: 6,
+                buildingIntendedUse: BuildingIntendedUse.Residential,
+            };
+            draft.uiState.isFeasibilityPanelOpen = false;
+            draft.bhuvanData = null;
+            draft.isFetchingBhuvan = false;
+        })),
+        // Loads a prepared plot set into the active workspace and resets state around it.
+        loadPlotsIntoWorkspace: (plots: Plot[], selectedPlotId?: string | null) => set(produce((draft: BuildingState) => {
+            draft.plots = plots;
+            draft.selectedObjectId = selectedPlotId ? { type: 'Plot', id: selectedPlotId } : null;
+            draft.hoveredObjectId = null;
+            draft.drawingPoints = [];
+            draft.mapCommand = null;
+            draft.zoneDefinition = {
+                isDefining: false,
+                geometry: null,
+                centroid: null,
+                activePlotId: null,
+            };
+            draft.drawingState.isDrawing = false;
+            draft.drawingState.objectType = null;
+            draft.drawingState.activePlotId = null;
+            draft.uiState.isFeasibilityPanelOpen = false;
+        })),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
         executeMapCommand: (command: any) => console.warn('executeMapCommand not implemented', command),

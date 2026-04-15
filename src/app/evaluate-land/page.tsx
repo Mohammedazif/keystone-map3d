@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 
 import { EvaluateLandWorkspace } from '@/components/evaluate-land-workspace';
 import { SignInPage } from '@/components/sign-in-page';
+import { Toaster } from '@/components/ui/toaster';
 import { useAuth } from '@/hooks/use-auth-store';
 
 export default function EvaluateLandPage() {
@@ -24,5 +25,10 @@ export default function EvaluateLandPage() {
     return <SignInPage />;
   }
 
-  return <EvaluateLandWorkspace />;
+  return (
+    <>
+      <EvaluateLandWorkspace />
+      <Toaster />
+    </>
+  );
 }

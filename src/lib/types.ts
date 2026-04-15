@@ -19,6 +19,31 @@ export enum BuildingIntendedUse {
   Hospitality = 'Hospitality',
 }
 
+export enum LandPlotType {
+  Vacant = 'vacant',
+  Redevelopment = 'redevelopment',
+  Both = 'both',
+}
+
+export enum LandZoningPreference {
+  BuiltUp = 'built-up',
+  Agricultural = 'agricultural',
+  Waste = 'waste',
+  MixedUse = 'mixed-use',
+  Industrial = 'industrial',
+}
+
+export enum LandProximity {
+  Metro = 'metro',
+  Highway = 'highway',
+  Airport = 'airport',
+  Schools = 'schools',
+  Hospitals = 'hospitals',
+  Retail = 'retail',
+  Employment = 'employment',
+  Utilities = 'utilities',
+}
+
 
 
 export interface Core {
@@ -270,6 +295,18 @@ export interface UnderwritingData {
   stampDutyAndLegalFees?: number;
 }
 
+export interface EvaluateLandInput {
+  projectName: string;
+  location: string;
+  landSize: number;
+  intendedUse: BuildingIntendedUse;
+  priceRange: string;
+  plotType: LandPlotType;
+  zoningPreference: LandZoningPreference;
+  proximity: LandProximity[];
+  notes?: string;
+}
+
 export interface Project {
   id: string;
   userId: string;
@@ -292,6 +329,7 @@ export interface Project {
     amenities: any[]; // Storing FeatureCollection or array of amenities
     score?: number;
   };
+  evaluateLandInput?: EvaluateLandInput;
   generationParams?: any; // App settings, like setbacks
   underwriting?: UnderwritingData;
 }
