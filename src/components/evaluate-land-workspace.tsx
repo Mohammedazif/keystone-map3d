@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -61,10 +61,12 @@ import {
   type BuildabilityVerdict,
   type BhuvanLandUseSummary,
 } from "@/lib/land-intelligence/buildability-verdict";
+import { applyVariableSetbacks } from "@/lib/generators/setback-utils";
 import { lookupRegulationForLocationAndUse } from "@/lib/regulation-lookup";
 import {
   BuildingIntendedUse,
   type RegulationData,
+  type RegulationValue,
   type DevelopabilityScore,
   LandPlotType,
   LandProximity,
@@ -152,6 +154,32 @@ const inferScoreQueryLocation = (location: string) => {
   const state = parts.length > 1 ? parts[parts.length - 1] : district;
 
   return { state, district };
+};
+
+const formatNumber = (value: number, digits = 0) =>
+  value.toLocaleString("en-IN", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+
+const getNumericRegulationValue = (
+  regulation: RegulationData | null,
+  keys: string[],
+) => {
+  if (!regulation) return undefined;
+
+  for (const key of keys) {
+    const candidate = regulation.geometry?.[key] as RegulationValue | undefined;
+    const rawValue = candidate?.value;
+    const numericValue =
+      typeof rawValue === "number" ? rawValue : Number(rawValue);
+
+    if (Number.isFinite(numericValue) && numericValue > 0) {
+      return numericValue;
+    }
+  }
+
+  return undefined;
 };
 
 function ScoreSummary({
@@ -615,6 +643,126 @@ export function EvaluateLandWorkspace() {
   }, [getAnalysisCoordinates, getValues, trigger]);
 
   const analysisCoordinates = getAnalysisCoordinates();
+  const watchedLandSize = form.watch("landSize");
+
+  const sellableAreaBreakdown = useMemo(() => {
+    const plotForAnalysis = selectedPlot || plots[0] || null;
+    const typedLandSize = Number(watchedLandSize);
+    const plotArea =
+      plotForAnalysis?.area && plotForAnalysis.area > 0
+        ? plotForAnalysis.area
+        : Number.isFinite(typedLandSize) && typedLandSize > 0
+          ? typedLandSize
+          : 0;
+
+    const far =
+      getNumericRegulationValue(matchedRegulation, [
+        "floor_area_ratio",
+        "max_far",
+        "fsi",
+      ]) ?? plotForAnalysis?.far;
+
+    const uniformSetback =
+      getNumericRegulationValue(matchedRegulation, [
+        "setback",
+        "min_setback",
+        "building_setback",
+      ]) ?? plotForAnalysis?.setback;
+
+    const frontSetback =
+      getNumericRegulationValue(matchedRegulation, ["front_setback"]) ??
+      uniformSetback;
+    const rearSetback =
+      getNumericRegulationValue(matchedRegulation, ["rear_setback"]) ??
+      uniformSetback;
+    const sideSetback =
+      getNumericRegulationValue(matchedRegulation, ["side_setback"]) ??
+      uniformSetback;
+
+    const grossMaxGfa = far && plotArea > 0 ? far * plotArea : 0;
+    const hasSetbackInputs =
+      (frontSetback ?? 0) > 0 ||
+      (rearSetback ?? 0) > 0 ||
+      (sideSetback ?? 0) > 0 ||
+      (uniformSetback ?? 0) > 0;
+
+    let netBuildableArea = plotArea;
+    let usedSetbackMethod = "No setback deduction applied.";
+
+    if (plotForAnalysis?.geometry && plotArea > 0 && hasSetbackInputs) {
+      try {
+        const shrunkGeometry = applyVariableSetbacks(
+          plotForAnalysis.geometry as any,
+          {
+            setback:
+              uniformSetback ??
+              Math.max(frontSetback ?? 0, rearSetback ?? 0, sideSetback ?? 0),
+            frontSetback,
+            rearSetback,
+            sideSetback,
+            roadAccessSides: plotForAnalysis.roadAccessSides || [],
+          } as any,
+        );
+
+        if (shrunkGeometry) {
+          netBuildableArea = Math.max(0, turf.area(shrunkGeometry));
+          usedSetbackMethod =
+            plotForAnalysis.roadAccessSides &&
+            plotForAnalysis.roadAccessSides.length > 0 &&
+            (frontSetback !== undefined ||
+              rearSetback !== undefined ||
+              sideSetback !== undefined)
+              ? "Directional setbacks applied to actual plot geometry."
+              : "Uniform setback applied to actual plot geometry.";
+        } else {
+          netBuildableArea = 0;
+          usedSetbackMethod =
+            "Setback deduction consumed the full plot area for this geometry.";
+        }
+      } catch {
+        const fallbackSetback =
+          uniformSetback ??
+          Math.max(frontSetback ?? 0, rearSetback ?? 0, sideSetback ?? 0);
+        if (fallbackSetback > 0) {
+          const buffered = turf.buffer(
+            plotForAnalysis.geometry as any,
+            -fallbackSetback,
+            { units: "meters" },
+          );
+          netBuildableArea = buffered ? Math.max(0, turf.area(buffered)) : 0;
+          usedSetbackMethod =
+            "Uniform setback fallback applied after directional setback calculation failed.";
+        }
+      }
+    } else if (hasSetbackInputs) {
+      usedSetbackMethod =
+        "Setbacks available, but exact buildable area needs a drawn plot geometry.";
+    }
+
+    const areaLostToSetbacks =
+      plotArea > 0 ? Math.max(0, plotArea - netBuildableArea) : 0;
+    const setbackAdjustedMaxGfa =
+      far && netBuildableArea > 0 ? far * netBuildableArea : 0;
+    const estimatedSellableArea =
+      setbackAdjustedMaxGfa > 0 ? setbackAdjustedMaxGfa * 0.7 : 0;
+
+    return {
+      plotArea,
+      far,
+      uniformSetback,
+      frontSetback,
+      rearSetback,
+      sideSetback,
+      grossMaxGfa,
+      netBuildableArea,
+      areaLostToSetbacks,
+      setbackAdjustedMaxGfa,
+      estimatedSellableArea,
+      usedSetbackMethod,
+      hasPlotGeometry: Boolean(plotForAnalysis?.geometry),
+      hasRegulationMatch: Boolean(matchedRegulation),
+    };
+  }, [matchedRegulation, plots, selectedPlot, watchedLandSize]);
 
   const startSidebarResize = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -1316,6 +1464,173 @@ export function EvaluateLandWorkspace() {
                       </div>
                     </div>
                   ) : null}
+
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-border/60 bg-background/80 p-4">
+                      <div>
+                        <h3 className="mt-1 text-sm font-bold">
+                          Sellable Area Breakdown
+                        </h3>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Max GFA from FAR, adjusted for setbacks, with
+                          estimated sellable area.
+                        </p>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        {[
+                          {
+                            label: "Plot Size",
+                            value:
+                              sellableAreaBreakdown.plotArea > 0
+                                ? `${formatNumber(sellableAreaBreakdown.plotArea)} sqm`
+                                : "Unavailable",
+                            formula: "Drawn plot area or intake land size",
+                          },
+                          {
+                            label: "Permissible FAR",
+                            value:
+                              sellableAreaBreakdown.far != null
+                                ? formatNumber(sellableAreaBreakdown.far, 2)
+                                : "Unavailable",
+                            formula: "Matched regulation FAR / FSI",
+                          },
+                          {
+                            label: "Gross Max GFA",
+                            value:
+                              sellableAreaBreakdown.grossMaxGfa > 0
+                                ? `${formatNumber(sellableAreaBreakdown.grossMaxGfa)} sqm`
+                                : "Unavailable",
+                            formula:
+                              sellableAreaBreakdown.far != null &&
+                              sellableAreaBreakdown.plotArea > 0
+                                ? `${formatNumber(sellableAreaBreakdown.far, 2)} x ${formatNumber(sellableAreaBreakdown.plotArea)}`
+                                : "FAR x plot size",
+                          },
+                          {
+                            label: "Net Buildable Area",
+                            value:
+                              sellableAreaBreakdown.netBuildableArea > 0
+                                ? `${formatNumber(sellableAreaBreakdown.netBuildableArea)} sqm`
+                                : sellableAreaBreakdown.hasPlotGeometry
+                                  ? "0 sqm"
+                                  : "Needs drawn plot",
+                            formula: sellableAreaBreakdown.usedSetbackMethod,
+                          },
+                          {
+                            label: "Area Lost to Setbacks",
+                            value:
+                              sellableAreaBreakdown.plotArea > 0
+                                ? `${formatNumber(sellableAreaBreakdown.areaLostToSetbacks)} sqm`
+                                : "Unavailable",
+                            formula: "Plot size - net buildable area",
+                          },
+                          {
+                            label: "Setback-Adjusted Max GFA",
+                            value:
+                              sellableAreaBreakdown.setbackAdjustedMaxGfa > 0
+                                ? `${formatNumber(sellableAreaBreakdown.setbackAdjustedMaxGfa)} sqm`
+                                : "Unavailable",
+                            formula:
+                              sellableAreaBreakdown.far != null &&
+                              sellableAreaBreakdown.netBuildableArea > 0
+                                ? `${formatNumber(sellableAreaBreakdown.far, 2)} x ${formatNumber(sellableAreaBreakdown.netBuildableArea)}`
+                                : "FAR x net buildable area",
+                          },
+                          {
+                            label: "Estimated Sellable Area",
+                            value:
+                              sellableAreaBreakdown.estimatedSellableArea > 0
+                                ? `${formatNumber(sellableAreaBreakdown.estimatedSellableArea)} sqm`
+                                : "Unavailable",
+                            formula:
+                              sellableAreaBreakdown.setbackAdjustedMaxGfa > 0
+                                ? `${formatNumber(sellableAreaBreakdown.setbackAdjustedMaxGfa)} x 70%`
+                                : "Setback-adjusted max GFA x 70%",
+                          },
+                        ].map((item) => (
+                          <div
+                            key={item.label}
+                            className="rounded-lg border border-border/50 bg-background/70 p-3"
+                          >
+                            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                              {item.label}
+                            </p>
+                            <p className="mt-2 text-base font-bold tabular-nums">
+                              {item.value}
+                            </p>
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                              {item.formula}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-4 rounded-lg border border-border/50 bg-background/70 p-3">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                          Setback Inputs Used
+                        </p>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Uniform setback
+                            </span>
+                            <span className="font-semibold">
+                              {sellableAreaBreakdown.uniformSetback != null
+                                ? `${formatNumber(sellableAreaBreakdown.uniformSetback, 1)} m`
+                                : "Not specified"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Front setback
+                            </span>
+                            <span className="font-semibold">
+                              {sellableAreaBreakdown.frontSetback != null
+                                ? `${formatNumber(sellableAreaBreakdown.frontSetback, 1)} m`
+                                : "Not specified"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Rear setback
+                            </span>
+                            <span className="font-semibold">
+                              {sellableAreaBreakdown.rearSetback != null
+                                ? `${formatNumber(sellableAreaBreakdown.rearSetback, 1)} m`
+                                : "Not specified"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Side setback
+                            </span>
+                            <span className="font-semibold">
+                              {sellableAreaBreakdown.sideSetback != null
+                                ? `${formatNumber(sellableAreaBreakdown.sideSetback, 1)} m`
+                                : "Not specified"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                        {!sellableAreaBreakdown.hasRegulationMatch ? (
+                          <p className="mt-2 text-xs text-amber-600">
+                            Regulation match is unavailable, so FAR / setback
+                            values may be incomplete until zoning rules are
+                            found.
+                          </p>
+                        ) : null}
+                        {!sellableAreaBreakdown.hasPlotGeometry ? (
+                          <p className="mt-2 text-xs text-amber-600">
+                            Draw a plot to compute the true buildable area after
+                            setbacks from actual geometry.
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </ScrollArea>
