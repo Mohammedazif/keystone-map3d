@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { Project, RegulationData, GreenRegulationData, VastuRegulationData } from '@/lib/types';
 import { useBuildingStore } from '@/hooks/use-building-store';
 import ultimateVastu from '@/data/ultimate-vastu-checklist.json';
+import { lookupRegulationForLocationAndUse } from '@/lib/regulation-lookup';
 
 interface UseRegulationsReturn {
     regulations: RegulationData | null;
@@ -49,81 +50,17 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
                 if (intendedUse.toLowerCase() === 'mixed use') intendedUse = 'Mixed-Use';
                 else if (intendedUse.toLowerCase() === 'mixed-use') intendedUse = 'Mixed Use';
 
-                let foundReg: RegulationData | null = null;
-
-                // A. Check for Specific Regulation ID
-                if (project.regulationId) {
-                    console.log(`Fetching specific regulation: ${project.regulationId}`);
-                    const specificDoc = await getDoc(doc(db, 'regulations', project.regulationId));
-                    if (specificDoc.exists()) {
-                        foundReg = specificDoc.data() as RegulationData;
-                    }
-                }
-
-                // B. Check Generic ID (e.g. "Delhi-Residential")
-                if (!foundReg) {
-                    const genericId = `${location}-${intendedUse}`;
-                    console.log(`Fetching generic regulation: ${genericId}`);
-                    const genericDoc = await getDoc(doc(db, 'regulations', genericId));
-                    if (genericDoc.exists()) {
-                        foundReg = genericDoc.data() as RegulationData;
-                    }
-                }
-
-                // C. Smart Fallback (Query by Location + Fuzzy Match)
-                if (!foundReg) {
-                    console.log(`⚠️ Generic regulation not found, checking alternates for ${location} + ${intendedUse}`);
-                    const q = query(
-                        collection(db, 'regulations'),
-                        where('location', '==', location)
-                    );
-                    const snap = await getDocs(q);
-
-                    if (!snap.empty) {
-                        const allRegs = snap.docs.map(d => d.data() as RegulationData);
-
-                        // Priority 1: Exact type match
-                        // Priority 2: Type includes intended use (e.g. "Residential - Group Housing" includes "Residential")
-                        // Priority 3: First available
-
-                        foundReg = allRegs.find(r => r.type === intendedUse)
-                            || allRegs.find(r => r.type && r.type.includes(intendedUse))
-                            || allRegs[0];
-
-                        if (foundReg) {
-                            console.log(`✅ Smart Fallback found: ${foundReg.type}`);
-                        }
-                    }
-                }
-
-                // D. National NBC Fallback
-                if (!foundReg) {
-                    console.log(`⚠️ No local regulations found for ${location}. Falling back to National (NBC)...`);
-                    const nbcQ = query(
-                        collection(db, 'regulations'),
-                        where('location', '==', 'National (NBC)')
-                    );
-                    const nbcSnap = await getDocs(nbcQ);
-
-                    if (!nbcSnap.empty) {
-                        const nbcRegs = nbcSnap.docs.map(d => d.data() as RegulationData);
-                        
-                        // Try to match intended Use, otherwise take any
-                        foundReg = nbcRegs.find(r => r.type && r.type.toLowerCase() === intendedUse.toLowerCase())
-                            || nbcRegs.find(r => r.type && r.type.toLowerCase().replace('-', ' ') === intendedUse.toLowerCase().replace('-', ' '))
-                            || nbcRegs.find(r => r.type && r.type.toLowerCase().includes(intendedUse.toLowerCase().replace('-', ' ')))
-                            || nbcRegs[0];
-
-                        if (foundReg) {
-                            console.log(`✅ NBC Fallback selected: ${foundReg.type}`);
-                        }
-                    }
-                }
+                const regulationResult = await lookupRegulationForLocationAndUse({
+                    location,
+                    intendedUse,
+                    regulationId: project.regulationId,
+                });
+                const foundReg = regulationResult.regulation;
 
                 if (foundReg) {
                     setRegulations(foundReg);
                 } else {
-                    console.warn(`❌ No regulations OR NBC fallback found for ${location}`);
+                    console.warn(`No regulations or NBC fallback found for ${location}`);
                 }
 
 
@@ -134,7 +71,6 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
 
                     if (certs.length > 0) {
                         const certType = certs[0]; // e.g., 'GRIHA'
-                        console.log(`Fetching Green Regulations for ${certType}`);
                         const q = query(collection(db, 'greenRegulations'), where('certificationType', '==', certType));
                         const snapshot = await getDocs(q);
                         if (!snapshot.empty) {
@@ -145,14 +81,12 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
 
                 // 3. Fetch Vastu Regulations (attempt regardless of project flag)
                 try {
-                    console.log(`Fetching Vastu Regulations`);
                     const q = query(collection(db, 'vastuRegulations')); // Could filter by Type if needed
                     const snapshot = await getDocs(q);
                     if (!snapshot.empty) {
                         setVastuRules(snapshot.docs[0].data() as VastuRegulationData);
                     } else {
                         // No Vastu rules in Firestore — fall back to the bundled ultimate checklist
-                        console.warn('No Vastu rules found in DB — falling back to bundled ultimate checklist');
                         setVastuRules(ultimateVastu as unknown as VastuRegulationData);
                     }
                 } catch (err) {

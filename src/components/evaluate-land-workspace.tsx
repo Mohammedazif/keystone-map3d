@@ -17,7 +17,6 @@ import {
   Loader2,
   MapPin,
   RefreshCw,
-  Sparkles,
   Satellite,
   PanelLeftClose,
   PanelLeftOpen,
@@ -58,7 +57,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useBuildingStore, useSelectedPlot } from "@/hooks/use-building-store";
 import { useToast } from "@/hooks/use-toast";
 import {
+  evaluateBuildabilityVerdict,
+  type BuildabilityVerdict,
+  type BhuvanLandUseSummary,
+} from "@/lib/land-intelligence/buildability-verdict";
+import { lookupRegulationForLocationAndUse } from "@/lib/regulation-lookup";
+import {
   BuildingIntendedUse,
+  type RegulationData,
   type DevelopabilityScore,
   LandPlotType,
   LandProximity,
@@ -107,6 +113,12 @@ interface ScoreResult {
     sez: { count: number; available: boolean };
     satellite: { available: boolean; isMock: boolean };
   };
+}
+
+interface BhuvanAnalysisResponse {
+  success: boolean;
+  report: BhuvanLandUseSummary;
+  error?: string;
 }
 
 // Default values
@@ -246,6 +258,14 @@ export function EvaluateLandWorkspace() {
   const [isRunningScore, setIsRunningScore] = useState(false);
   const [scoreError, setScoreError] = useState<string | null>(null);
   const [scoreData, setScoreData] = useState<ScoreResult | null>(null);
+  const [bhuvanData, setBhuvanData] = useState<BhuvanLandUseSummary | null>(
+    null,
+  );
+  const [matchedRegulation, setMatchedRegulation] =
+    useState<RegulationData | null>(null);
+  const [buildVerdict, setBuildVerdict] = useState<BuildabilityVerdict | null>(
+    null,
+  );
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(380);
   const [activePanelTab, setActivePanelTab] = useState<"inputs" | "analysis">(
@@ -273,6 +293,9 @@ export function EvaluateLandWorkspace() {
     setHasAttemptedProjectStart(false);
     setIsLocationManuallyEdited(false);
     setScoreData(null);
+    setBhuvanData(null);
+    setMatchedRegulation(null);
+    setBuildVerdict(null);
     setScoreError(null);
     setActivePanelTab("inputs");
   }, []);
@@ -340,6 +363,9 @@ export function EvaluateLandWorkspace() {
     setHasAttemptedProjectStart(false);
     setIsLocationManuallyEdited(false);
     setScoreData(null);
+    setBhuvanData(null);
+    setMatchedRegulation(null);
+    setBuildVerdict(null);
     setScoreError(null);
     setActivePanelTab("inputs");
     toast({
@@ -461,6 +487,9 @@ export function EvaluateLandWorkspace() {
         "Draw or select a plot before running the developability score.",
       );
       setScoreData(null);
+      setBhuvanData(null);
+      setMatchedRegulation(null);
+      setBuildVerdict(null);
       return;
     }
 
@@ -469,6 +498,9 @@ export function EvaluateLandWorkspace() {
         "Complete the required land inputs before running the score.",
       );
       setScoreData(null);
+      setBhuvanData(null);
+      setMatchedRegulation(null);
+      setBuildVerdict(null);
       return;
     }
 
@@ -479,31 +511,101 @@ export function EvaluateLandWorkspace() {
     setScoreError(null);
 
     try {
-      const response = await fetch("/api/land-intelligence/score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: state,
-          district,
-          coordinates: coords,
-          landSizeSqm: Number(values.landSize),
+      const [scoreRes, bhuvanRes, regulationRes] = await Promise.allSettled([
+        fetch("/api/land-intelligence/score", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            location: state,
+            district,
+            coordinates: coords,
+            landSizeSqm: Number(values.landSize),
+            intendedUse: values.intendedUse,
+          }),
+        }).then(async (response) => {
+          const payload = await response.json();
+          if (!response.ok || !payload?.success) {
+            throw new Error(
+              payload?.error || "Failed to run developability score.",
+            );
+          }
+          return payload as ScoreResult;
+        }),
+        fetch("/api/land-intelligence/bhuvan-landuse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            coordinates: coords,
+            location: values.location.trim(),
+          }),
+        }).then(async (response) => {
+          const payload = (await response.json()) as BhuvanAnalysisResponse;
+          if (!response.ok || !payload?.success) {
+            throw new Error(
+              payload?.error || "Failed to fetch Bhuvan land use.",
+            );
+          }
+          return payload.report;
+        }),
+        lookupRegulationForLocationAndUse({
+          location: values.location.trim(),
           intendedUse: values.intendedUse,
         }),
-      });
+      ]);
 
-      const payload = await response.json();
+      const errors: string[] = [];
 
-      if (!response.ok || !payload?.success) {
-        throw new Error(
-          payload?.error || "Failed to run developability score.",
+      if (scoreRes.status === "fulfilled") {
+        setScoreData(scoreRes.value);
+      } else {
+        setScoreData(null);
+        errors.push(
+          scoreRes.reason?.message || "Developability score unavailable.",
         );
       }
 
-      // Jump to the review tab when analysis completes successfully.
-      setScoreData(payload as ScoreResult);
+      const nextBhuvan =
+        bhuvanRes.status === "fulfilled" ? bhuvanRes.value : null;
+      const nextRegulation =
+        regulationRes.status === "fulfilled"
+          ? regulationRes.value.regulation
+          : null;
+
+      setBhuvanData(nextBhuvan);
+      setMatchedRegulation(nextRegulation);
+
+      if (!nextBhuvan) {
+        errors.push(
+          bhuvanRes.status === "rejected"
+            ? bhuvanRes.reason?.message || "Bhuvan land use unavailable."
+            : "Bhuvan land use unavailable.",
+        );
+      }
+
+      if (nextBhuvan || nextRegulation) {
+        setBuildVerdict(
+          evaluateBuildabilityVerdict({
+            intendedUse: values.intendedUse,
+            zoningPreference: values.zoningPreference,
+            bhuvan: nextBhuvan,
+            regulation: nextRegulation,
+            regulationSource:
+              regulationRes.status === "fulfilled"
+                ? regulationRes.value.source
+                : null,
+          }),
+        );
+      } else {
+        setBuildVerdict(null);
+      }
+
+      setScoreError(errors.length > 0 ? errors.join(" ") : null);
       setActivePanelTab("analysis");
     } catch (error: any) {
       setScoreData(null);
+      setBhuvanData(null);
+      setMatchedRegulation(null);
+      setBuildVerdict(null);
       setScoreError(error?.message || "Failed to run developability score.");
       // Keep failures visible in the analysis tab instead of hiding them behind the form.
       setActivePanelTab("analysis");
@@ -645,7 +747,7 @@ export function EvaluateLandWorkspace() {
                   <TabsTrigger value="inputs">Inputs</TabsTrigger>
                   <TabsTrigger value="analysis" className="gap-2">
                     Analysis
-                    {scoreData ? (
+                    {scoreData || buildVerdict ? (
                       <Badge
                         variant="secondary"
                         className="h-5 px-1.5 text-[10px]"
@@ -937,16 +1039,16 @@ export function EvaluateLandWorkspace() {
                       >
                         {isRunningScore ? (
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : scoreData ? (
+                        ) : scoreData || buildVerdict ? (
                           <RefreshCw className="mr-2 h-4 w-4" />
                         ) : (
                           <TrendingUp className="mr-2 h-4 w-4" />
                         )}
                         {isRunningScore
                           ? "Running..."
-                          : scoreData
-                            ? "Re-run Score"
-                            : "Run Score"}
+                          : scoreData || buildVerdict
+                            ? "Re-run Analysis"
+                            : "Run Analysis"}
                       </Button>
                     </div>
                   </div>
@@ -965,8 +1067,8 @@ export function EvaluateLandWorkspace() {
                         Analysis will appear here
                       </p>
                       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        Fill the inputs, draw a plot, then run the
-                        developability score.
+                        Fill the inputs, draw a plot, then run the site
+                        analysis.
                       </p>
                     </div>
                   ) : null}
@@ -1092,6 +1194,123 @@ export function EvaluateLandWorkspace() {
                             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                               {scoreData.score.recommendation}
                             </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {buildVerdict ? (
+                    <div className="space-y-4">
+                      <div className="rounded-xl border border-border/60 bg-background/80 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <h3 className="mt-1 text-sm font-bold">
+                            Can / Cannot Build Verdict
+                          </h3>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[11px] font-semibold",
+                              buildVerdict.status === "can-build" &&
+                                "border-emerald-500/40 text-emerald-600",
+                              buildVerdict.status === "conditional" &&
+                                "border-amber-500/40 text-amber-600",
+                              buildVerdict.status === "cannot-build" &&
+                                "border-destructive/40 text-destructive",
+                            )}
+                          >
+                            {buildVerdict.title}
+                          </Badge>
+                        </div>
+
+                        <div className="mt-4 rounded-lg border border-border/50 bg-muted/10 p-3">
+                          <div className="flex items-start gap-2">
+                            {buildVerdict.status === "can-build" ? (
+                              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                            ) : buildVerdict.status === "conditional" ? (
+                              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                            ) : (
+                              <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                            )}
+                            <div>
+                              <p className="text-sm font-semibold">
+                                {buildVerdict.summary}
+                              </p>
+                              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                                {buildVerdict.suggestedAction}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 rounded-lg border border-border/50 bg-background/70 p-3">
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Intended use
+                            </span>
+                            <span className="font-semibold">
+                              {getValues("intendedUse")}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Zoning preference
+                            </span>
+                            <span className="font-semibold">
+                              {getValues("zoningPreference")}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Bhuvan land use
+                            </span>
+                            <span className="text-right font-semibold">
+                              {bhuvanData?.primaryLandUse || "Unavailable"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Matched zoning rule
+                            </span>
+                            <span className="text-right font-semibold">
+                              {matchedRegulation
+                                ? `${matchedRegulation.location} - ${matchedRegulation.type}`
+                                : "Unavailable"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 rounded-lg border border-border/50 bg-background/70 p-3">
+                          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                            Reasons
+                          </p>
+                          <div className="mt-2 space-y-2">
+                            {buildVerdict.reasons.map((reason) => (
+                              <div
+                                key={reason}
+                                className="flex items-start gap-2 text-xs text-muted-foreground"
+                              >
+                                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
+                                <span>{reason}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 rounded-lg border border-border/50 bg-background/70 p-3">
+                          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                            Signals Checked
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {buildVerdict.signals.map((signal) => (
+                              <Badge
+                                key={signal}
+                                variant="outline"
+                                className="text-[10px] font-medium"
+                              >
+                                {signal}
+                              </Badge>
+                            ))}
                           </div>
                         </div>
                       </div>
