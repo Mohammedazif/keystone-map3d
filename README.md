@@ -36,6 +36,9 @@ Before you can run the application, you need to create a `.env` file in the root
 # Get a free token from https://www.mapbox.com/
 NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN="YOUR_MAPBOX_ACCESS_TOKEN"
 
+# Required for Google Maps Platform replacements for amenities and road-access detection.
+GOOGLE_MAPS_API_KEY="YOUR_GOOGLE_MAPS_API_KEY"
+
 # Required for Google AI (Gemini) features via Genkit.
 # Get an API key from Google AI Studio.
 GEMINI_API_KEY="YOUR_GEMINI_API_KEY"

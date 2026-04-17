@@ -2,8 +2,8 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { useBuildingStore, useProjectData } from '@/hooks/use-building-store';
-import { OverpassPlacesService } from '@/services/overpass-places-service';
+import { useBuildingStore, useProjectData, useSelectedPlot } from '@/hooks/use-building-store';
+import { PlacesService } from '@/services/places-service';
 import { Amenity, AmenityCategory } from '@/services/mapbox-places-service';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -31,7 +31,7 @@ const AMENITY_CATEGORIES: { id: AmenityCategory; label: string; icon: React.Reac
 
 export function LocationConnectivityPanel() {
     const activeProject = useProjectData();
-    const plots = useBuildingStore((state) => state.plots);
+    const selectedPlot = useSelectedPlot();
     const mapCommand = useBuildingStore((state) => state.mapCommand);
     const actions = useBuildingStore((state) => state.actions);
     const { toast } = useToast();
@@ -48,10 +48,10 @@ export function LocationConnectivityPanel() {
     }, []);
 
     const center: [number, number] | null = React.useMemo(() => {
-        if (plots.length > 0 && plots[0].geometry) {
+        if (selectedPlot?.geometry) {
             try {
                 const turf = require('@turf/turf');
-                const centroid = turf.centroid(plots[0].geometry);
+                const centroid = turf.centroid(selectedPlot.geometry);
                 const [lng, lat] = centroid.geometry.coordinates;
                 return [lng, lat];
             } catch (e) {
@@ -59,11 +59,12 @@ export function LocationConnectivityPanel() {
             }
         }
         return null;
-    }, [plots]);
+    }, [selectedPlot]);
 
     const existingAmenities = activeProject?.locationData?.amenities || [];
 
     const [loadingCategories, setLoadingCategories] = useState<Set<string>>(new Set());
+    const providerLabel = PlacesService.getProviderLabel();
 
     const fetchCategory = useCallback(async (category: AmenityCategory) => {
         if (!center) return;
@@ -71,7 +72,7 @@ export function LocationConnectivityPanel() {
         setLoadingCategories(prev => new Set(prev).add(category));
 
         try {
-            const results = await OverpassPlacesService.searchNearby(center, category);
+            const results = await PlacesService.searchNearby(center, category);
 
             const current = activeProject?.locationData?.amenities || [];
             const other = current.filter((a: Amenity) => a.category !== category);
@@ -105,7 +106,7 @@ export function LocationConnectivityPanel() {
         try {
             const allCategories = AMENITY_CATEGORIES.map(c => c.id);
 
-            const results = await OverpassPlacesService.searchNearby(center, allCategories, 2000);
+            const results = await PlacesService.searchNearby(center, allCategories, 2000);
 
             actions.setLocationData(results);
             await actions.saveCurrentProject();
@@ -113,7 +114,11 @@ export function LocationConnectivityPanel() {
 
         } catch (error: any) {
             console.error(error);
-            const msg = error?.message || 'Could not fetch amenity data.';
+            const msg =
+                error?.message ||
+                error?.error ||
+                error?.details?.error?.message ||
+                'Could not fetch amenity data.';
             toast({ variant: 'destructive', title: 'Scan Failed', description: msg });
         } finally {
             setIsScanning(false);
@@ -144,6 +149,12 @@ export function LocationConnectivityPanel() {
                                 ({center[1].toFixed(4)}°, {center[0].toFixed(4)}°)
                             </span>
                         )}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                        Plot: {selectedPlot?.name || 'First plot'}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                        Amenity provider: {providerLabel}
                     </p>
                 </div>
 

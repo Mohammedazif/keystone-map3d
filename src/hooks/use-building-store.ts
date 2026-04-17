@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { Feature, Polygon, MultiPolygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, VastuRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary } from '@/lib/types';
+import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, VastuRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary, type EvaluateLandInput } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
@@ -1325,6 +1325,58 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 toast({ variant: 'destructive', title: 'Error', description: 'Failed to create project.' });
                 return null;
             }
+        },
+        startProjectFromEvaluateLand: async (
+            evaluateLandInput: EvaluateLandInput,
+            sourcePlots: Plot[],
+            selectedPlotId?: string | null,
+        ) => {
+            const newProject = await get().actions.createProject(
+                evaluateLandInput.projectName.trim(),
+                evaluateLandInput.landSize,
+                evaluateLandInput.intendedUse,
+                evaluateLandInput.location.trim(),
+                "",
+                [],
+                false,
+            );
+
+            if (!newProject) {
+                return null;
+            }
+
+            const clonedPlots: Plot[] = sourcePlots.map((plot, index) => {
+                const clonedPlot = deepClone(plot);
+                clonedPlot.projectId = newProject.id;
+                clonedPlot.name =
+                    clonedPlot.name ||
+                    (index === 0
+                        ? evaluateLandInput.projectName.trim() || 'Primary Plot'
+                        : `Plot ${index + 1}`);
+                clonedPlot.location = evaluateLandInput.location.trim();
+                return clonedPlot;
+            });
+
+            const selectedClonedPlot =
+                clonedPlots.find(plot => plot.id === selectedPlotId) ||
+                clonedPlots[0] ||
+                null;
+
+            get().actions.loadPlotsIntoWorkspace(
+                clonedPlots,
+                selectedClonedPlot?.id ?? null,
+            );
+            get().actions.updateProject(newProject.id, {
+                evaluateLandInput,
+                lastModified: new Date().toISOString(),
+            });
+            await get().actions.saveCurrentProject();
+
+            return {
+                project: newProject,
+                plots: clonedPlots,
+                selectedPlotId: selectedClonedPlot?.id ?? null,
+            };
         },
         // deleteProject: Moved to bottom
         // loadProject: Moved to bottom
@@ -4702,6 +4754,50 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         },
 
         setMapLocation: (location: string | null) => set({ mapLocation: location }),
+        // Clears the temporary map/editor state used on evaluate land.
+        resetWorkspace: () => set(produce((draft: BuildingState) => {
+            draft.activeProjectId = null;
+            draft.plots = [];
+            draft.drawingPoints = [];
+            draft.mapCommand = null;
+            draft.mapLocation = null;
+            draft.selectedObjectId = null;
+            draft.hoveredObjectId = null;
+            draft.zoneDefinition = {
+                isDefining: false,
+                geometry: null,
+                centroid: null,
+                activePlotId: null,
+            };
+            draft.drawingState = {
+                isDrawing: false,
+                objectType: null,
+                activePlotId: null,
+                roadWidth: 6,
+                buildingIntendedUse: BuildingIntendedUse.Residential,
+            };
+            draft.uiState.isFeasibilityPanelOpen = false;
+            draft.bhuvanData = null;
+            draft.isFetchingBhuvan = false;
+        })),
+        // Loads a prepared plot set into the active workspace and resets state around it.
+        loadPlotsIntoWorkspace: (plots: Plot[], selectedPlotId?: string | null) => set(produce((draft: BuildingState) => {
+            draft.plots = plots;
+            draft.selectedObjectId = selectedPlotId ? { type: 'Plot', id: selectedPlotId } : null;
+            draft.hoveredObjectId = null;
+            draft.drawingPoints = [];
+            draft.mapCommand = null;
+            draft.zoneDefinition = {
+                isDefining: false,
+                geometry: null,
+                centroid: null,
+                activePlotId: null,
+            };
+            draft.drawingState.isDrawing = false;
+            draft.drawingState.objectType = null;
+            draft.drawingState.activePlotId = null;
+            draft.uiState.isFeasibilityPanelOpen = false;
+        })),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
         executeMapCommand: (command: any) => console.warn('executeMapCommand not implemented', command),
@@ -6652,8 +6748,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
             try {
                 // Dynamic import to avoid circular deps if any
-                const { OverpassPlacesService } = await import('@/services/overpass-places-service');
-                const newAmenities = await OverpassPlacesService.searchNearby(center, category as any);
+                const { PlacesService } = await import('@/services/places-service');
+                const newAmenities = await PlacesService.searchNearby(center, category as any);
 
                 set(produce((draft: BuildingState) => {
                     const project = draft.projects.find(p => p.id === activeProjectId);
