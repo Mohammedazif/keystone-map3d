@@ -42,7 +42,7 @@ import { useRegulations } from "@/hooks/use-regulations";
 import { generateBuildingTexture } from "@/lib/texture-generator";
 import { WindStreamlineLayer } from "@/lib/wind-streamline-layer";
 import { Amenity } from "@/services/mapbox-places-service";
-import { OverpassPlacesService } from "@/services/overpass-places-service";
+import { GoogleRoadsService } from "@/services/google-roads-service";
 import {
   buildBhuvanLayerName,
   getIndianStateCode,
@@ -1211,27 +1211,18 @@ export function MapEditor({
         } else {
           if (plots[0] === plot)
             console.log(
-              `[Road Debug] No local roads found. Trying Overpass API...`,
+              `[Road Debug] No local roads found. Trying Google Roads API...`,
             );
 
-          const searchArea = turf.buffer(plot.geometry as any, 0.1, {
-            units: "kilometers",
-          });
-          const searchBbox = turf.bbox(searchArea);
-
-          OverpassPlacesService.fetchRoads(
-            searchBbox as [number, number, number, number],
-          )
-            .then((osmRoads) => {
-              const newSides =
-                osmRoads.length > 0 ? determineAccessSides(osmRoads) : [];
+          GoogleRoadsService.detectRoadAccessSides(plot.geometry as any)
+            .then((newSides) => {
               const oldSides: string[] = plot.roadAccessSides || [];
               const hasChanged =
                 newSides.length !== oldSides.length ||
                 !newSides.every((s: string) => oldSides.includes(s));
 
               console.log(
-                `[Road Debug] Overpass returned ${osmRoads.length} roads. Access:`,
+                `[Road Debug] Google Roads inferred access:`,
                 newSides,
               );
 
@@ -1244,11 +1235,11 @@ export function MapEditor({
                 });
               } else {
                 console.log(
-                  `[Road Debug] Overpass result unchanged or empty. Saved.`,
+                  `[Road Debug] Google Roads result unchanged or empty. Saved.`,
                 );
               }
             })
-            .catch((err) => console.error("[Road Debug] Overpass failed:", err))
+            .catch((err) => console.error("[Road Debug] Google Roads failed:", err))
             .finally(() => {
               pendingRoadDetections.current.delete(plot.id);
             });

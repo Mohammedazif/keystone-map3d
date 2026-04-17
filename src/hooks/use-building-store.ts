@@ -6630,8 +6630,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
 
             try {
                 // Dynamic import to avoid circular deps if any
-                const { OverpassPlacesService } = await import('@/services/overpass-places-service');
-                const newAmenities = await OverpassPlacesService.searchNearby(center, category as any);
+                const { PlacesService } = await import('@/services/places-service');
+                const newAmenities = await PlacesService.searchNearby(center, category as any);
 
                 set(produce((draft: BuildingState) => {
                     const project = draft.projects.find(p => p.id === activeProjectId);
