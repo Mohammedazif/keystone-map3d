@@ -70,6 +70,8 @@ const PLOT_TYPE_OPTIONS = Object.values(LandPlotType);
 const PROXIMITY_OPTIONS = Object.values(LandProximity);
 const ZONING_OPTIONS = Object.values(LandZoningPreference);
 const INTENDED_USE_OPTIONS = Object.values(BuildingIntendedUse);
+const DEFAULT_SIDEBAR_WIDTH = 380;
+const ANALYSIS_SIDEBAR_WIDTH = 500;
 
 // Schema
 const evaluateLandFormSchema = z.object({
@@ -225,7 +227,7 @@ export function EvaluateLandWorkspace() {
   const [solarDate, setSolarDate] = useState<Date>(() => new Date());
   const [isStartingProject, setIsStartingProject] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(380);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [activePanelTab, setActivePanelTab] = useState<"inputs" | "analysis">(
     "inputs",
   );
@@ -315,6 +317,7 @@ export function EvaluateLandWorkspace() {
     reset(nextForm);
     setHasAttemptedProjectStart(false);
     setIsLocationManuallyEdited(false);
+    setSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
     resetAnalysis();
     setActivePanelTab("inputs");
     toast({
@@ -397,6 +400,7 @@ export function EvaluateLandWorkspace() {
 
   const analysisCoordinates = getAnalysisCoordinates();
   const watchedLandSize = form.watch("landSize");
+  const watchedIntendedUse = form.watch("intendedUse");
   const {
     isRunningScore,
     scoreError,
@@ -413,6 +417,7 @@ export function EvaluateLandWorkspace() {
     selectedPlot,
     plots,
     typedLandSize: watchedLandSize,
+    intendedUse: watchedIntendedUse,
     getAnalysisCoordinates,
     getInputValues: () => {
       const values = getValues();
@@ -423,7 +428,16 @@ export function EvaluateLandWorkspace() {
         zoningPreference: values.zoningPreference,
       };
     },
-    validateRequired: () => trigger(["location", "landSize", "intendedUse"]),
+    validateRequired: () =>
+      trigger([
+        "projectName",
+        "location",
+        "landSize",
+        "intendedUse",
+        "priceRange",
+        "plotType",
+        "zoningPreference",
+      ]),
   });
 
   useEffect(() => {
@@ -453,8 +467,13 @@ export function EvaluateLandWorkspace() {
             : "No zoning match";
 
   const handleRunDevelopabilityScore = useCallback(async () => {
-    await runAnalysis();
+    const didRun = await runAnalysis();
     setActivePanelTab("analysis");
+    if (didRun) {
+      setSidebarWidth((currentWidth) =>
+        Math.max(currentWidth, ANALYSIS_SIDEBAR_WIDTH),
+      );
+    }
   }, [runAnalysis]);
 
   const startSidebarResize = (event: React.MouseEvent) => {
@@ -1341,8 +1360,8 @@ export function EvaluateLandWorkspace() {
                                   : "Unavailable",
                               formula:
                                 sellableAreaBreakdown.setbackAdjustedMaxGfa > 0
-                                  ? `${formatNumber(sellableAreaBreakdown.setbackAdjustedMaxGfa)} x 70%`
-                                  : "Setback-adjusted max GFA x 70%",
+                                  ? `${formatNumber(sellableAreaBreakdown.setbackAdjustedMaxGfa)} x ${formatNumber(sellableAreaBreakdown.estimatedSellableRatio * 100, 0)}%`
+                                  : "Setback-adjusted max GFA x sellable ratio",
                             },
                           ].map((item) => (
                             <div
@@ -1407,6 +1426,20 @@ export function EvaluateLandWorkspace() {
                                   : "Not specified"}
                               </span>
                             </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 rounded-lg border border-border/50 bg-background/70 p-3">
+                          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                            Sellable Ratio Used
+                          </p>
+                          <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              {sellableAreaBreakdown.sellableRatioSource}
+                            </span>
+                            <span className="font-semibold">
+                              {formatNumber(sellableAreaBreakdown.estimatedSellableRatio * 100, 0)}%
+                            </span>
                           </div>
                         </div>
 

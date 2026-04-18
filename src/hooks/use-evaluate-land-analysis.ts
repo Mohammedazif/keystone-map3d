@@ -58,6 +58,7 @@ export function useEvaluateLandAnalysis({
   selectedPlot,
   plots,
   typedLandSize,
+  intendedUse,
   getAnalysisCoordinates,
   getInputValues,
   validateRequired,
@@ -65,6 +66,7 @@ export function useEvaluateLandAnalysis({
   selectedPlot: Plot | null;
   plots: Plot[];
   typedLandSize: string;
+  intendedUse: BuildingIntendedUse;
   getAnalysisCoordinates: () => [number, number] | null;
   getInputValues: () => {
     location: string;
@@ -255,8 +257,9 @@ export function useEvaluateLandAnalysis({
         plots,
         matchedRegulation,
         typedLandSize,
+        intendedUse,
       }),
-    [matchedRegulation, plots, selectedPlot, typedLandSize],
+    [intendedUse, matchedRegulation, plots, selectedPlot, typedLandSize],
   );
 
   return {
