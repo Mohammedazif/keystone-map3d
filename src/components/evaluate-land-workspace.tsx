@@ -403,6 +403,7 @@ export function EvaluateLandWorkspace() {
     scoreData,
     bhuvanData,
     matchedRegulation,
+    regulationMatch,
     buildVerdict,
     analysisTarget,
     sellableAreaBreakdown,
@@ -434,6 +435,22 @@ export function EvaluateLandWorkspace() {
     analysisTarget != null &&
     plotForAnalysis != null &&
     analysisTarget.plotId !== plotForAnalysis.id;
+  const verdictConfidenceTone =
+    buildVerdict?.confidence === "high"
+      ? "border-emerald-500/40 text-emerald-600"
+      : buildVerdict?.confidence === "medium"
+        ? "border-amber-500/40 text-amber-600"
+        : "border-border text-muted-foreground";
+  const verdictSourceLabel =
+    regulationMatch?.source === "specific-id"
+      ? "Specific regulation"
+      : regulationMatch?.source === "generic-id"
+        ? "Direct location/use match"
+        : regulationMatch?.source === "location-query"
+          ? "Location fallback match"
+          : regulationMatch?.source === "national-fallback"
+            ? "National (NBC) fallback"
+            : "No zoning match";
 
   const handleRunDevelopabilityScore = useCallback(async () => {
     await runAnalysis();
@@ -1135,6 +1152,26 @@ export function EvaluateLandWorkspace() {
                               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                                 {buildVerdict.suggestedAction}
                               </p>
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "text-[10px] font-medium",
+                                    verdictConfidenceTone,
+                                  )}
+                                >
+                                  {buildVerdict.confidence.toUpperCase()} confidence
+                                </Badge>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] font-medium"
+                                >
+                                  {verdictSourceLabel}
+                                </Badge>
+                              </div>
+                              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                                {buildVerdict.confidenceSummary}
+                              </p>
                             </div>
                           </div>
                         </div>
@@ -1172,6 +1209,16 @@ export function EvaluateLandWorkspace() {
                               {matchedRegulation
                                 ? `${matchedRegulation.location} - ${matchedRegulation.type}`
                                 : "Unavailable"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="text-muted-foreground">
+                              Rule source
+                            </span>
+                            <span className="text-right font-semibold">
+                              {regulationMatch?.matchedLocation
+                                ? `${verdictSourceLabel} (${regulationMatch.matchedLocation})`
+                                : verdictSourceLabel}
                             </span>
                           </div>
                         </div>
