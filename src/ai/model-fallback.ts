@@ -40,7 +40,7 @@ export async function generateWithFallback(prompt: string, preferredModel?: stri
         // Fallback to Gemini
         try {
             const { text } = await ai.generate({
-                model: 'googleai/gemini-2.5-flash',
+                model: 'googleai/gemini-3.1-pro-preview',
                 prompt,
             });
             return text;
@@ -80,7 +80,7 @@ export async function generateStructuredWithFallback<T>(
         // Fallback to Gemini (text-based JSON parsing)
         try {
             const { text } = await ai.generate({
-                model: 'googleai/gemini-2.5-flash',
+                model: 'googleai/gemini-3.1-pro-preview',
                 prompt: prompt + '\n\nReturn ONLY valid JSON, no other text.',
             });
 

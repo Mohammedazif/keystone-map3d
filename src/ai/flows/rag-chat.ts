@@ -26,7 +26,7 @@ export const ragChat = ai.defineFlow(
 
         if (docContext.length > 120000) {
             MAX_CONTEXT_CHARS = 800000;
-            preferredModel = 'googleai/gemini-2.5-flash';
+            preferredModel = 'googleai/gemini-3.1-pro-preview';
             console.log('[RAG Chat] Context is large (>120k chars). Switching to Gemini Flash with 800k limit.');
         }
 

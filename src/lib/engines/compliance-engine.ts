@@ -1,5 +1,5 @@
 
-import { RegulationData } from '../types';
+import { RegulationData, getPrimarySetback } from '../types';
 
 export interface ComplianceInput {
     plotArea: number;
@@ -51,10 +51,11 @@ export class ComplianceEngine {
         const effectiveHeight = maxHeight && !isNaN(maxHeight) ? maxHeight : 15;
 
         // Setbacks
-        const front = Number(regulation.geometry.front_setback?.value as any) || Number(regulation.geometry.setback?.value as any) || 0;
-        const rear = Number(regulation.geometry.rear_setback?.value as any) || Number(regulation.geometry.setback?.value as any) || 0;
-        const side = Number(regulation.geometry.side_setback?.value as any) || Number(regulation.geometry.setback?.value as any) || 0;
-        const general = Number(regulation.geometry.setback?.value as any) || 0;
+        const defaultSetback = getPrimarySetback(regulation) || 0;
+        const front = Number(regulation.geometry.front_setback?.value as any) || defaultSetback;
+        const rear = Number(regulation.geometry.rear_setback?.value as any) || defaultSetback;
+        const side = Number(regulation.geometry.side_setback?.value as any) || defaultSetback;
+        const general = defaultSetback;
 
         // 2. Calculate Limits
         const maxFootprint = plotArea * (effectiveCoverage / 100);

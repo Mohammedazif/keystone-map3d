@@ -766,6 +766,7 @@ export interface RegulationData {
   location: string;
   type: string;
   geometry: { [key: string]: RegulationValue };
+  highrise?: { [key: string]: RegulationValue };
   facilities: { [key: string]: RegulationValue };
   sustainability: { [key: string]: RegulationValue };
   safety_and_services: { [key: string]: RegulationValue };
@@ -783,7 +784,20 @@ export const REGULATION_SUB_GROUPS: Record<string, string[]> = {
     "Fire & Life Safety": ["fire_safety", "fire_tender_access", "staircases_by_height", "fire_exits_travel_distance", "refuge_floors", "fire_fighting_systems", "fire_command_center", "fire_tender_movement"],
     "Utilities & MEP": ["water_supply_approval", "sewer_connection_stp", "stormwater_drainage", "electrical_load_sanction", "transformer_placement", "backup_power_norms", "gas_pipelines", "telecom_infrastructure", "sewage_treatment_plant", "solid_waste_management"],
     "Structural Engineering": ["seismic_zone", "wind_load", "soil_bearing_capacity"],
-    "Financial & Legal": ["fee_rate", "saleable_vs_carpet_rera", "exit_compliance", "absorption_assumptions", "infra_load_vs_financial_viability"]
+    "Financial & Legal": ["fee_rate", "saleable_vs_carpet_rera", "exit_compliance", "absorption_assumptions", "infra_load_vs_financial_viability"],
+    "High-Rise Building": [
+        "highrise_threshold", "front_setback_upto_15m", "front_setback_15_to_24m", "front_setback_24_to_45m", "front_setback_above_45m",
+        "rear_setback_upto_15m", "rear_setback_15_to_24m", "rear_setback_24_to_45m", "rear_setback_above_45m",
+        "side_setback_upto_15m", "side_setback_15_to_24m", "side_setback_24_to_45m", "side_setback_above_45m",
+        "coverage_upto_15m", "coverage_15_to_24m", "coverage_24_to_45m", "coverage_above_45m",
+        "far_upto_15m", "far_15_to_24m", "far_24_to_45m", "far_above_45m",
+        "min_plot_area_highrise", "min_road_width_highrise", "max_floors", "max_building_height",
+        "stilt_floor_height", "floor_to_floor_height", "basement_depth", "basement_levels_allowed",
+        "podium_height", "podium_coverage", "setback_above_podium", "tower_coverage_above_podium",
+        "green_building_mandate_height", "structural_audit_threshold",
+        "helipad_required_height", "refuge_floor_interval", "refuge_floor_area",
+        "pressurized_staircase_threshold", "fire_lift_threshold", "fire_command_center_threshold"
+    ]
 };
 
 export interface DesignOption {
@@ -1271,3 +1285,31 @@ export interface DevelopabilityScore {
   dataCompleteness: number;       // 0-1: how much data was available
   timestamp: string;
 }
+
+// Helper to reliably get the most stringent/default setback for a plot
+export const getPrimarySetback = (regulation?: RegulationData | null): number | undefined => {
+    if (!regulation) return undefined;
+    
+    // 1. Try highest high-rise front setback
+    if (regulation.highrise && typeof regulation.highrise === 'object') {
+        const hrSetbacks = [
+            regulation.highrise.front_setback_above_45m?.value,
+            regulation.highrise.front_setback_24_to_45m?.value,
+            regulation.highrise.front_setback_15_to_24m?.value,
+            regulation.highrise.front_setback_upto_15m?.value,
+        ].filter(v => typeof v === 'number' && !isNaN(v as any)) as number[];
+        
+        if (hrSetbacks.length > 0) {
+            return Math.max(...hrSetbacks);
+        }
+    }
+    
+    // 2. Fall back to generic geometry setbacks
+    const genSetback = regulation.geometry?.setback?.value as any;
+    if (typeof genSetback === 'number' && !isNaN(genSetback)) return genSetback;
+    
+    const frontSetback = regulation.geometry?.front_setback?.value as any;
+    if (typeof frontSetback === 'number' && !isNaN(frontSetback)) return frontSetback;
+
+    return undefined;
+};

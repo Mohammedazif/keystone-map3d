@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { useBuildingStore, useSelectedPlot, useProjectData } from '@/hooks/use-building-store';
-import type { BuildingIntendedUse } from '@/lib/types';
+import { type BuildingIntendedUse, getPrimarySetback } from '@/lib/types';
 import { Info, RotateCcw, Box, Layers, Maximize, Move, MousePointer, AlertTriangle, Sparkles, MousePointerClick } from "lucide-react";
 import { useState, useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
@@ -247,9 +247,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
     useEffect(() => {
         if (selectedPlot) {
-            const regSetback = selectedPlot.regulation?.geometry?.setback?.value
-                || selectedPlot.regulation?.geometry?.min_setback?.value
-                || selectedPlot.regulation?.geometry?.front_setback?.value;
+            const regSetback = getPrimarySetback(selectedPlot.regulation);
 
             const initialSetback = regSetback ?? selectedPlot.setback ?? 5;
 

@@ -34,7 +34,7 @@ function parseAndSanitize(rawText: string): any[] {
 
   // Sanitize string values to numbers
   parsed = parsed.map((item: any) => {
-    for (const cat of ['geometry', 'facilities', 'sustainability', 'safety_and_services', 'administration']) {
+    for (const cat of ['geometry', 'highrise', 'facilities', 'sustainability', 'safety_and_services', 'administration']) {
       if (item[cat] && typeof item[cat] === 'object') {
         for (const key of Object.keys(item[cat])) {
           const obj = item[cat][key];
@@ -52,9 +52,32 @@ function parseAndSanitize(rawText: string): any[] {
       let f = item.geometry.floor_area_ratio.value;
       item.geometry.floor_area_ratio.value = (f >= 100 && f <= 500) ? f / 100 : 1.5;
     }
+    // If FAR ended up as 0, that's almost certainly wrong — clear it so admin can fill manually
+    if (item.geometry?.floor_area_ratio?.value === 0) {
+      item.geometry.floor_area_ratio.value = '';
+    }
     // Coverage sanity
     if (item.geometry?.max_ground_coverage?.value > 100) {
       item.geometry.max_ground_coverage.value = 100;
+    }
+    // Highrise FAR / coverage sanity
+    if (item.highrise && typeof item.highrise === 'object') {
+      for (const key of Object.keys(item.highrise)) {
+        const obj = item.highrise[key];
+        if (!obj || typeof obj !== 'object') continue;
+        // FAR tiers sanity (far_upto_15m, far_15_to_24m, etc.)
+        if (key.startsWith('far_') && obj.value > 20) {
+          const f = obj.value;
+          obj.value = (f >= 100 && f <= 500) ? f / 100 : '';
+        }
+        if (key.startsWith('far_') && obj.value === 0) {
+          obj.value = '';
+        }
+        // Coverage tiers sanity
+        if (key.startsWith('coverage_') && obj.value > 100) {
+          obj.value = 100;
+        }
+      }
     }
     return item;
   });
@@ -101,7 +124,7 @@ export const extractRegulationData = ai.defineFlow(
     }),
   },
   async (input) => {
-    const prompt = `You are a building regulation data extractor. Extract structured data from this document.
+    const prompt = `You are an expert HIGH-RISE BUILDING REGULATION data extractor. Your PRIMARY FOCUS is extracting data relevant to high-rise/multi-storey building development — setbacks, coverage, FAR/FSI, height restrictions, and all height-dependent parameters.
 
 Document: ${input.fileName}
 
@@ -121,12 +144,23 @@ ${input.overrideLocation ?
 : 
 `LOCATION: Determine the state/city from the document name or content.`}
 
+⚠️⚠️ HIGH-RISE FOCUS INSTRUCTIONS ⚠️⚠️
+Pay MAXIMUM attention to:
+1. **Setbacks that vary by building height** — many regulations define different setbacks for buildings <15m, 15-24m, 24-45m, >45m etc. Extract the HIGH-RISE tier values (usually the strictest/largest setbacks).
+2. **Coverage / ground coverage that varies by building height or number of floors** — extract for the tallest tier.
+3. **FAR/FSI tiers** — if FAR increases with height or premium FSI is available for taller buildings, capture it.
+4. **Height classification** — at what height does a building become "high-rise" (commonly 15m, 18m, or 24m in Indian regulations).
+5. **Setback tables** — look for tables showing setbacks vs building height or setbacks vs road width. Extract ALL tiers.
+6. **Structural & fire requirements for tall buildings** — refuge floors, pressurized staircases, fire command centers, helipad pads.
+7. **Minimum plot area for high-rise** — many codes require larger plots (e.g. 2000+ sqm) for buildings above a certain height.
+
 RULES:
 - Only extract data EXPLICITLY stated in the document. Do NOT guess or hallucinate.
-- FAR must be a decimal (e.g. 1.5, 2.0). If you see "225" it means 2.25.
+- FAR must be a decimal (e.g. 1.5, 2.0, 2.5). If you see "225" it means 2.25. If you see "150" it means 1.50.
+- ⚠️ FAR / FSI MUST NEVER be 0. If you cannot find FAR, OMIT the field entirely. FAR is ALWAYS a positive number (typically 0.5 to 5.0 in Indian regulations). Look for it under labels like "FAR", "FSI", "Floor Space Index", "Floor Area Ratio", or in building-height-based tables.
 - Setbacks in meters. Coverage as percentage (0-100).
 - For EACH zone, search the ENTIRE document and fill ALL fields you can find.
-- ⚠️ NEVER set value to null. If multiple values exist (e.g. by plot size), pick the most typical/middle value.
+- ⚠️ NEVER set value to null or 0 for fields like FAR, setbacks, coverage. If you truly cannot find it in the document, OMIT that field entirely instead of returning 0. If multiple values exist (e.g. by plot size), pick the HIGH-RISE / TALLEST BUILDING tier value.
 - ⚠️ ALWAYS extract the ACTUAL NUMBER from the document, not just 1 or 0. Examples:
   • seismic_zone → extract the zone number (e.g. 4 or 5)
   • wind_load → extract the speed in m/s (e.g. 39)
@@ -134,13 +168,28 @@ RULES:
   • electrical_load_sanction → extract in kVA (e.g. 500)
   • sewage_treatment_plant → extract capacity in KLD (e.g. 50)
   • fire_exits_travel_distance → extract distance in m (e.g. 22.5)
+  • highrise_threshold → the height in meters at which "high-rise" classification begins (e.g. 15 or 24)
   Only use 1/0 when the document ONLY says "required/not required" with NO specific number.
-- ⚠️ Keep "desc" fields SHORT — max 50 characters.
+- ⚠️ Keep "desc" fields SHORT — max 80 characters. Include the height/floor tier context in the desc (e.g. "Front setback for bldg >24m height").
 
-Return a JSON array. Each value = {"desc": "...", "unit": "...", "value": <number>}
+Return a JSON array where each object represents ONE zone extracted. You MUST structure each object exactly like this, grouping fields into categories:
 
-COMPLETE LIST OF FIELDS TO SEARCH FOR IN EACH ZONE:
+{
+  "location": "State/City name",
+  "type": "Zone Name (e.g. Residential, Commercial)",
+  "confidence": 0.9,
+  "geometry": {
+    "field_name": {"desc": "...", "unit": "...", "value": <number>}
+  },
+  "highrise": { ... },
+  "facilities": { ... },
+  "sustainability": { ... },
+  "safety_and_services": { ... }
+}
 
+OMIT fields you cannot find. Do not leave them as null or 0.
+
+COMPLETE LIST OF CATEGORIES AND FIELDS TO COMPILE FOR EACH ZONE:
 "geometry": {
   "setback" (m), "front_setback" (m), "rear_setback" (m), "side_setback" (m),
   "road_width" (m), "max_ground_coverage" (%), "floor_area_ratio" (),
@@ -151,6 +200,50 @@ COMPLETE LIST OF FIELDS TO SEARCH FOR IN EACH ZONE:
   "road_setback_building_line" (m), "highrise_setback_multiplier" (),
   "based_on_road_width" (m), "based_on_building_height" (m), "based_on_plot_size" (sqm),
   "height_vs_road_width" (), "aviation_clearance" (m), "shadow_skyline_control" ()
+}
+
+"highrise": {
+  "highrise_threshold" (m) — height at which building is classified as high-rise,
+  "front_setback_upto_15m" (m) — front setback for buildings up to 15m,
+  "front_setback_15_to_24m" (m) — front setback for buildings 15m to 24m,
+  "front_setback_24_to_45m" (m) — front setback for buildings 24m to 45m,
+  "front_setback_above_45m" (m) — front setback for buildings above 45m,
+  "rear_setback_upto_15m" (m) — rear setback for buildings up to 15m,
+  "rear_setback_15_to_24m" (m) — rear setback for buildings 15m to 24m,
+  "rear_setback_24_to_45m" (m) — rear setback for buildings 24m to 45m,
+  "rear_setback_above_45m" (m) — rear setback for buildings above 45m,
+  "side_setback_upto_15m" (m) — side setback for buildings up to 15m,
+  "side_setback_15_to_24m" (m) — side setback for buildings 15m to 24m,
+  "side_setback_24_to_45m" (m) — side setback for buildings 24m to 45m,
+  "side_setback_above_45m" (m) — side setback for buildings above 45m,
+  "coverage_upto_15m" (%) — ground coverage for buildings up to 15m,
+  "coverage_15_to_24m" (%) — ground coverage for buildings 15m to 24m,
+  "coverage_24_to_45m" (%) — ground coverage for buildings 24m to 45m,
+  "coverage_above_45m" (%) — ground coverage for buildings above 45m,
+  "far_upto_15m" () — FAR for buildings up to 15m,
+  "far_15_to_24m" () — FAR for buildings 15m to 24m,
+  "far_24_to_45m" () — FAR for buildings 24m to 45m,
+  "far_above_45m" () — FAR for buildings above 45m,
+  "min_plot_area_highrise" (sqm) — minimum plot area for high-rise construction,
+  "min_road_width_highrise" (m) — minimum road width required for high-rise,
+  "max_floors" () — maximum number of floors,
+  "max_building_height" (m) — absolute maximum building height,
+  "stilt_floor_height" (m) — height of stilt / parking floor,
+  "floor_to_floor_height" (m) — standard floor-to-floor height,
+  "basement_depth" (m) — maximum basement depth,
+  "basement_levels_allowed" () — number of basement levels,
+  "podium_height" (m) — maximum podium height allowed,
+  "podium_coverage" (%) — coverage allowed at podium level,
+  "setback_above_podium" (m) — additional setback above podium,
+  "tower_coverage_above_podium" (%) — tower coverage above podium level,
+  "green_building_mandate_height" (m) — height above which green certification is mandatory,
+  "structural_audit_threshold" (m) — height above which structural audit is mandatory,
+  "helipad_required_height" (m) — height above which helipad is required,
+  "refuge_floor_interval" () — refuge floor required every N floors (e.g. 15),
+  "refuge_floor_area" (sqm) — minimum area per refuge floor,
+  "pressurized_staircase_threshold" (m) — height above which pressurized staircase required,
+  "fire_lift_threshold" (m) — height above which fire lift is mandatory,
+  "fire_command_center_threshold" (m) — height above which fire command center required
 }
 
 "facilities": {
@@ -190,15 +283,34 @@ EXAMPLE OUTPUT STRUCTURE:
 [
   {
     "location": "<state>",
-    "type": "<zone name>",
-    "geometry": { "front_setback": {"desc": "Front setback (3m for plots <200sqm, 5m for >200sqm)", "unit": "m", "value": 3}, ... },
-    "facilities": { "parking": {"desc": "...", "unit": "spaces/unit", "value": 1}, ... },
-    "sustainability": { "rainwater_harvesting": {"desc": "Required for plots >200sqm", "unit": "", "value": 1}, ... },
+    "type": "Residential",
+    "geometry": { "front_setback": {"desc": "Front setback for high-rise (>24m)", "unit": "m", "value": 9}, "max_ground_coverage": {"desc": "Max coverage for bldg >24m height", "unit": "%", "value": 33}, ... },
+    "highrise": {
+      "highrise_threshold": {"desc": "Building classified high-rise above this", "unit": "m", "value": 15},
+      "front_setback_upto_15m": {"desc": "Front setback for bldg up to 15m", "unit": "m", "value": 3},
+      "front_setback_15_to_24m": {"desc": "Front setback for bldg 15-24m", "unit": "m", "value": 6},
+      "front_setback_24_to_45m": {"desc": "Front setback for bldg 24-45m", "unit": "m", "value": 9},
+      "front_setback_above_45m": {"desc": "Front setback for bldg >45m", "unit": "m", "value": 12},
+      "coverage_upto_15m": {"desc": "Ground coverage for bldg up to 15m", "unit": "%", "value": 60},
+      "coverage_above_45m": {"desc": "Ground coverage for bldg >45m", "unit": "%", "value": 30},
+      "min_plot_area_highrise": {"desc": "Min plot for high-rise", "unit": "sqm", "value": 2000},
+      "refuge_floor_interval": {"desc": "Refuge floor every 15 floors", "unit": "", "value": 15},
+      ...
+    },
+    "facilities": { "parking": {"desc": "Parking for high-rise residential", "unit": "ECS", "value": 1.33}, ... },
+    "sustainability": { ... },
     "safety_and_services": { "fire_safety": {"desc": "...", "unit": "", "value": 1}, ... },
-    "administration": { "fee_rate": {"desc": "...", "unit": "% of cost", "value": 0.1}, ... },
+    "administration": { ... },
     "confidence": 0.9
   }
 ]
+
+⚠️ PRIORITY: The "highrise" section is the MOST IMPORTANT. Search aggressively for setback tables, coverage tables, and FAR tables that vary by building height. These are typically found in:
+- Setback schedules / tables
+- Chapter on "High-Rise Buildings" or "Special Buildings"
+- NBC (National Building Code) references
+- Fire safety chapters
+- Annexures with dimensional requirements
 
 Only include fields found in the document. Search thoroughly — data appears across different chapters/tables/annexures.
 Return ONLY the JSON array — no markdown fences, no explanation.`;
@@ -209,7 +321,7 @@ Return ONLY the JSON array — no markdown fences, no explanation.`;
       console.log(`[Regulation Extractor] Using Gemini Vision for PDF: ${input.fileName}`);
       try {
         let visionResponse = await ai.generate({
-          model: 'googleai/gemini-2.5-flash',
+          model: 'googleai/gemini-3.1-pro-preview',
           prompt: [
             { media: { contentType: 'application/pdf', url: `data:application/pdf;base64,${input.pdfBase64}` } },
             { text: prompt },
@@ -223,7 +335,7 @@ Return ONLY the JSON array — no markdown fences, no explanation.`;
         if (responseText.length < 5000) {
           console.warn(`[Regulation Extractor] Response too short (${responseText.length} chars), retrying...`);
           visionResponse = await ai.generate({
-            model: 'googleai/gemini-2.5-flash',
+            model: 'googleai/gemini-3.1-pro-preview',
             prompt: [
               { media: { contentType: 'application/pdf', url: `data:application/pdf;base64,${input.pdfBase64}` } },
               { text: prompt },
@@ -263,7 +375,7 @@ async function textFallback(prompt: string, documentText: string): Promise<strin
   console.log(`[Regulation Extractor] Using text-based extraction (${documentText.length} chars)`);
   const fullPrompt = prompt + `\n\nDocument Content:\n${documentText.slice(0, 120000)}`;
   const { text } = await ai.generate({
-    model: 'googleai/gemini-2.5-flash',
+    model: 'googleai/gemini-3.1-pro-preview',
     prompt: fullPrompt,
     config: { maxOutputTokens: 65536, temperature: 0.1 },
   });
