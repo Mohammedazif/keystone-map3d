@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import {
   evaluateBuildabilityVerdict,
@@ -57,11 +57,13 @@ interface ScoreResult {
 }
 
 interface AnalysisTargetSnapshot {
-  plotId: string;
+  plotId: string | null;
   plotName: string;
   plotAreaSqm: number;
   usedFallbackPlot: boolean;
   coordinates: [number, number];
+  mode: "plot" | "point";
+  parcelAware: boolean;
 }
 
 interface RegulationMatchSnapshot {
@@ -88,6 +90,7 @@ export function useEvaluateLandAnalysis({
   getAnalysisCoordinates,
   getInputValues,
   validateRequired,
+  pointTarget,
 }: {
   selectedPlot: Plot | null;
   plots: Plot[];
@@ -101,6 +104,10 @@ export function useEvaluateLandAnalysis({
     zoningPreference: LandZoningPreference;
   };
   validateRequired: () => Promise<boolean>;
+  pointTarget?: {
+    requestKey: string;
+    label: string;
+  } | null;
 }) {
   const [isRunningScore, setIsRunningScore] = useState(false);
   const [scoreError, setScoreError] = useState<string | null>(null);
@@ -113,6 +120,7 @@ export function useEvaluateLandAnalysis({
     useState<AnalysisTargetSnapshot | null>(null);
   const [regulationMatch, setRegulationMatch] =
     useState<RegulationMatchSnapshot | null>(null);
+  const latestRequestRef = useRef(0);
 
   const clearAnalysisResults = useCallback(() => {
     setScoreData(null);
@@ -129,7 +137,8 @@ export function useEvaluateLandAnalysis({
   }, [clearAnalysisResults]);
 
   const runAnalysis = useCallback(async () => {
-    const formValid = await validateRequired();
+    const requiresFullValidation = !pointTarget;
+    const formValid = requiresFullValidation ? await validateRequired() : true;
     const coords = getAnalysisCoordinates();
 
     if (!coords) {
@@ -150,7 +159,7 @@ export function useEvaluateLandAnalysis({
     const { state, district } = inferScoreQueryLocation(values.location);
     const plotForAnalysis = selectedPlot || plots[0] || null;
 
-    if (!plotForAnalysis) {
+    if (!plotForAnalysis && !pointTarget) {
       setScoreError(
         "Draw or select a plot before running the developability score.",
       );
@@ -158,14 +167,23 @@ export function useEvaluateLandAnalysis({
       return false;
     }
 
+    const requestId = latestRequestRef.current + 1;
+    latestRequestRef.current = requestId;
     setIsRunningScore(true);
     setScoreError(null);
+    setScoreData(null);
+    setBhuvanData(null);
+    setMatchedRegulation(null);
+    setBuildVerdict(null);
+    setRegulationMatch(null);
     setAnalysisTarget({
-      plotId: plotForAnalysis.id,
-      plotName: plotForAnalysis.name,
-      plotAreaSqm: plotForAnalysis.area,
-      usedFallbackPlot: selectedPlot == null,
+      plotId: plotForAnalysis?.id ?? null,
+      plotName: plotForAnalysis?.name ?? pointTarget?.label ?? "Clicked location",
+      plotAreaSqm: plotForAnalysis?.area ?? Number(values.landSize || 0),
+      usedFallbackPlot: plotForAnalysis != null && selectedPlot == null,
       coordinates: coords,
+      mode: plotForAnalysis ? "plot" : "point",
+      parcelAware: Boolean(plotForAnalysis),
     });
 
     try {
@@ -177,8 +195,8 @@ export function useEvaluateLandAnalysis({
             location: state,
             district,
             coordinates: coords,
-            plotGeometry: plotForAnalysis.geometry,
-            roadAccessSides: plotForAnalysis.roadAccessSides,
+            plotGeometry: plotForAnalysis?.geometry,
+            roadAccessSides: plotForAnalysis?.roadAccessSides,
             landSizeSqm: Number(values.landSize),
             intendedUse: values.intendedUse,
           }),
@@ -208,6 +226,10 @@ export function useEvaluateLandAnalysis({
           intendedUse: values.intendedUse,
         }),
       ]);
+
+      if (latestRequestRef.current !== requestId) {
+        return false;
+      }
 
       const errors: string[] = [];
 
@@ -261,16 +283,21 @@ export function useEvaluateLandAnalysis({
       setScoreError(errors.length > 0 ? errors.join(" ") : null);
       return true;
     } catch (error: any) {
-      clearAnalysisResults();
-      setScoreError(error?.message || "Failed to run developability score.");
+      if (latestRequestRef.current === requestId) {
+        clearAnalysisResults();
+        setScoreError(error?.message || "Failed to run developability score.");
+      }
       return false;
     } finally {
-      setIsRunningScore(false);
+      if (latestRequestRef.current === requestId) {
+        setIsRunningScore(false);
+      }
     }
   }, [
     clearAnalysisResults,
     getAnalysisCoordinates,
     getInputValues,
+    pointTarget,
     plots,
     selectedPlot,
     validateRequired,

@@ -48,6 +48,27 @@ interface DrawingState {
     buildingIntendedUse: BuildingIntendedUse; // Intended use when drawing a building
 }
 
+interface InstantAnalysisTarget {
+    coordinates: [number, number];
+    locationLabel: string;
+    district?: string;
+    stateCode?: string;
+    stateName?: string;
+    plotId?: string | null;
+    plotName?: string | null;
+    parcelAware: boolean;
+    source: 'map-click';
+    requestKey: string;
+    capturedAt: string;
+}
+
+interface UiState {
+    showVastuCompass: boolean;
+    isFeasibilityPanelOpen: boolean;
+    ghostMode: boolean;
+    isInstantAnalysisMode: boolean;
+}
+
 interface BuildingState {
     projects: Project[];
     activeProjectId: string | null;
@@ -57,7 +78,7 @@ interface BuildingState {
     zoneDefinition: ZoneDefinitionState;
     selectedObjectId: { type: SelectableObjectType; id: string } | null;
     hoveredObjectId: { type: SelectableObjectType; id: string } | null;
-    uiState: { showVastuCompass: boolean; isFeasibilityPanelOpen: boolean; ghostMode: boolean }; // New UI State
+    uiState: UiState;
     componentVisibility: { electrical: boolean; hvac: boolean; basements: boolean; cores: boolean; units: boolean; solar: boolean; ev: boolean };
     aiScenarios: (AiScenario | AiMassingScenario)[] | null;
     activeBhuvanLayer: string | null;
@@ -83,6 +104,7 @@ interface BuildingState {
 
     mapLocation: string | null;
     mapCommand: { type: 'flyTo'; center: [number, number]; zoom?: number } | null;
+    instantAnalysisTarget: InstantAnalysisTarget | null;
     greenRegulations: GreenRegulationData[]; // Global Green Regulations cache
     vastuRegulations: VastuRegulationData[]; // Global Vastu Guidelines cache
 
@@ -1159,7 +1181,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     },
     selectedObjectId: null,
     hoveredObjectId: null,
-    uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false, ghostMode: false },
+    uiState: { showVastuCompass: false, isFeasibilityPanelOpen: false, ghostMode: false, isInstantAnalysisMode: false },
     componentVisibility: { electrical: false, hvac: false, basements: false, cores: false, units: false, solar: false, ev: false },
     aiScenarios: null,
     activeBhuvanLayer: null,
@@ -1193,6 +1215,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
     vastuRegulations: [],
 
     mapLocation: null,
+    instantAnalysisTarget: null,
     actions: {
                 /**
                  * Rotates a building by a given angle (degrees) and updates its geometry and centroid.
@@ -4890,6 +4913,14 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
         },
 
         setMapLocation: (location: string | null) => set({ mapLocation: location }),
+        setInstantAnalysisMode: (enabled: boolean) => set(produce((draft: BuildingState) => {
+            draft.uiState.isInstantAnalysisMode = enabled;
+            if (!enabled) {
+                draft.instantAnalysisTarget = null;
+            }
+        })),
+        setInstantAnalysisTarget: (target: InstantAnalysisTarget | null) => set({ instantAnalysisTarget: target }),
+        clearInstantAnalysisTarget: () => set({ instantAnalysisTarget: null }),
         // Clears the temporary map/editor state used on evaluate land.
         resetWorkspace: () => set(produce((draft: BuildingState) => {
             draft.activeProjectId = null;
@@ -4897,6 +4928,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             draft.drawingPoints = [];
             draft.mapCommand = null;
             draft.mapLocation = null;
+            draft.instantAnalysisTarget = null;
             draft.selectedObjectId = null;
             draft.hoveredObjectId = null;
             draft.zoneDefinition = {
@@ -4913,6 +4945,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 buildingIntendedUse: BuildingIntendedUse.Residential,
             };
             draft.uiState.isFeasibilityPanelOpen = false;
+            draft.uiState.isInstantAnalysisMode = false;
             draft.bhuvanData = null;
             draft.isFetchingBhuvan = false;
         })),
@@ -4923,6 +4956,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             draft.hoveredObjectId = null;
             draft.drawingPoints = [];
             draft.mapCommand = null;
+            draft.instantAnalysisTarget = null;
             draft.zoneDefinition = {
                 isDefining: false,
                 geometry: null,
@@ -4933,6 +4967,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             draft.drawingState.objectType = null;
             draft.drawingState.activePlotId = null;
             draft.uiState.isFeasibilityPanelOpen = false;
+            draft.uiState.isInstantAnalysisMode = false;
         })),
         undo: () => console.warn('Undo not implemented'),
         redo: () => console.warn('Redo not implemented'),
@@ -4980,6 +5015,8 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     if (draft.activeProjectId === projectId) {
                         draft.activeProjectId = null;
                         draft.plots = [];
+                        draft.instantAnalysisTarget = null;
+                        draft.uiState.isInstantAnalysisMode = false;
                     }
                 }));
             } catch (error) {
@@ -4988,7 +5025,17 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             }
         },
         loadProject: async (projectId: string) => {
-            set({ isLoading: true, activeProjectId: projectId, plots: [], selectedObjectId: null });
+            set({
+                isLoading: true,
+                activeProjectId: projectId,
+                plots: [],
+                selectedObjectId: null,
+                instantAnalysisTarget: null,
+                uiState: {
+                    ...get().uiState,
+                    isInstantAnalysisMode: false,
+                },
+            });
             const userId = useAuthStore.getState().user?.uid;
             if (!userId) {
                 set({ isLoading: false });

@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   DollarSign,
   Loader2,
+  Crosshair,
   MapPin,
   RefreshCw,
   Satellite,
@@ -194,6 +195,12 @@ export function EvaluateLandWorkspace() {
   const drawingState = useBuildingStore((state) => state.drawingState);
   const mapLocation = useBuildingStore((state) => state.mapLocation);
   const plots = useBuildingStore((state) => state.plots);
+  const instantAnalysisTarget = useBuildingStore(
+    (state) => state.instantAnalysisTarget,
+  );
+  const isInstantAnalysisMode = useBuildingStore(
+    (state) => state.uiState.isInstantAnalysisMode,
+  );
   const selectedPlot = useSelectedPlot();
 
   const [isMapReady, setIsMapReady] = useState(false);
@@ -211,6 +218,7 @@ export function EvaluateLandWorkspace() {
   const [isLocationManuallyEdited, setIsLocationManuallyEdited] =
     useState(false);
   const isResizing = useRef(false);
+  const autoRunRequestKeyRef = useRef<string | null>(null);
 
   const form = useForm<EvaluateLandForm>({
     resolver: zodResolver(evaluateLandFormSchema),
@@ -247,6 +255,15 @@ export function EvaluateLandWorkspace() {
     mapLocation,
     setValue,
   ]);
+
+  useEffect(() => {
+    if (!instantAnalysisTarget?.locationLabel) return;
+    setValue("location", instantAnalysisTarget.locationLabel, {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: hasAttemptedProjectStart,
+    });
+  }, [hasAttemptedProjectStart, instantAnalysisTarget?.locationLabel, setValue]);
 
   useEffect(() => {
     if (plots.length === 0) return;
@@ -361,6 +378,9 @@ export function EvaluateLandWorkspace() {
   };
 
   const getAnalysisCoordinates = useCallback((): [number, number] | null => {
+    if (instantAnalysisTarget?.coordinates) {
+      return instantAnalysisTarget.coordinates;
+    }
     const plotForAnalysis = selectedPlot || plots[0];
     if (!plotForAnalysis?.geometry) return null;
 
@@ -371,7 +391,7 @@ export function EvaluateLandWorkspace() {
     } catch {
       return null;
     }
-  }, [plots, selectedPlot]);
+  }, [instantAnalysisTarget?.coordinates, plots, selectedPlot]);
 
   const analysisCoordinates = getAnalysisCoordinates();
   const watchedLandSize = form.watch("landSize");
@@ -413,16 +433,33 @@ export function EvaluateLandWorkspace() {
         "plotType",
         "zoningPreference",
       ]),
+    pointTarget: instantAnalysisTarget
+      ? {
+          requestKey: instantAnalysisTarget.requestKey,
+          label: instantAnalysisTarget.locationLabel,
+        }
+      : null,
   });
 
   useEffect(() => {
     resetAnalysis();
   }, [resetAnalysis]);
 
+  useEffect(() => {
+    if (!instantAnalysisTarget?.requestKey) return;
+    if (autoRunRequestKeyRef.current === instantAnalysisTarget.requestKey) {
+      return;
+    }
+    autoRunRequestKeyRef.current = instantAnalysisTarget.requestKey;
+    setActivePanelTab("analysis");
+    void runAnalysis();
+  }, [instantAnalysisTarget?.requestKey, runAnalysis]);
+
   const plotForAnalysis = selectedPlot || plots[0] || null;
   const currentPlotDiffersFromAnalysis =
     analysisTarget != null &&
     plotForAnalysis != null &&
+    analysisTarget.plotId != null &&
     analysisTarget.plotId !== plotForAnalysis.id;
   const verdictConfidenceTone =
     buildVerdict?.confidence === "high"
@@ -852,6 +889,41 @@ export function EvaluateLandWorkspace() {
               ) : (
                 <div className="space-y-4 p-4">
                   {/* The analysis tab becomes the review surface after a score run. */}
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={isInstantAnalysisMode ? "default" : "outline"}
+                      className="gap-2"
+                      onClick={() =>
+                        actions.setInstantAnalysisMode(!isInstantAnalysisMode)
+                      }
+                    >
+                      <Crosshair className="h-4 w-4" />
+                      {isInstantAnalysisMode
+                        ? "Click Mode On"
+                        : "Click Map to Analyze"}
+                    </Button>
+                    {instantAnalysisTarget ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => actions.clearInstantAnalysisTarget()}
+                      >
+                        Clear Point
+                      </Button>
+                    ) : null}
+                  </div>
+
+                  {isInstantAnalysisMode ? (
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
+                      Click anywhere on the map to run instant analysis. Parcel
+                      geometry is used automatically when the clicked point falls
+                      inside a drawn plot.
+                    </div>
+                  ) : null}
+
                   <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="mt-1 text-sm font-semibold">
@@ -918,16 +990,20 @@ export function EvaluateLandWorkspace() {
                               variant="outline"
                               className="text-[10px] font-medium"
                             >
-                              {analysisTarget.usedFallbackPlot
-                                ? "Fallback Plot"
-                                : "Selected Plot"}
+                              {analysisTarget.mode === "point"
+                                ? "Map Click"
+                                : analysisTarget.usedFallbackPlot
+                                  ? "Fallback Plot"
+                                  : "Selected Plot"}
                             </Badge>
                           </div>
 
                           <div className="mt-4 grid gap-2 rounded-lg border border-border/50 bg-background/70 p-3">
                             <div className="flex items-center justify-between gap-3 text-xs">
                               <span className="text-muted-foreground">
-                                Plot name
+                                {analysisTarget.mode === "point"
+                                  ? "Target"
+                                  : "Plot name"}
                               </span>
                               <span className="font-semibold">
                                 {analysisTarget.plotName}
@@ -935,7 +1011,9 @@ export function EvaluateLandWorkspace() {
                             </div>
                             <div className="flex items-center justify-between gap-3 text-xs">
                               <span className="text-muted-foreground">
-                                Plot area
+                                {analysisTarget.mode === "point"
+                                  ? "Reference area"
+                                  : "Plot area"}
                               </span>
                               <span className="font-semibold tabular-nums">
                                 {formatNumber(analysisTarget.plotAreaSqm)} sqm
@@ -951,6 +1029,14 @@ export function EvaluateLandWorkspace() {
                               </span>
                             </div>
                           </div>
+
+                          {analysisTarget.mode === "point" ? (
+                            <div className="mt-4 rounded-lg border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-blue-700">
+                              This score was triggered from a map click. If you
+                              want a parcel-aware score, draw a plot or click
+                              inside one before running again.
+                            </div>
+                          ) : null}
 
                           {currentPlotDiffersFromAnalysis ? (
                             <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700">

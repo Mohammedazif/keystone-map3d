@@ -192,7 +192,12 @@ export const MapboxPlacesService = {
      * @param center [lng, lat]
      * @returns { stateCode?: string, district?: string }
      */
-    async reverseGeocode(center: [number, number]): Promise<{ stateCode?: string; district?: string }> {
+    async reverseGeocode(center: [number, number]): Promise<{
+        stateCode?: string;
+        stateName?: string;
+        district?: string;
+        locationLabel?: string;
+    }> {
         if (!MAPBOX_ACCESS_TOKEN) return {};
 
         const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${center[0]},${center[1]}.json?` +
@@ -208,20 +213,27 @@ export const MapboxPlacesService = {
             
             let district = undefined;
             let stateCode = undefined;
+            let stateName = undefined;
 
             for (const f of features) {
                 if (f.place_type.includes('district') || f.place_type.includes('place')) {
                     if (!district) district = f.text;
                 }
                 if (f.place_type.includes('region')) {
+                    if (!stateName) stateName = f.text;
                     if (!stateCode && f.properties?.short_code) {
                         const code = f.properties.short_code.split('-');
                         stateCode = code.length > 1 ? code[1] : code[0];
                     }
                 }
             }
-            
-            return { stateCode, district };
+
+            return {
+                stateCode,
+                stateName,
+                district,
+                locationLabel: [district, stateName].filter(Boolean).join(', ') || features[0]?.place_name,
+            };
         } catch (error) {
             console.error(`[MapboxPlaces] Reverse geocode failed:`, error);
             return {};

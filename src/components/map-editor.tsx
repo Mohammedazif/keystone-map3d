@@ -43,6 +43,7 @@ import { generateBuildingTexture } from "@/lib/texture-generator";
 import { WindStreamlineLayer } from "@/lib/wind-streamline-layer";
 import { Amenity } from "@/services/mapbox-places-service";
 import { GoogleRoadsService } from "@/services/google-roads-service";
+import { MapboxPlacesService } from "@/services/mapbox-places-service";
 import {
   buildBhuvanLayerName,
   getIndianStateCode,
@@ -170,6 +171,7 @@ export function MapEditor({
     "map" | "satellite" | "terrain"
   >("map");
   const markers = useRef<Marker[]>([]);
+  const instantAnalysisMarker = useRef<Marker | null>(null);
   const vastuObjectsRef = useRef<any[]>([]);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [primaryColor, setPrimaryColor] = useState("hsl(210, 40%, 50%)");
@@ -203,6 +205,7 @@ export function MapEditor({
   const tempScenarios = useBuildingStore((s) => s.tempScenarios); // Add tempScenarios selector
   const mapCommand = useBuildingStore((s) => s.mapCommand);
   const uiState = useBuildingStore((s) => s.uiState);
+  const instantAnalysisTarget = useBuildingStore((s) => s.instantAnalysisTarget);
   const componentVisibility = useBuildingStore((s) => s.componentVisibility);
   const activeProjectId = useBuildingStore((s) => s.activeProjectId);
   const projects = useBuildingStore((s) => s.projects);
@@ -234,6 +237,32 @@ export function MapEditor({
         clearTimeout(selectionHighlightTimerRef.current);
     };
   }, [selectedObjectId]);
+
+  useEffect(() => {
+    const mapInst = map.current;
+    if (!mapInst) return;
+
+    if (!instantAnalysisTarget) {
+      instantAnalysisMarker.current?.remove();
+      instantAnalysisMarker.current = null;
+      return;
+    }
+
+    const markerNode =
+      instantAnalysisMarker.current?.getElement() || document.createElement("div");
+    markerNode.className = "h-4 w-4 rounded-full border-2 border-background bg-primary shadow-[0_0_0_4px_rgba(59,130,246,0.25)]";
+
+    if (!instantAnalysisMarker.current) {
+      instantAnalysisMarker.current = new mapboxgl.Marker({
+        element: markerNode,
+        anchor: "center",
+      });
+    }
+
+    instantAnalysisMarker.current
+      .setLngLat(instantAnalysisTarget.coordinates)
+      .addTo(mapInst);
+  }, [instantAnalysisTarget]);
 
   const plotsRendering = plots;
 
@@ -421,11 +450,11 @@ export function MapEditor({
   );
 
   const handleMapClick = useCallback(
-    (e: mapboxgl.MapLayerMouseEvent) => {
+    async (e: mapboxgl.MapLayerMouseEvent) => {
       const mapInst = map.current;
       if (!mapInst || !mapInst.isStyleLoaded()) return;
 
-      const { drawingState, drawingPoints, activeBhuvanLayer, plots } =
+      const { drawingState, drawingPoints, activeBhuvanLayer, plots, uiState } =
         getStoreState();
 
       // ── Bhuvan GetFeatureInfo: runs regardless of drawing tool state ──
@@ -535,6 +564,53 @@ export function MapEditor({
       }
 
       // ── Drawing tool guards: stop here for non-drawing modes ──
+      if (
+        uiState.isInstantAnalysisMode &&
+        !drawingState.isDrawing &&
+        drawingState.objectType?.toLowerCase() !== "move" &&
+        drawingState.objectType?.toLowerCase() !== "rotate"
+      ) {
+        const coordinates: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+        const clickedPoint = turf.point(coordinates);
+        const matchedPlot =
+          plots.find((plot) => {
+            try {
+              return turf.booleanPointInPolygon(clickedPoint, plot.geometry);
+            } catch {
+              return false;
+            }
+          }) || null;
+
+        const geocode = await MapboxPlacesService.reverseGeocode(coordinates);
+        const locationLabel =
+          geocode.locationLabel ||
+          [geocode.district, geocode.stateName].filter(Boolean).join(", ") ||
+          `${coordinates[1].toFixed(5)}, ${coordinates[0].toFixed(5)}`;
+
+        actions.setDistrictNameHint(geocode.district);
+        actions.setMapLocation(locationLabel);
+        actions.setInstantAnalysisTarget({
+          coordinates,
+          locationLabel,
+          district: geocode.district,
+          stateCode: geocode.stateCode,
+          stateName: geocode.stateName,
+          plotId: matchedPlot?.id || null,
+          plotName: matchedPlot?.name || null,
+          parcelAware: Boolean(matchedPlot),
+          source: "map-click",
+          requestKey: `${coordinates[0].toFixed(6)}:${coordinates[1].toFixed(6)}:${Date.now()}`,
+          capturedAt: new Date().toISOString(),
+        });
+
+        if (matchedPlot) {
+          actions.selectObject(matchedPlot.id, "Plot");
+        } else {
+          actions.selectObject(null, null);
+        }
+        return;
+      }
+
       if (
         typeof drawingState.objectType !== "string" ||
         drawingState.objectType.toLowerCase() === "move"
@@ -1013,6 +1089,8 @@ export function MapEditor({
       mapInst.off("mousemove", handleMouseMove);
       mapInst.off("mousemove", handleDragMove);
       window.removeEventListener("mouseup", handleMouseUp);
+      instantAnalysisMarker.current?.remove();
+      instantAnalysisMarker.current = null;
 
       mapInst.remove();
 

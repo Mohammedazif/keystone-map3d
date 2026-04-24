@@ -768,19 +768,19 @@ export function AdminPanel() {
                                                 </div>
 
                                                 {/* Detailed Categories */}
-                                                {reg.categories && reg.categories.length > 0 && (
+                                                {Array.isArray(reg.categories) && reg.categories.length > 0 && (
                                                     <Accordion type="single" collapsible className="w-full border-t pt-2">
                                                         {reg.categories.map((category, idx) => (
                                                             <AccordionItem key={idx} value={`item-${idx}`} className="border-b-0">
                                                                 <AccordionTrigger className="py-2 text-xs hover:no-underline">
                                                                     <div className="flex justify-between w-full pr-2">
                                                                         <span>{category.name}</span>
-                                                                        <span className="text-muted-foreground">{category.credits.length}</span>
+                                                                        <span className="text-muted-foreground">{Array.isArray(category.credits) ? category.credits.length : 0}</span>
                                                                     </div>
                                                                 </AccordionTrigger>
                                                                 <AccordionContent>
                                                                     <div className="space-y-2 pl-2">
-                                                                        {category.credits.map((credit, cIdx) => (
+                                                                        {(Array.isArray(category.credits) ? category.credits : []).map((credit, cIdx) => (
                                                                             <div key={cIdx} className="text-xs border-l-2 border-primary/20 pl-2 py-1">
                                                                                 <div className="font-medium">{credit.code} {credit.name}</div>
                                                                                 <div className="flex gap-2 text-[10px] text-muted-foreground mt-0.5">
@@ -824,7 +824,15 @@ export function AdminPanel() {
                                 <div className="col-span-full mb-4">
                                     {/* AdminAttachVastu removed; use default checklist JSON when needed */}
                                 </div>
-                                {vastuRegulations.map(reg => (
+                                {vastuRegulations.map(reg => {
+                                    const recommendations = Array.isArray(reg.recommendations)
+                                        ? reg.recommendations
+                                        : [];
+                                    const scorecardItems = Array.isArray(reg.scorecardItems)
+                                        ? reg.scorecardItems
+                                        : [];
+
+                                    return (
                                     <Card key={reg.id || reg.name} className="relative group border-border/50">
                                         <CardHeader>
                                             <div className="flex justify-between items-start">
@@ -835,25 +843,25 @@ export function AdminPanel() {
                                         </CardHeader>
                                         <CardContent>
                                             <div className="text-sm text-muted-foreground mb-4">
-                                                {reg.scorecardItems?.length
-                                                    ? `${reg.scorecardItems.length} scorecard items - ${reg.recommendations.length} guidelines`
-                                                    : `${reg.recommendations.length} Guidelines`}
+                                                {scorecardItems.length
+                                                    ? `${scorecardItems.length} scorecard items - ${recommendations.length} guidelines`
+                                                    : `${recommendations.length} Guidelines`}
                                             </div>
                                             <div className="space-y-2">
-                                                {reg.recommendations.slice(0, 3).map((rec, idx) => (
+                                                {recommendations.slice(0, 3).map((rec, idx) => (
                                                     <div key={idx} className="text-xs border-l-2 border-primary/30 pl-2">
                                                         <span className="font-semibold">{rec.category}:</span> {rec.idealDirections.join(', ')}
                                                     </div>
                                                 ))}
-                                                {reg.recommendations.length > 3 && (
+                                                {recommendations.length > 3 && (
                                                     <div className="text-xs text-muted-foreground italic">
-                                                        + {reg.recommendations.length - 3} more...
+                                                        + {recommendations.length - 3} more...
                                                     </div>
                                                 )}
                                             </div>
                                         </CardContent>
                                     </Card>
-                                ))}
+                                )})}
                             </div>
                             {vastuRegulations.length === 0 && (
                                 <div className="text-center py-16 border-2 border-dashed border-border rounded-lg">
