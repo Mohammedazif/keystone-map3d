@@ -167,6 +167,22 @@ function formatDevelopabilityItemDetail(
         : `Satellite analysis shows ${builtUpChange.toFixed(1)}% built-up change over 5 years.`;
     }
     case 'GP4': {
+      const value = toRecord(result?.value);
+      if (value) {
+        const pop2001 = toNumber(value.population2001);
+        const pop2011 = toNumber(value.population2011);
+        const pop2025 = toNumber(value.projectedPopulation2025);
+        const direction = typeof value.migrationDirection === 'string' ? value.migrationDirection : null;
+        const confidence = toNumber(value.confidence);
+        const parts = [
+          pop2001 != null && pop2011 != null && pop2025 != null
+            ? `${formatCompact(pop2001)} (2001) -> ${formatCompact(pop2011)} (2011) -> ${formatCompact(pop2025)} (2025)`
+            : null,
+          direction ? `${direction} migration signal` : null,
+          confidence != null ? `${Math.round(confidence * 100)}% confidence` : null,
+        ].filter(Boolean);
+        return parts.length > 0 ? parts.join(' | ') : undefined;
+      }
       const growth = toNumber(result?.value);
       return growth == null
         ? undefined
@@ -220,6 +236,21 @@ function formatDevelopabilityItemDetail(
         : `Absorption signal is ${absorption.toFixed(1)} based on available assumptions and competitor inputs.`;
     }
     case 'ME4': {
+      const value = toRecord(result?.value);
+      if (value) {
+        const density2011 = toNumber(value.density2011);
+        const density2025 = toNumber(value.projectedDensity2025);
+        const direction = typeof value.migrationDirection === 'string' ? value.migrationDirection : null;
+        const urbanPct = toNumber(value.projectedUrbanPopulationPct2025);
+        const parts = [
+          density2011 != null && density2025 != null
+            ? `${Math.round(density2011).toLocaleString('en-IN')} -> ${Math.round(density2025).toLocaleString('en-IN')} people/sq km by 2025`
+            : null,
+          urbanPct != null ? `${urbanPct.toFixed(1)}% projected urban share` : null,
+          direction ? `${direction} demand pressure` : null,
+        ].filter(Boolean);
+        return parts.length > 0 ? parts.join(' | ') : undefined;
+      }
       const density = toNumber(result?.value);
       return density == null
         ? undefined

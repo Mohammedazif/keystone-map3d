@@ -29,6 +29,7 @@ import {
 import { DrawingToolbar } from "@/components/drawing-toolbar";
 import { MapEditor } from "@/components/map-editor";
 import { MapSearch } from "@/components/map-search";
+import { PopulationMigrationCard } from "@/components/population-migration-card";
 import { DevelopabilityScoreOverview } from "@/components/developability-score-overview";
 import { DrawingStatus } from "@/components/drawing-status";
 import { AnalysisMode } from "@/components/solar-controls";
@@ -1053,6 +1054,8 @@ export function EvaluateLandWorkspace() {
                         max={1000}
                         rating={scoreData.score.rating}
                       />
+
+                      <PopulationMigrationCard analysis={scoreData.populationMigration} emphasized />
 
                       <DevelopabilityScoreOverview
                         score={scoreData.score}

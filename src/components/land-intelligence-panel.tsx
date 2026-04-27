@@ -17,9 +17,10 @@ import {
 
 import { useBuildingStore, useProjectData, useSelectedPlot } from "@/hooks/use-building-store";
 import { inferScoreQueryLocation } from "@/lib/land-intelligence/infer-score-query-location";
-import type { DevelopabilityScore } from "@/lib/types";
+import type { DevelopabilityScore, PopulationMigrationAnalysis } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useRegulations } from "@/hooks/use-regulations";
+import { PopulationMigrationCard } from "./population-migration-card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
@@ -27,6 +28,7 @@ import { DevelopabilityScoreOverview } from "./developability-score-overview";
 
 interface ScoreResult {
   score: DevelopabilityScore;
+  populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
       label: string;
@@ -55,6 +57,7 @@ interface ScoreResult {
   };
   dataSources: {
     census: { count: number; available: boolean };
+    populationMigration: { count: number; available: boolean };
     fdi: { count: number; available: boolean };
     sez: { count: number; available: boolean };
     satellite: { available: boolean; isMock: boolean };
@@ -524,6 +527,8 @@ export function LandIntelligencePanel() {
                 </div>
               </div>
             </div>
+
+            <PopulationMigrationCard analysis={scoreData.populationMigration} emphasized />
 
             <DevelopabilityScoreOverview
               score={scoreData.score}

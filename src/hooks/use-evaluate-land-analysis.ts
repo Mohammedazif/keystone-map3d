@@ -12,12 +12,14 @@ import type {
   BuildingIntendedUse,
   DevelopabilityScore,
   LandZoningPreference,
+  PopulationMigrationAnalysis,
   Plot,
   RegulationData,
 } from "@/lib/types";
 
 interface ScoreResult {
   score: DevelopabilityScore;
+  populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
       label: string;
@@ -46,6 +48,7 @@ interface ScoreResult {
   };
   dataSources: {
     census: { count: number; available: boolean };
+    populationMigration: { count: number; available: boolean };
     fdi: { count: number; available: boolean };
     sez: { count: number; available: boolean };
     satellite: { available: boolean; isMock: boolean };

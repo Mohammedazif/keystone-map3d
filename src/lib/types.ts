@@ -1211,6 +1211,40 @@ export interface SEZData {
   source: string;
 }
 
+export interface PopulationTrendPoint {
+  year: number;
+  population: number;
+  kind: 'estimated' | 'official' | 'projected';
+}
+
+export interface PopulationMigrationAnalysis {
+  location: string;
+  state: string;
+  district: string;
+  timeSeries: PopulationTrendPoint[];
+  population2001: number;
+  population2011: number;
+  projectedPopulation2025: number;
+  populationDelta2001To2011: number;
+  populationDelta2011To2025: number;
+  decadalGrowth2001To2011: number;
+  annualGrowthRate2001To2011: number;
+  projectedAnnualGrowthRate2011To2025: number;
+  density2011: number;
+  projectedDensity2025: number;
+  urbanPopulationPct2011: number;
+  projectedUrbanPopulationPct2025: number;
+  migrationDirection: 'inward' | 'balanced' | 'outward';
+  migrationIntensity: 'high' | 'moderate' | 'low';
+  growthPattern: 'satellite-corridor' | 'urban-core' | 'industrial-growth' | 'steady-district' | 'declining-pocket';
+  confidence: number;
+  summary: string;
+  implications: string;
+  drivers: string[];
+  caveats: string[];
+  source: string;
+}
+
 // Google Earth Engine (satellite) types
 export interface SatelliteChangeData {
   location: string;

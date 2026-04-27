@@ -38,6 +38,7 @@ interface DevelopabilityOverviewProps {
   score: DevelopabilityScore;
   dataSources: {
     census: DataSourceStatus;
+    populationMigration: DataSourceStatus;
     fdi: DataSourceStatus;
     sez: DataSourceStatus;
     satellite: { available: boolean; isMock?: boolean };
@@ -64,6 +65,7 @@ const CATEGORY_SECTIONS = [
 
 const DATA_SOURCE_META = [
   { key: "census", label: "Census" },
+  { key: "populationMigration", label: "Migration Model" },
   { key: "fdi", label: "FDI" },
   { key: "sez", label: "SEZ" },
   { key: "satellite", label: "Satellite" },

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { DataGovService } from '@/services/land-intelligence/data-gov-service';
 import { EarthEngineService } from '@/services/land-intelligence/earth-engine-service';
 import { GoogleMapsServerService } from '@/services/land-intelligence/google-maps-server-service';
+import { PopulationMigrationService } from '@/services/land-intelligence/population-migration-service';
 import { ProposedInfraService } from '@/services/land-intelligence/proposed-infra-service';
 import { lookupRegulationForLocationAndUse } from '@/lib/regulation-lookup';
 import { evaluateDevelopability, toDevelopabilityScore } from '@/lib/scoring/developability-engine';
@@ -9,6 +10,7 @@ import type { ItemResult } from '@/lib/scoring/schema-engine';
 import type {
   CensusData,
   LandIntelligenceQuery,
+  PopulationMigrationAnalysis,
   RegulationData,
   SEZData,
   SatelliteChangeData,
@@ -30,6 +32,8 @@ interface NearbyAmenitySummaryItem {
   nearestDistanceMeters: number | null;
   sampleNames: string[];
 }
+
+interface PopulationMigrationResponse extends PopulationMigrationAnalysis {}
 
 const DEFAULT_COORDS: Coordinates = [77.209, 28.6139];
 const EMPTY_PROPOSED_INFRA_SIGNAL = {
@@ -150,6 +154,10 @@ function scoreByDistance(
 function round(value: number, decimals: number = 1) {
   const factor = 10 ** decimals;
   return Math.round(value * factor) / factor;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function toFiniteDistance(value: unknown): number | null {
@@ -456,6 +464,16 @@ export async function POST(request: NextRequest) {
     const regulationPermitsUse = regulationAllowsUse(regulation, query.intendedUse);
     const cluPossible = canPotentiallyConvert(regulation);
     const nearestOperationalSez = await getNearestOperationalSez(coords, sez);
+    const populationMigration = PopulationMigrationService.analyze({
+      state,
+      district,
+      censusRecords: census,
+      satellite,
+      fdi,
+      sez,
+      nearestOperationalSezDistanceMeters: nearestOperationalSez?.distanceMeters ?? null,
+      proposedInfrastructure: proposedInfra,
+    });
     const roadAccessSideScore =
       roadAccessSides.length >= 3
         ? 8
@@ -610,13 +628,25 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    // GP4 still depends on coarse Census-style growth signals, not fresh micro-market population data.
-    if (census.length > 0) {
-      const avgGrowth = census.reduce((sum, record) => sum + record.decadalGrowthRate, 0) / census.length;
+    if (populationMigration) {
+      const annualGrowth = populationMigration.projectedAnnualGrowthRate2011To2025;
+      const confidenceMultiplier = 0.85 + populationMigration.confidence * 0.15;
+      const rawGp4Score =
+        annualGrowth >= 2.8
+          ? 40
+          : annualGrowth >= 2
+            ? 34
+            : annualGrowth >= 1.2
+              ? 26
+              : annualGrowth >= 0.5
+                ? 18
+                : annualGrowth >= 0
+                  ? 10
+                  : 4;
       results['GP4'] = {
-        score: avgGrowth > 20 ? 40 : avgGrowth > 15 ? 30 : avgGrowth > 10 ? 20 : 10,
-        status: avgGrowth > 10,
-        value: round(avgGrowth, 1),
+        score: Math.round(rawGp4Score * confidenceMultiplier),
+        status: populationMigration.migrationDirection !== 'outward',
+        value: populationMigration,
       };
     }
 
@@ -732,13 +762,30 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    // ME4 is still a density-only proxy today because supply/inventory/pipeline data is missing.
-    if (census.length > 0) {
-      const avgDensity = census.reduce((sum, record) => sum + record.populationDensity, 0) / census.length;
+    if (populationMigration) {
+      const projectedDensity = populationMigration.projectedDensity2025;
+      const annualGrowth = populationMigration.projectedAnnualGrowthRate2011To2025;
+      const migrationBoost =
+        populationMigration.migrationDirection === 'inward'
+          ? 6
+          : populationMigration.migrationDirection === 'balanced'
+            ? 2
+            : -4;
+      let me4Score =
+        projectedDensity > 12000
+          ? 42
+          : projectedDensity > 7000
+            ? 34
+            : projectedDensity > 3000
+              ? 24
+              : 14;
+      if (annualGrowth >= 2) me4Score += 8;
+      else if (annualGrowth >= 1) me4Score += 4;
+      me4Score += migrationBoost;
       results['ME4'] = {
-        score: avgDensity > 10000 ? 50 : avgDensity > 5000 ? 35 : avgDensity > 1000 ? 20 : 10,
-        status: avgDensity > 5000,
-        value: round(avgDensity, 0),
+        score: clamp(me4Score, 6, 50),
+        status: populationMigration.migrationDirection !== 'outward' && projectedDensity > 3000,
+        value: populationMigration,
       };
     }
 
@@ -757,9 +804,11 @@ export async function POST(request: NextRequest) {
       success: true,
       query: responseQuery,
       score: developabilityScore,
+      populationMigration: populationMigration as PopulationMigrationResponse | null,
       nearbyAmenities,
       dataSources: {
         census: { count: census.length, available: census.length > 0 },
+        populationMigration: { count: populationMigration ? populationMigration.timeSeries.length : 0, available: populationMigration !== null },
         fdi: { count: fdi.length, available: fdi.length > 0 },
         sez: { count: sez.length, available: sez.length > 0 },
         satellite: { available: satellite !== null, isMock: EarthEngineService.isMockMode() },
