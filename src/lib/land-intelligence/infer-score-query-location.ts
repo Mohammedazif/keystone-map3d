@@ -1,11 +1,14 @@
 export function inferScoreQueryLocation(location: string) {
   const parts = location
-    .split(',')
+    .split(",")
     .map((part) => part.trim())
     .filter(Boolean)
-    .filter((part) => !/^india$/i.test(part));
+    .filter(
+      (part) =>
+        !/^(india|usa|us|united states|uae|united arab emirates)$/i.test(part),
+    );
 
-  const district = parts[0] || location.trim() || 'Unknown';
+  const district = parts[0] || location.trim() || "Unknown";
   const state = parts.length > 1 ? parts[parts.length - 1] : district;
 
   return { state, district };

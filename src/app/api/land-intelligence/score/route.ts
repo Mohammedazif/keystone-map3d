@@ -340,6 +340,7 @@ export async function POST(request: NextRequest) {
       lookupRegulationForLocationAndUse({
         location: district ? `${district}, ${state}` : state,
         intendedUse: query.intendedUse || 'Residential',
+        market: query.market,
       }),
       GoogleMapsServerService.searchNearbyPlaces(coords, {
         includedTypes: TRANSIT_PLACE_TYPES,

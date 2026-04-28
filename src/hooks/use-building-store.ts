@@ -22,6 +22,7 @@ import { generateLShapes, generateUShapes, generateTShapes, generateHShapes, gen
 import { generateSiteUtilities, generateBuildingLayout, calculateUtilityReservationZones, generateSiteGates, getPlotOrientation } from '@/lib/generators/layout-generator';
 import { splitPolygon } from '@/lib/polygon-utils';
 import { db } from '@/lib/firebase';
+import { inferRegulationGeography } from '@/lib/geography';
 import { calculateVastuScore } from '@/lib/engines/vastu-engine';
 import { calculateGreenAnalysis } from '@/lib/engines/green-analysis-engine';
 import { ComplianceEngine } from '@/lib/engines/compliance-engine';
@@ -1394,6 +1395,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             sourcePlots: Plot[],
             selectedPlotId?: string | null,
         ) => {
+            const inferredGeography = inferRegulationGeography(
+                evaluateLandInput.location.trim(),
+            );
             const newProject = await get().actions.createProject(
                 evaluateLandInput.projectName.trim(),
                 evaluateLandInput.landSize,
@@ -1402,6 +1406,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 "",
                 [],
                 false,
+                {
+                    market: inferredGeography.market,
+                    countryCode: inferredGeography.countryCode,
+                    stateOrProvince: inferredGeography.stateOrProvince,
+                    city: inferredGeography.city,
+                    locationLabel: evaluateLandInput.location.trim(),
+                },
             );
 
             if (!newProject) {

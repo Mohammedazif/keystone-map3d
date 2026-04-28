@@ -401,7 +401,7 @@ export function EvaluateLandWorkspace() {
     isRunningScore,
     scoreError,
     scoreData,
-    bhuvanData,
+    landUseData,
     matchedRegulation,
     regulationMatch,
     buildVerdict,
@@ -1161,10 +1161,10 @@ export function EvaluateLandWorkspace() {
                           </div>
                           <div className="flex items-center justify-between gap-3 text-xs">
                             <span className="text-muted-foreground">
-                              Bhuvan land use
+                              Land use / cover
                             </span>
                             <span className="text-right font-semibold">
-                              {bhuvanData?.primaryLandUse || "Unavailable"}
+                              {landUseData?.primaryLandUse || "Unavailable"}
                             </span>
                           </div>
                           <div className="flex items-center justify-between gap-3 text-xs">

@@ -1,16 +1,5 @@
 import type { BuildingIntendedUse, LandZoningPreference, RegulationData } from "@/lib/types";
-
-export interface BhuvanLayerSummary {
-  layerLabel: string;
-  landUseType: string;
-}
-
-export interface BhuvanLandUseSummary {
-  primaryLandUse: string;
-  historicLandUseChange?: string;
-  stateCode: string;
-  layers: BhuvanLayerSummary[];
-}
+import type { LandUseSummary } from "@/lib/land-intelligence/land-use";
 
 export interface BuildabilityVerdict {
   status: "can-build" | "conditional" | "cannot-build";
@@ -58,7 +47,7 @@ function mapPreferenceToCategory(
   return "built-up";
 }
 
-function mapBhuvanToCategory(primaryLandUse: string): string {
+function mapLandUseToCategory(primaryLandUse: string): string {
   const value = normalizeText(primaryLandUse);
 
   if (includesAny(value, ["water", "river", "lake", "wetland", "reservoir", "drain"])) {
@@ -66,6 +55,9 @@ function mapBhuvanToCategory(primaryLandUse: string): string {
   }
   if (includesAny(value, ["forest", "mangrove", "protected", "eco", "sanctuary"])) {
     return "protected";
+  }
+  if (includesAny(value, ["shrub", "scrub", "grassland", "herbaceous"])) {
+    return "waste";
   }
   if (includesAny(value, ["industrial", "factory", "manufacturing"])) {
     return "industrial";
@@ -158,13 +150,13 @@ function canPotentiallyConvert(regulation: RegulationData | null) {
 export function evaluateBuildabilityVerdict({
   intendedUse,
   zoningPreference,
-  bhuvan,
+  landUse,
   regulation,
   regulationSource,
 }: {
   intendedUse: BuildingIntendedUse | string;
   zoningPreference: LandZoningPreference | string;
-  bhuvan: BhuvanLandUseSummary | null;
+  landUse: LandUseSummary | null;
   regulation: RegulationData | null;
   regulationSource?: string | null;
 }): BuildabilityVerdict {
@@ -172,7 +164,7 @@ export function evaluateBuildabilityVerdict({
   const signals: string[] = [];
   const intendedCategory = mapIntendedUseToCategory(intendedUse);
   const preferenceCategory = mapPreferenceToCategory(zoningPreference);
-  const bhuvanCategory = mapBhuvanToCategory(bhuvan?.primaryLandUse || "");
+  const landUseCategory = mapLandUseToCategory(landUse?.primaryLandUse || "");
   const regulationPermits = regulationAllowsUse(regulation, intendedUse);
   const regulationBlocked = regulationBlocksUse(regulation);
   const convertible = canPotentiallyConvert(regulation);
@@ -184,34 +176,38 @@ export function evaluateBuildabilityVerdict({
     regulationSource === "location-query";
   const hasExplicitZoningRule = Boolean(zoneDisplay);
 
-  signals.push(`Bhuvan land use: ${bhuvan?.primaryLandUse || "Unavailable"}`);
+  signals.push(
+    `${landUse?.sourceLabel || "Land use"}: ${landUse?.primaryLandUse || "Unavailable"}`,
+  );
   signals.push(`Matched zoning: ${zoneDisplay || "Unavailable"}`);
   if (conversionDisplay) signals.push(`Conversion status: ${conversionDisplay}`);
-  if (bhuvan?.historicLandUseChange) {
-    signals.push(`Historic change: ${bhuvan.historicLandUseChange}`);
+  if (landUse?.historicLandUseChange) {
+    signals.push(`Historic change: ${landUse.historicLandUseChange}`);
   }
   if (regulationSource) signals.push(`Rule source: ${regulationSource}`);
 
-  if (bhuvanCategory === "built-up") {
-    reasons.push("Bhuvan classifies the plot as built-up / urban land.");
-  } else if (bhuvanCategory === "agricultural") {
-    reasons.push("Bhuvan indicates agricultural land use, so direct development is risky without land-use conversion.");
-  } else if (bhuvanCategory === "waste") {
-    reasons.push("Bhuvan indicates wasteland / barren land, so additional land-use and site clearance checks are likely required.");
-  } else if (bhuvanCategory === "industrial") {
-    reasons.push("Bhuvan indicates industrial land use, so non-industrial development may require conversion or a different zoning basis.");
-  } else if (bhuvanCategory === "water" || bhuvanCategory === "protected") {
-    reasons.push("Bhuvan indicates a protected or water-related land class, which is a strong blocker for normal construction.");
+  const landUseSourceLabel = landUse?.sourceLabel || "Land use data";
+
+  if (landUseCategory === "built-up") {
+    reasons.push(`${landUseSourceLabel} classifies the plot as built-up / urban land.`);
+  } else if (landUseCategory === "agricultural") {
+    reasons.push(`${landUseSourceLabel} indicates agricultural land use, so direct development is risky without land-use conversion.`);
+  } else if (landUseCategory === "waste") {
+    reasons.push(`${landUseSourceLabel} indicates shrub, barren, or wasteland-like land cover, so additional land-use and site clearance checks are likely required.`);
+  } else if (landUseCategory === "industrial") {
+    reasons.push(`${landUseSourceLabel} indicates industrial land use, so non-industrial development may require conversion or a different zoning basis.`);
+  } else if (landUseCategory === "water" || landUseCategory === "protected") {
+    reasons.push(`${landUseSourceLabel} indicates a protected, wetland, or water-related land class, which is a strong blocker for normal construction.`);
   } else {
-    reasons.push("Bhuvan land use could not be mapped confidently, so this verdict needs manual zoning confirmation.");
+    reasons.push(`${landUseSourceLabel} could not be mapped confidently, so this verdict needs manual zoning confirmation.`);
   }
 
-  if (preferenceCategory === "built-up" && bhuvanCategory === "built-up") {
-    reasons.push("The chosen zoning preference aligns with the current Bhuvan classification.");
-  } else if (preferenceCategory === bhuvanCategory) {
-    reasons.push("The chosen zoning preference aligns with the current Bhuvan land-use category.");
+  if (preferenceCategory === "built-up" && landUseCategory === "built-up") {
+    reasons.push("The chosen zoning preference aligns with the current land-use classification.");
+  } else if (preferenceCategory === landUseCategory) {
+    reasons.push("The chosen zoning preference aligns with the current land-use category.");
   } else {
-    reasons.push("The chosen zoning preference does not fully align with the current Bhuvan classification.");
+    reasons.push("The chosen zoning preference does not fully align with the current land-use classification.");
   }
 
   if (regulationPermits) {
@@ -228,12 +224,12 @@ export function evaluateBuildabilityVerdict({
     reasons.push("The verdict is backed by a location-matched regulation record.");
   }
 
-  const hardBlock = regulationBlocked || bhuvanCategory === "water" || bhuvanCategory === "protected";
+  const hardBlock = regulationBlocked || landUseCategory === "water" || landUseCategory === "protected";
   const mismatchedLandUse =
-    !["unknown", "built-up"].includes(bhuvanCategory) &&
+    !["unknown", "built-up"].includes(landUseCategory) &&
     !(
-      (intendedCategory === "industrial" && bhuvanCategory === "industrial") ||
-      preferenceCategory === bhuvanCategory
+      (intendedCategory === "industrial" && landUseCategory === "industrial") ||
+      preferenceCategory === landUseCategory
     );
 
   if (hardBlock) {
@@ -251,13 +247,13 @@ export function evaluateBuildabilityVerdict({
     };
   }
 
-  if (!bhuvan || !regulation || bhuvanCategory === "unknown") {
+  if (!landUse || !regulation || landUseCategory === "unknown") {
     return {
       status: "conditional",
       title: "Conditional / Manual Review",
       summary: "The plot cannot be cleared automatically because one or more zoning signals are missing or unclear.",
       suggestedAction:
-        "Review the Bhuvan classification and attach a clearer zoning rule before treating this land as buildable.",
+        "Review the land-use classification and attach a clearer zoning rule before treating this land as buildable.",
       confidence: "low",
       confidenceSummary:
         "Low confidence because one or more core inputs are missing, fallback-only, or not classifiable.",
@@ -269,9 +265,9 @@ export function evaluateBuildabilityVerdict({
   if (
     regulationPermits &&
     !mismatchedLandUse &&
-    (bhuvanCategory === "built-up" ||
-      intendedCategory === bhuvanCategory ||
-      preferenceCategory === bhuvanCategory)
+    (landUseCategory === "built-up" ||
+      intendedCategory === landUseCategory ||
+      preferenceCategory === landUseCategory)
   ) {
     if (isNationalFallback || !hasExplicitZoningRule) {
       return {
@@ -292,18 +288,18 @@ export function evaluateBuildabilityVerdict({
     return {
       status: "can-build",
       title: "Can Build",
-      summary: "The intended use is supported by the current Bhuvan land-use signal and the matched zoning rule.",
+      summary: "The intended use is supported by the current land-use signal and the matched zoning rule.",
       suggestedAction:
         "Proceed with the plot as buildable and keep this result as the pre-project zoning check.",
       confidence: "high",
       confidenceSummary:
-        "High confidence because both Bhuvan land use and a location-matched zoning rule support the selected use.",
+        "High confidence because both the current land-use signal and a location-matched zoning rule support the selected use.",
       reasons,
       signals,
     };
   }
 
-  if (convertible || mismatchedLandUse || preferenceCategory !== bhuvanCategory) {
+  if (convertible || mismatchedLandUse || preferenceCategory !== landUseCategory) {
     return {
       status: "conditional",
       title: "Conditional / CLU Required",
