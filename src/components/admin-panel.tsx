@@ -78,6 +78,49 @@ const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type' | 'marke
         aviation_clearance: { desc: "Aviation clearance (if required)", unit: "m", value: "", exampleStr: "e.g. 0" },
         shadow_skyline_control: { desc: "Shadow / skyline control", unit: "", value: "", exampleStr: "e.g. 0" },
     },
+    highrise: {
+        highrise_threshold: { desc: "Height threshold for high-rise classification", unit: "m", value: "", exampleStr: "e.g. 15" },
+        front_setback_upto_15m: { desc: "Front setback for bldg up to 15m", unit: "m", value: "", exampleStr: "e.g. 3" },
+        front_setback_15_to_24m: { desc: "Front setback for bldg 15-24m", unit: "m", value: "", exampleStr: "e.g. 6" },
+        front_setback_24_to_45m: { desc: "Front setback for bldg 24-45m", unit: "m", value: "", exampleStr: "e.g. 9" },
+        front_setback_above_45m: { desc: "Front setback for bldg >45m", unit: "m", value: "", exampleStr: "e.g. 12" },
+        rear_setback_upto_15m: { desc: "Rear setback for bldg up to 15m", unit: "m", value: "", exampleStr: "e.g. 3" },
+        rear_setback_15_to_24m: { desc: "Rear setback for bldg 15-24m", unit: "m", value: "", exampleStr: "e.g. 5" },
+        rear_setback_24_to_45m: { desc: "Rear setback for bldg 24-45m", unit: "m", value: "", exampleStr: "e.g. 8" },
+        rear_setback_above_45m: { desc: "Rear setback for bldg >45m", unit: "m", value: "", exampleStr: "e.g. 10" },
+        side_setback_upto_15m: { desc: "Side setback for bldg up to 15m", unit: "m", value: "", exampleStr: "e.g. 3" },
+        side_setback_15_to_24m: { desc: "Side setback for bldg 15-24m", unit: "m", value: "", exampleStr: "e.g. 5" },
+        side_setback_24_to_45m: { desc: "Side setback for bldg 24-45m", unit: "m", value: "", exampleStr: "e.g. 8" },
+        side_setback_above_45m: { desc: "Side setback for bldg >45m", unit: "m", value: "", exampleStr: "e.g. 10" },
+        coverage_upto_15m: { desc: "Ground coverage for bldg up to 15m", unit: "%", value: "", exampleStr: "e.g. 60" },
+        coverage_15_to_24m: { desc: "Ground coverage for bldg 15-24m", unit: "%", value: "", exampleStr: "e.g. 50" },
+        coverage_24_to_45m: { desc: "Ground coverage for bldg 24-45m", unit: "%", value: "", exampleStr: "e.g. 40" },
+        coverage_above_45m: { desc: "Ground coverage for bldg >45m", unit: "%", value: "", exampleStr: "e.g. 30" },
+        far_upto_15m: { desc: "FAR for bldg up to 15m", unit: "", value: "", exampleStr: "e.g. 1.5" },
+        far_15_to_24m: { desc: "FAR for bldg 15-24m", unit: "", value: "", exampleStr: "e.g. 2.0" },
+        far_24_to_45m: { desc: "FAR for bldg 24-45m", unit: "", value: "", exampleStr: "e.g. 2.5" },
+        far_above_45m: { desc: "FAR for bldg >45m", unit: "", value: "", exampleStr: "e.g. 3.0" },
+        min_plot_area_highrise: { desc: "Minimum plot area for high-rise", unit: "sqm", value: "", exampleStr: "e.g. 2000" },
+        min_road_width_highrise: { desc: "Minimum road width for high-rise", unit: "m", value: "", exampleStr: "e.g. 12" },
+        max_floors: { desc: "Maximum number of floors", unit: "", value: "", exampleStr: "e.g. 20" },
+        max_building_height: { desc: "Absolute maximum building height", unit: "m", value: "", exampleStr: "e.g. 60" },
+        stilt_floor_height: { desc: "Height of stilt / parking floor", unit: "m", value: "", exampleStr: "e.g. 3.5" },
+        floor_to_floor_height: { desc: "Standard floor-to-floor height", unit: "m", value: "", exampleStr: "e.g. 3.0" },
+        basement_depth: { desc: "Maximum basement depth", unit: "m", value: "", exampleStr: "e.g. 6" },
+        basement_levels_allowed: { desc: "Number of basement levels allowed", unit: "", value: "", exampleStr: "e.g. 2" },
+        podium_height: { desc: "Maximum podium height", unit: "m", value: "", exampleStr: "e.g. 15" },
+        podium_coverage: { desc: "Coverage at podium level", unit: "%", value: "", exampleStr: "e.g. 80" },
+        setback_above_podium: { desc: "Additional setback above podium", unit: "m", value: "", exampleStr: "e.g. 3" },
+        tower_coverage_above_podium: { desc: "Tower coverage above podium level", unit: "%", value: "", exampleStr: "e.g. 40" },
+        green_building_mandate_height: { desc: "Height for mandatory green certification", unit: "m", value: "", exampleStr: "e.g. 20" },
+        structural_audit_threshold: { desc: "Height for mandatory structural audit", unit: "m", value: "", exampleStr: "e.g. 15" },
+        helipad_required_height: { desc: "Height above which helipad is required", unit: "m", value: "", exampleStr: "e.g. 60" },
+        refuge_floor_interval: { desc: "Refuge floor every N floors", unit: "", value: "", exampleStr: "e.g. 15" },
+        refuge_floor_area: { desc: "Minimum area per refuge floor", unit: "sqm", value: "", exampleStr: "e.g. 15" },
+        pressurized_staircase_threshold: { desc: "Height for pressurized staircase", unit: "m", value: "", exampleStr: "e.g. 15" },
+        fire_lift_threshold: { desc: "Height for mandatory fire lift", unit: "m", value: "", exampleStr: "e.g. 15" },
+        fire_command_center_threshold: { desc: "Height for fire command center", unit: "m", value: "", exampleStr: "e.g. 15" },
+    },
     facilities: {
         parking: { desc: "Parking requirements per unit", unit: "spaces/unit", value: "", exampleStr: "e.g. 1" },
         open_space: { desc: "Required open space per plot", unit: "%", value: "", exampleStr: "e.g. 15" },
@@ -438,7 +481,7 @@ export function AdminPanel() {
                         Object.assign(draft, inferRegulationGeography(extractedData.location!));
                         
                         // Deep merge properties
-                        const categories = ['geometry', 'facilities', 'sustainability', 'safety_and_services', 'administration'];
+                        const categories = ['geometry', 'highrise', 'facilities', 'sustainability', 'safety_and_services', 'administration'];
                         categories.forEach(cat => {
                             if ((extractedData as any)[cat]) {
                                 draft[cat] = { ...draft[cat], ...(extractedData as any)[cat] };
@@ -479,7 +522,7 @@ export function AdminPanel() {
 
     const handleSaveGreenRegulation = async (data: GreenRegulationData) => {
         try {
-            const id = data.id || `${data.certificationType}-${data.name.replace(/\s+/g, '-')}`.toLowerCase();
+            const id = data.id || `${data.certificationType}-${data.name.replace(/[\s/]+/g, '-')}`.toLowerCase();
             const docRef = doc(greenRegulationsCollection, id);
 
             const dataToSave = {
@@ -502,7 +545,7 @@ export function AdminPanel() {
 
     const handleSaveVastuRegulation = async (data: VastuRegulationData) => {
         try {
-            const id = data.id || data.name.replace(/\s+/g, '-').toLowerCase();
+            const id = data.id || data.name.replace(/[\s/]+/g, '-').toLowerCase();
             const docRef = doc(vastuRegulationsCollection, id);
 
             const dataToSave = {
@@ -541,6 +584,7 @@ export function AdminPanel() {
 
     const categories: { key: keyof typeof DEFAULT_REGULATION_DATA, icon: React.ElementType }[] = [
         { key: 'geometry', icon: Scaling },
+        { key: 'highrise', icon: ArrowUpDown },
         { key: 'facilities', icon: Building },
         { key: 'sustainability', icon: Droplets },
         { key: 'safety_and_services', icon: ShieldCheck },
@@ -644,7 +688,7 @@ export function AdminPanel() {
                                                     <AccordionContent className="pt-2 pb-6">
                                                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pt-4">
                                                             {locationRegulations.map(reg => {
-                                                                const docId = `${reg.location}-${reg.type}`.replace(/\s+/g, '-');
+                                                                const docId = `${reg.location}-${reg.type}`.replace(/[\s/]+/g, '-');
                                                                 const isDeleting = deletingId === docId;
                                                                 return (
                                                                     <Card

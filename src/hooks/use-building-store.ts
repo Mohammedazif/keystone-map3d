@@ -4,7 +4,7 @@
 import { create } from 'zustand';
 import type { Feature, Polygon, MultiPolygon, Point, LineString, FeatureCollection } from 'geojson';
 import * as turf from '@turf/turf';
-import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, VastuRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary, type EvaluateLandInput } from '@/lib/types';
+import { BuildingIntendedUse, type Plot, type Building, type GreenArea, type ParkingArea, type Floor, type Project, type BuildableArea, type SelectableObjectType, AiScenario, type Label, RegulationData, GenerateMassingInput, AiMassingScenario, GenerateMassingOutput, GenerateSiteLayoutInput, GenerateSiteLayoutOutput, AiSiteLayout, AiMassingGeneratedObject, AiZone, GenerateZonesOutput, DesignOption, GreenRegulationData, VastuRegulationData, DevelopmentStats, FeasibilityParams, UtilityType, UtilityArea, ParkingType, Unit, Core, type RenderingBuildingInfo, type RenderingPlotInfo, type RenderingProjectSummary, type GenerateRenderingOutput, type AdditiveScoreSummary, type EvaluateLandInput, getPrimarySetback } from '@/lib/types';
 import { calculateDevelopmentStats, DEFAULT_FEASIBILITY_PARAMS } from '@/lib/development-calc';
 import { calculateParkingCapacity } from '@/lib/parking-calc';
 import { produce } from 'immer';
@@ -668,7 +668,7 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
             plotToUpdate.regulation = defaultRegulation || null;
 
             // Extract regulation constraints
-            plotToUpdate.setback = defaultRegulation?.geometry?.setback?.value ?? 4;
+            plotToUpdate.setback = getPrimarySetback(defaultRegulation) ?? 4;
             plotToUpdate.maxBuildingHeight = defaultRegulation?.geometry?.max_height?.value;
             plotToUpdate.far = defaultRegulation?.geometry?.floor_area_ratio?.value;
             plotToUpdate.maxCoverage = defaultRegulation?.geometry?.max_ground_coverage?.value;
@@ -4854,10 +4854,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         plot.regulation = selectedReg;
 
                         // Update constraints
-                        plot.setback = selectedReg.geometry?.setback?.value
-                            || selectedReg.geometry?.min_setback?.value
-                            || selectedReg.geometry?.front_setback?.value
-                            || 4; // Improved setback fetching
+                        plot.setback = getPrimarySetback(selectedReg) ?? 4;
 
                         plot.maxBuildingHeight = selectedReg.geometry?.max_height?.value;
                         plot.far = selectedReg.geometry?.floor_area_ratio?.value;
@@ -4877,10 +4874,7 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                     plot.regulation = selectedReg;
 
                     // Update constraints
-                    plot.setback = selectedReg.geometry?.setback?.value
-                        || selectedReg.geometry?.min_setback?.value
-                        || selectedReg.geometry?.front_setback?.value
-                        || 4; // Improved fallback logic here too
+                    plot.setback = getPrimarySetback(selectedReg) ?? 4;
 
                     plot.maxBuildingHeight = selectedReg.geometry?.max_height?.value;
                     plot.far = selectedReg.geometry?.floor_area_ratio?.value;
