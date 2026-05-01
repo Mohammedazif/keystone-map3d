@@ -253,11 +253,11 @@ export function useEvaluateLandAnalysis({
 
     // Build initial step list — US gets parcel step, non-US gets Bhuvan
     const baseSteps = [
-      { id: 'market', label: isUS ? 'Fetching US market data (Census / BLS)' : 'Fetching census & FDI data', status: 'loading' as const },
+      { id: 'market', label: isUS ? 'Fetching US market data' : 'Fetching census & FDI data', status: 'loading' as const },
       { id: 'connectivity', label: 'Checking location & connectivity', status: 'pending' as const },
       { id: 'legal', label: isUS ? 'Running legal & zoning checks' : 'Matching regulations & zoning', status: 'pending' as const },
       ...(isUS && (Boolean(plotForAnalysis) || Boolean(pointTarget))
-        ? [{ id: 'parcel', label: 'Fetching parcel data (ArcGIS)', status: 'pending' as const }]
+        ? [{ id: 'parcel', label: 'Fetching parcel data', status: 'pending' as const }]
         : []),
       { id: 'score', label: 'Computing developability score', status: 'pending' as const },
       { id: 'ai', label: 'Generating AI investment summary', status: 'pending' as const },
