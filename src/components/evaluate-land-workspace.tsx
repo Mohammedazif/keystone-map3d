@@ -793,6 +793,37 @@ export function EvaluateLandWorkspace() {
                             )}
                           </div>
                           <FormMessage />
+                          <div className="flex items-center gap-1.5 mt-1.5">
+                            <span className="text-[10px] text-muted-foreground shrink-0">US Cities:</span>
+                            {([
+                              { label: 'Austin, TX', fullName: 'Austin, Texas, United States', center: [-97.7431, 30.2672] as [number, number] },
+                              { label: 'Seattle, WA', fullName: 'Seattle, Washington, United States', center: [-122.3321, 47.6062] as [number, number] },
+                              { label: 'Phoenix, AZ', fullName: 'Phoenix, Arizona, United States', center: [-112.0740, 33.4484] as [number, number] },
+                            ]).map((city) => (
+                              <button
+                                key={city.label}
+                                type="button"
+                                className={cn(
+                                  "px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors",
+                                  field.value === city.fullName
+                                    ? "bg-blue-500/20 border-blue-500/40 text-blue-400"
+                                    : "bg-secondary/40 border-border/40 text-muted-foreground hover:bg-secondary/80 hover:text-foreground"
+                                )}
+                                onClick={() => {
+                                  setValue('location', city.fullName, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+                                  setIsLocationManuallyEdited(false);
+                                  setLocationSuggestions([]);
+                                  setShowLocationDropdown(false);
+                                  actions.setMapLocation(city.fullName);
+                                  geocodedCoordsRef.current = city.center;
+                                  useBuildingStore.setState({ mapCommand: { type: 'flyTo', center: city.center } });
+                                  window.dispatchEvent(new CustomEvent('flyTo', { detail: { center: city.center } }));
+                                }}
+                              >
+                                {city.label}
+                              </button>
+                            ))}
+                          </div>
                         </FormItem>
                       )}
                     />
