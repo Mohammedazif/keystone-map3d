@@ -22,6 +22,7 @@ import { generateLShapes, generateUShapes, generateTShapes, generateHShapes, gen
 import { generateSiteUtilities, generateBuildingLayout, calculateUtilityReservationZones, generateSiteGates, getPlotOrientation } from '@/lib/generators/layout-generator';
 import { splitPolygon } from '@/lib/polygon-utils';
 import { db } from '@/lib/firebase';
+import { inferRegulationGeography } from '@/lib/geography';
 import { calculateVastuScore } from '@/lib/engines/vastu-engine';
 import { calculateGreenAnalysis } from '@/lib/engines/green-analysis-engine';
 import { ComplianceEngine } from '@/lib/engines/compliance-engine';
@@ -29,6 +30,7 @@ import ultimateVastuChecklist from '@/data/ultimate-vastu-checklist.json';
 import { collection, doc, getDocs, setDoc, deleteDoc, writeBatch, getDoc, query, where } from 'firebase/firestore';
 import useAuthStore from './use-auth-store';
 import { getRegulationCollectionNameForMarket, shouldUseNationalIndiaFallback } from '@/lib/regulation-collections';
+import { getAvailableRegulationsForLocation } from '@/lib/regulation-lookup';
 
 export type DrawingObjectType = 'Plot' | 'Zone' | 'Building' | 'Road' | 'Move' | 'Select';
 
@@ -555,11 +557,13 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
         ].filter((value, index, values): value is string => !!value && values.indexOf(value) === index);
 
         for (const candidate of preferredProjectLocations) {
-            const q = query(regulationsRef, where('location', '==', candidate));
-            const querySnapshot = await getDocs(q);
-            if (!querySnapshot.empty) {
+            const regulations = await getAvailableRegulationsForLocation({
+                location: candidate,
+                market: activeProject?.market,
+            });
+            if (regulations.length > 0) {
                 locationName = candidate;
-                fetchedRegulations = querySnapshot.docs.map(doc => doc.data() as RegulationData);
+                fetchedRegulations = regulations;
                 break;
             }
         }
@@ -576,12 +580,13 @@ async function fetchRegulationsForPlot(plotId: string, centroid: Feature<Point>)
             locationName = placeFeature?.text || regionFeature?.text || locationName;
 
             if (locationName) {
-                const q = query(regulationsRef, where('location', '==', locationName));
-
                 console.log(`[Store] Fetching local regulations for ${locationName}...`);
-                const querySnapshot = await getDocs(q);
-                if (!querySnapshot.empty) {
-                    fetchedRegulations = querySnapshot.docs.map(doc => doc.data() as RegulationData);
+                const regulations = await getAvailableRegulationsForLocation({
+                    location: locationName,
+                    market: activeProject?.market,
+                });
+                if (regulations.length > 0) {
+                    fetchedRegulations = regulations;
                 } else if (shouldUseNationalIndiaFallback(activeProject?.market)) {
                     // Fallback to National (NBC) if no local regulations found
                     console.log(`[Store] No local regulations for ${locationName}, fetching NBC fallback...`);
@@ -1394,6 +1399,9 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
             sourcePlots: Plot[],
             selectedPlotId?: string | null,
         ) => {
+            const inferredGeography = inferRegulationGeography(
+                evaluateLandInput.location.trim(),
+            );
             const newProject = await get().actions.createProject(
                 evaluateLandInput.projectName.trim(),
                 evaluateLandInput.landSize,
@@ -1402,6 +1410,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                 "",
                 [],
                 false,
+                {
+                    market: inferredGeography.market,
+                    countryCode: inferredGeography.countryCode,
+                    stateOrProvince: inferredGeography.stateOrProvince,
+                    city: inferredGeography.city,
+                    locationLabel: evaluateLandInput.location.trim(),
+                },
             );
 
             if (!newProject) {

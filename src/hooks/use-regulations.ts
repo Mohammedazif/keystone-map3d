@@ -108,6 +108,7 @@ export function useRegulations(project: Project | null): UseRegulationsReturn {
         project?.location,
         project?.intendedUse,
         project?.regulationId, // Add specific ID dependency
+        project?.market,
         project?.vastuCompliant,
         // Use stringified certifications to prevent infinite loops on array reference change
         JSON.stringify(project?.greenCertification)

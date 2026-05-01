@@ -13,6 +13,7 @@
  */
 
 import { getIndianStateCode } from '@/lib/bhuvan-utils';
+import type { LandUseSummary } from "@/lib/land-intelligence/land-use";
 
 export interface LandUseResult {
   layerName: string;
@@ -26,14 +27,11 @@ export interface LandUseResult {
   source: string;
 }
 
-export interface BhuvanLandUseReport {
+export interface BhuvanLandUseReport extends LandUseSummary {
   coordinates: [number, number];
   location: string;
   stateCode: string;
   layers: LandUseResult[];
-  primaryLandUse: string;
-  historicLandUseChange?: string;
-  source: string;
 }
 
 // ── Layer configuration ───────────────────────────────────────────────────────
@@ -180,10 +178,13 @@ export const BhuvanLandUseService = {
       coordinates,
       location,
       stateCode,
+      countryCode: "IN",
+      market: "India",
       layers: results,
       primaryLandUse: primary?.landUseType || 'Unknown',
       historicLandUseChange: historicChange,
       source: 'Bhuvan ISRO (WMS GetFeatureInfo)',
+      sourceLabel: "Bhuvan ISRO",
     };
   },
 };

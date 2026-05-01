@@ -1201,6 +1201,8 @@ export interface LandIntelligenceQuery {
   district?: string;                   // Sub-district/area
   landSizeSqm?: number;               // Plot area in sqm
   intendedUse?: BuildingIntendedUse;
+  market?: GeographyMarket;
+  countryCode?: CountryCode;
   underwriting?: Pick<UnderwritingData, 'approvals' | 'competitors'>;
   locationAmenities?: any[];
   targetPriceRange?: { min: number; max: number }; // INR

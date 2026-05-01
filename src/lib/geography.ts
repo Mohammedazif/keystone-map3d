@@ -130,6 +130,13 @@ export const ALL_REGULATION_LOCATION_OPTIONS: GeographyLocationOption[] = [
   ...US_PILOT_REGULATION_LOCATIONS,
 ];
 
+function normalizeLocationFragment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 export function getLocationOptionsForMarket(
   market: GeographyMarket,
   {
@@ -177,9 +184,30 @@ export function inferRegulationGeography(
     | 'codeFamily'
   >
 > {
-  const normalized = location.trim().toLowerCase();
+  const normalized = normalizeLocationFragment(location);
+  const parts = normalized
+    .split(",")
+    .map((part) => normalizeLocationFragment(part))
+    .filter(Boolean)
+    .filter((part) => !/^(india|usa|us|uae|united states|united arab emirates)$/.test(part));
   const match = ALL_REGULATION_LOCATION_OPTIONS.find(
-    (option) => option.location.toLowerCase() === normalized,
+    (option) => {
+      const optionLocation = normalizeLocationFragment(option.location);
+      const optionLabel = normalizeLocationFragment(option.label);
+      const optionCity = normalizeLocationFragment(option.city || "");
+      const optionState = normalizeLocationFragment(option.stateOrProvince || "");
+
+      return (
+        optionLocation === normalized ||
+        optionLabel === normalized ||
+        parts.includes(optionLocation) ||
+        parts.includes(optionLabel) ||
+        (optionCity && parts.includes(optionCity)) ||
+        (optionState && parts.includes(optionState)) ||
+        normalized.includes(optionLabel) ||
+        normalized.includes(optionLocation)
+      );
+    },
   );
 
   if (!match) return {};

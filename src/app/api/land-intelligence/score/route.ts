@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { DataGovService } from '@/services/land-intelligence/data-gov-service';
 import { EarthEngineService } from '@/services/land-intelligence/earth-engine-service';
+import { EnvironmentalService } from '@/services/land-intelligence/environmental-service';
 import { GoogleMapsServerService } from '@/services/land-intelligence/google-maps-server-service';
 import { PopulationMigrationService } from '@/services/land-intelligence/population-migration-service';
 import { ProposedInfraService } from '@/services/land-intelligence/proposed-infra-service';
+import { TransportationService } from '@/services/land-intelligence/transportation-service';
 import { lookupRegulationForLocationAndUse } from '@/lib/regulation-lookup';
 import { getUSScoreInputs, isUSCoordinates } from '@/services/us/us-score-data-service';
 import { evaluateDevelopability, toDevelopabilityScore } from '@/lib/scoring/developability-engine';
 import type { ItemResult } from '@/lib/scoring/schema-engine';
+import type { EnvironmentalScreeningReport } from '@/lib/land-intelligence/environmental';
+import type { TransportationScreeningReport } from '@/lib/land-intelligence/transportation';
 import type {
   CensusData,
   LandIntelligenceQuery,
@@ -310,6 +314,10 @@ export async function POST(request: NextRequest) {
     const coords: Coordinates = query.coordinates || DEFAULT_COORDS;
     const state = query.location;
     const district = query.district;
+    const storedAmenities: AmenityRecord[] = Array.isArray(query.locationAmenities) ? query.locationAmenities : [];
+    const roadAccessSides = Array.isArray(query.roadAccessSides)
+      ? query.roadAccessSides.filter((side): side is string => typeof side === 'string' && side.length > 0)
+      : [];
 
     const isUS = isUSCoordinates(coords[0], coords[1]);
     console.log(`[Land Intel] Computing Developability Score for ${state}${district ? ` / ${district}` : ''} [${isUS ? 'US' : 'Global'}]`);
@@ -352,6 +360,7 @@ export async function POST(request: NextRequest) {
       airportData,
       roadSnapData,
       proposedInfraData,
+      environmentalScreeningData,
     ] = await Promise.allSettled([
       DataGovService.getCensusData(state, district),
       DataGovService.getFDIData(state),
@@ -360,6 +369,7 @@ export async function POST(request: NextRequest) {
       lookupRegulationForLocationAndUse({
         location: district ? `${district}, ${state}` : state,
         intendedUse: query.intendedUse || 'Residential',
+        market: query.market,
       }),
       GoogleMapsServerService.searchNearbyPlaces(coords, {
         includedTypes: TRANSIT_PLACE_TYPES,
@@ -396,6 +406,14 @@ export async function POST(request: NextRequest) {
         state,
         district,
       }),
+      query.market === 'USA' || query.countryCode === 'US'
+        ? EnvironmentalService.getEnvironmentalScreening({
+            coordinates: coords,
+            location: district ? `${district}, ${state}` : state,
+            market: query.market,
+            countryCode: query.countryCode,
+          })
+        : Promise.resolve(null),
     ]);
 
     // Several current reference datasets are still partial-coverage inside the project.
@@ -416,6 +434,11 @@ export async function POST(request: NextRequest) {
       proposedInfraData.status === 'fulfilled'
         ? proposedInfraData.value
         : EMPTY_PROPOSED_INFRA_SIGNAL;
+    const environmentalScreening: EnvironmentalScreeningReport | null =
+      environmentalScreeningData.status === 'fulfilled'
+        ? environmentalScreeningData.value
+        : null;
+    let transportationScreening: TransportationScreeningReport | null = null;
 
     const usAiSummary = await usAiSummaryPromise;
 
@@ -462,10 +485,6 @@ export async function POST(request: NextRequest) {
     }
 
     const underwriting = query.underwriting;
-    const storedAmenities: AmenityRecord[] = Array.isArray(query.locationAmenities) ? query.locationAmenities : [];
-    const roadAccessSides = Array.isArray(query.roadAccessSides)
-      ? query.roadAccessSides.filter((side): side is string => typeof side === 'string' && side.length > 0)
-      : [];
 
     const results: Record<string, ItemResult | undefined> = {};
 
@@ -622,15 +641,50 @@ export async function POST(request: NextRequest) {
                 ? 2
                 : 1
         : 0);
+    if (query.market === 'USA' || query.countryCode === 'US') {
+      try {
+        transportationScreening =
+          await TransportationService.getTransportationScreening({
+            coordinates: coords,
+            location: district ? `${district}, ${state}` : state,
+            market: query.market,
+            countryCode: query.countryCode,
+            roadAccessSides,
+            landSizeSqm: query.landSizeSqm,
+            intendedUse: query.intendedUse,
+            nearestTransitDistanceMeters: nearestTransit,
+            transitCountWithin5Km: transitPlaces.length,
+            transitSampleNames: transitPlaces.map((place) => place.name).slice(0, 5),
+            centroidRoadDistanceMeters: centroidRoadDistance,
+            boundaryRoadCoverageRatio: round(boundaryCoverageRatio, 2),
+            roadWidthMeters: roadWidth,
+            frontageWidthMeters: frontageWidth,
+          });
+      } catch (error) {
+        console.warn('[LandIntel] Transportation fetch issue:', error);
+      }
+    }
+
+    const transportationAccessPenalty =
+      transportationScreening?.accessManagement.status === 'high'
+        ? 8
+        : transportationScreening?.accessManagement.status === 'moderate'
+          ? 4
+          : 0;
     if (frontageSignalScore > 0) {
       results['LC4'] = {
-        score: Math.min(40, frontageSignalScore),
-        status: frontageSignalScore >= 22,
+        score: Math.max(6, Math.min(40, frontageSignalScore - transportationAccessPenalty)),
+        status:
+          frontageSignalScore - transportationAccessPenalty >= 22 &&
+          transportationScreening?.accessManagement.status !== 'high',
         value: {
           boundaryCoverageRatio: round(boundaryCoverageRatio, 2),
           roadAccessSides,
           roadWidth,
           frontageWidth,
+          tiaLikelihood: transportationScreening?.tia.likelihood,
+          accessRisk: transportationScreening?.accessManagement.status,
+          nearbyWorkZones: transportationScreening?.nearbyWorkZones.countWithin1Km,
         },
       };
     }
@@ -992,6 +1046,8 @@ export async function POST(request: NextRequest) {
         } : null,
         aiSummary: usAiSummary,
       } : null,
+      environmentalScreening,
+      transportationScreening,
       populationMigration: (!isUS ? populationMigration : null) as PopulationMigrationResponse | null,
       nearbyAmenities,
       dataSources: {
@@ -1034,6 +1090,17 @@ export async function POST(request: NextRequest) {
         proposedInfrastructure: isUS
           ? { count: usInputs?.permitActivityValue.totalUnits ?? 0, available: usInputs !== null, source: 'US Census BPS' }
           : { count: proposedInfra.count, available: proposedInfra.available },
+        environmental: {
+          count: environmentalScreening
+            ? environmentalScreening.airQuality.facilityCount +
+              environmentalScreening.waterQuality.facilityCount
+            : 0,
+          available: environmentalScreening !== null,
+        },
+        transportation: {
+          count: transportationScreening?.nearbyWorkZones.countWithin5Km || 0,
+          available: transportationScreening !== null,
+        },
       },
     });
   } catch (error: any) {

@@ -16,11 +16,16 @@ import {
 } from "lucide-react";
 
 import { useBuildingStore, useProjectData, useSelectedPlot } from "@/hooks/use-building-store";
+import { inferRegulationGeography } from "@/lib/geography";
+import type { EnvironmentalScreeningReport } from "@/lib/land-intelligence/environmental";
 import { inferScoreQueryLocation } from "@/lib/land-intelligence/infer-score-query-location";
+import type { LandUseSummary } from "@/lib/land-intelligence/land-use";
+import type { TransportationScreeningReport } from "@/lib/land-intelligence/transportation";
 import type { DevelopabilityScore, PopulationMigrationAnalysis } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useRegulations } from "@/hooks/use-regulations";
 import { PopulationMigrationCard } from "./population-migration-card";
+import { TransportationScreeningCard } from "./transportation-screening-card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
@@ -28,6 +33,8 @@ import { DevelopabilityScoreOverview } from "./developability-score-overview";
 
 interface ScoreResult {
   score: DevelopabilityScore;
+  environmentalScreening: EnvironmentalScreeningReport | null;
+  transportationScreening: TransportationScreeningReport | null;
   populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
@@ -65,21 +72,9 @@ interface ScoreResult {
     googlePlaces: { count: number; available: boolean };
     googleRoads: { count: number; available: boolean };
     proposedInfrastructure: { count: number; available: boolean };
+    environmental: { count: number; available: boolean };
+    transportation: { count: number; available: boolean };
   };
-}
-
-interface BhuvanLayer {
-  layerLabel: string;
-  landUseType: string;
-  featureId: string;
-  properties: Record<string, unknown>;
-}
-
-interface BhuvanReport {
-  primaryLandUse: string;
-  historicLandUseChange?: string;
-  layers: BhuvanLayer[];
-  stateCode: string;
 }
 
 function ScoreGauge({ score, max, rating }: { score: number; max: number; rating: string }) {
@@ -128,6 +123,12 @@ function ScoreGauge({ score, max, rating }: { score: number; max: number; rating
       </Badge>
     </div>
   );
+}
+
+function getLandUseSourceTitle(landUseData: LandUseSummary | null) {
+  return landUseData?.sourceLabel
+    ? `Land Use / Cover (${landUseData.sourceLabel})`
+    : "Land Use / Cover";
 }
 
 function InfoCard({
@@ -207,7 +208,7 @@ export function LandIntelligencePanel() {
   );
   const [loading, setLoading] = useState(false);
   const [scoreData, setScoreData] = useState<ScoreResult | null>(null);
-  const [bhuvanData, setBhuvanData] = useState<BhuvanReport | null>(null);
+  const [landUseData, setLandUseData] = useState<LandUseSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const latestRequestRef = useRef(0);
   const autoRunRequestKeyRef = useRef<string | null>(null);
@@ -303,6 +304,7 @@ export function LandIntelligencePanel() {
     }
 
     const { state, district } = inferScoreQueryLocation(locationName);
+    const geography = inferRegulationGeography(locationName);
     const plotForAnalysis = getPlotForAnalysis();
     const requestId = latestRequestRef.current + 1;
     latestRequestRef.current = requestId;
@@ -310,7 +312,7 @@ export function LandIntelligencePanel() {
     setLoading(true);
     setError(null);
     setScoreData(null);
-    setBhuvanData(null);
+    setLandUseData(null);
 
     try {
       const [scoreRes, bhuvanRes] = await Promise.allSettled([
@@ -327,14 +329,18 @@ export function LandIntelligencePanel() {
             intendedUse: project?.intendedUse,
             underwriting: project?.underwriting,
             locationAmenities: project?.locationData?.amenities || [],
+            market: project?.market || geography.market,
+            countryCode: project?.countryCode || geography.countryCode,
           }),
         }).then((r) => r.json()),
-        fetch("/api/land-intelligence/bhuvan-landuse", {
+        fetch("/api/land-intelligence/land-use", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             coordinates: coords,
             location: locationName,
+            market: project?.market || geography.market,
+            countryCode: project?.countryCode || geography.countryCode,
           }),
         }).then((r) => r.json()),
       ]);
@@ -350,9 +356,9 @@ export function LandIntelligencePanel() {
       }
 
       if (bhuvanRes.status === "fulfilled" && bhuvanRes.value.success) {
-        setBhuvanData(bhuvanRes.value.report);
+        setLandUseData(bhuvanRes.value.report);
       } else {
-        console.warn("[LandIntel] Bhuvan fetch issue:", bhuvanRes);
+        console.warn("[LandIntel] Land-use fetch issue:", bhuvanRes);
       }
     } catch (err: any) {
       if (latestRequestRef.current === requestId) {
@@ -536,6 +542,130 @@ export function LandIntelligencePanel() {
               nearbyAmenities={scoreData.nearbyAmenities}
             />
 
+            {scoreData.environmentalScreening ? (
+              <InfoCard
+                icon={Globe}
+                title="EPA Environmental Screening"
+                color="text-emerald-500"
+              >
+                <DataRow
+                  label="Wetland Risk"
+                  value={scoreData.environmentalScreening.wetlandScreening.status}
+                  accent={
+                    scoreData.environmentalScreening.wetlandScreening.status === "high"
+                      ? "text-red-400"
+                      : scoreData.environmentalScreening.wetlandScreening.status === "moderate"
+                        ? "text-amber-400"
+                        : "text-emerald-400"
+                  }
+                />
+                <DataRow
+                  label="Air Screening"
+                  value={scoreData.environmentalScreening.airQuality.status}
+                  accent={
+                    scoreData.environmentalScreening.airQuality.status === "high"
+                      ? "text-red-400"
+                      : scoreData.environmentalScreening.airQuality.status === "moderate"
+                        ? "text-amber-400"
+                        : "text-emerald-400"
+                  }
+                />
+                <DataRow
+                  label="Water Screening"
+                  value={scoreData.environmentalScreening.waterQuality.status}
+                  accent={
+                    scoreData.environmentalScreening.waterQuality.status === "high"
+                      ? "text-red-400"
+                      : scoreData.environmentalScreening.waterQuality.status === "moderate"
+                        ? "text-amber-400"
+                        : "text-emerald-400"
+                  }
+                />
+                <DataRow
+                  label="NEPA Review"
+                  value={scoreData.environmentalScreening.nepa.status}
+                  accent={
+                    scoreData.environmentalScreening.nepa.status === "elevated-review"
+                      ? "text-red-400"
+                      : scoreData.environmentalScreening.nepa.status ===
+                          "screening-recommended"
+                        ? "text-amber-400"
+                        : "text-emerald-400"
+                  }
+                />
+
+                <div className="mt-2 rounded border border-border/40 bg-secondary/20 p-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Summary
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    {scoreData.environmentalScreening.nepa.summary}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="rounded border border-border/40 bg-secondary/20 p-2">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Wetlands / Land Cover
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {scoreData.environmentalScreening.wetlandScreening.summary}
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-secondary/20 p-2">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Air
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {scoreData.environmentalScreening.airQuality.summary}
+                    </p>
+                  </div>
+                  <div className="rounded border border-border/40 bg-secondary/20 p-2">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Water
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {scoreData.environmentalScreening.waterQuality.summary}
+                    </p>
+                  </div>
+                </div>
+
+                {scoreData.environmentalScreening.nepa.triggers.length > 0 ? (
+                  <div className="space-y-1">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Review Triggers
+                    </div>
+                    {scoreData.environmentalScreening.nepa.triggers.map((trigger, index) => (
+                      <div
+                        key={`${trigger}-${index}`}
+                        className="rounded bg-secondary/30 px-2 py-1.5 text-xs text-muted-foreground"
+                      >
+                        {trigger}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="space-y-1">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Due-Diligence Documents
+                  </div>
+                  {scoreData.environmentalScreening.nepa.recommendedDocuments.map((document, index) => (
+                    <div
+                      key={`${document}-${index}`}
+                      className="rounded bg-secondary/30 px-2 py-1.5 text-xs text-muted-foreground"
+                    >
+                      {document}
+                    </div>
+                  ))}
+                </div>
+              </InfoCard>
+            ) : null}
+
+            {scoreData.transportationScreening ? (
+              <TransportationScreeningCard report={scoreData.transportationScreening} />
+            ) : null}
+
             {scoreData.score.recommendation ? (
               <InfoCard icon={TrendingUp} title="AI Recommendation" color="text-emerald-500">
                 <p className="text-xs leading-relaxed">{scoreData.score.recommendation}</p>
@@ -544,30 +674,40 @@ export function LandIntelligencePanel() {
           </>
         ) : null}
 
-        {bhuvanData ? (
-          <InfoCard icon={Globe} title="Bhuvan Land Use (ISRO)" color="text-blue-500">
+        {landUseData ? (
+          <InfoCard
+            icon={Globe}
+            title={getLandUseSourceTitle(landUseData)}
+            color="text-blue-500"
+          >
             <DataRow
               label="Primary Land Use"
-              value={bhuvanData.primaryLandUse}
+              value={landUseData.primaryLandUse}
               accent="text-blue-400"
             />
-            <DataRow label="State Code" value={bhuvanData.stateCode} />
-            {bhuvanData.historicLandUseChange ? (
+            <DataRow
+              label={landUseData.market === "USA" ? "Coverage" : "State Code"}
+              value={landUseData.stateCode || "N/A"}
+            />
+            {landUseData.latestYear ? (
+              <DataRow label="Latest Year" value={landUseData.latestYear} />
+            ) : null}
+            {landUseData.historicLandUseChange ? (
               <div className="mt-1 rounded border border-amber-500/20 bg-amber-500/5 p-2">
                 <div className="mb-0.5 flex items-center gap-1.5 text-xs font-semibold text-amber-500">
                   <TrendingUp className="h-3 w-3" />
                   Historic Change Detected
                 </div>
-                <p className="text-xs text-muted-foreground">{bhuvanData.historicLandUseChange}</p>
+                <p className="text-xs text-muted-foreground">{landUseData.historicLandUseChange}</p>
               </div>
             ) : null}
             <div className="mt-2 space-y-1.5">
               <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Layers ({bhuvanData.layers.length})
+                Snapshots ({landUseData.layers.length})
               </div>
-              {bhuvanData.layers.map((layer, index) => (
+              {landUseData.layers.map((layer, index) => (
                 <div
-                  key={`${layer.featureId}-${index}`}
+                  key={`${layer.layerLabel}-${layer.year || index}`}
                   className="flex items-center gap-2 rounded bg-secondary/30 px-2 py-1.5 text-xs"
                 >
                   <Layers className="h-3 w-3 shrink-0 text-blue-400" />
@@ -581,7 +721,7 @@ export function LandIntelligencePanel() {
           </InfoCard>
         ) : null}
 
-        {!scoreData && !bhuvanData && !loading && !error ? (
+        {!scoreData && !landUseData && !loading && !error ? (
           <div className="space-y-3 py-8 text-center">
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
               <TrendingUp className="h-6 w-6 text-primary" />

@@ -65,6 +65,36 @@ function findBestMatch(
   );
 }
 
+export async function getAvailableRegulationsForLocation({
+  location,
+  market,
+}: {
+  location: string;
+  market?: GeographyMarket;
+}): Promise<RegulationData[]> {
+  if (!location.trim()) return [];
+
+  const collectionName = getRegulationCollectionNameForMarket(market);
+  const locationQuery = query(
+    collection(db, collectionName),
+    where("location", "==", location),
+  );
+  const snapshot = await getDocs(locationQuery);
+  const firestoreRegulations = snapshot.docs.map(
+    (entry) =>
+      ({
+        id: entry.id,
+        ...entry.data(),
+      }) as RegulationData,
+  );
+
+  if (firestoreRegulations.length > 0) {
+    return firestoreRegulations;
+  }
+
+  return [];
+}
+
 export async function lookupRegulationForLocationAndUse({
   location,
   intendedUse,
@@ -86,17 +116,33 @@ export async function lookupRegulationForLocationAndUse({
       const regulation = specificDoc.data() as RegulationData;
       return {
         regulation,
-        matchedLocation: regulation.location || null,
+        matchedLocation: regulation.location || locationCandidates[0] || null,
         source: "specific-id",
       };
+    }
+
+    for (const candidate of locationCandidates) {
+      const regulations = await getAvailableRegulationsForLocation({
+        location: candidate,
+        market,
+      });
+      const matchedBaseline = regulations.find((reg) => reg.id === regulationId);
+      if (matchedBaseline) {
+        return {
+          regulation: matchedBaseline,
+          matchedLocation: candidate,
+          source: "specific-id",
+        };
+      }
     }
   }
 
   for (const candidate of locationCandidates) {
     const genericDoc = await getDoc(doc(db, collectionName, `${candidate}-${normalizedUse}`));
     if (genericDoc.exists()) {
+      const regulation = genericDoc.data() as RegulationData;
       return {
-        regulation: genericDoc.data() as RegulationData,
+        regulation,
         matchedLocation: candidate,
         source: "generic-id",
       };
@@ -104,14 +150,12 @@ export async function lookupRegulationForLocationAndUse({
   }
 
   for (const candidate of locationCandidates) {
-    const locationQuery = query(
-      collection(db, collectionName),
-      where("location", "==", candidate),
-    );
-    const snapshot = await getDocs(locationQuery);
-    if (snapshot.empty) continue;
+    const regulations = await getAvailableRegulationsForLocation({
+      location: candidate,
+      market,
+    });
+    if (regulations.length === 0) continue;
 
-    const regulations = snapshot.docs.map((entry) => entry.data() as RegulationData);
     const bestMatch = findBestMatch(regulations, normalizedUse);
     if (bestMatch) {
       return {

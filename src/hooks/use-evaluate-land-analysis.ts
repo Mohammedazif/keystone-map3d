@@ -3,10 +3,13 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   evaluateBuildabilityVerdict,
   type BuildabilityVerdict,
-  type BhuvanLandUseSummary,
 } from "@/lib/land-intelligence/buildability-verdict";
 import { calculateSellableAreaBreakdown } from "@/lib/land-intelligence/calculate-sellable-area-breakdown";
+import type { EnvironmentalScreeningReport } from "@/lib/land-intelligence/environmental";
+import type { TransportationScreeningReport } from "@/lib/land-intelligence/transportation";
 import { inferScoreQueryLocation } from "@/lib/land-intelligence/infer-score-query-location";
+import type { LandUseSummary } from "@/lib/land-intelligence/land-use";
+import { inferRegulationGeography } from "@/lib/geography";
 import { lookupRegulationForLocationAndUse } from "@/lib/regulation-lookup";
 import type {
   BuildingIntendedUse,
@@ -60,6 +63,8 @@ interface ScoreResult {
     } | null;
     aiSummary?: string | null;
   } | null;
+  environmentalScreening: EnvironmentalScreeningReport | null;
+  transportationScreening: TransportationScreeningReport | null;
   populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
@@ -99,6 +104,8 @@ interface ScoreResult {
     googlePlaces: { count: number; available: boolean };
     googleRoads: { count: number; available: boolean };
     proposedInfrastructure: { count: number; available: boolean; source?: string };
+    environmental: { count: number; available: boolean };
+    transportation: { count: number; available: boolean };
   };
 }
 
@@ -124,7 +131,7 @@ interface RegulationMatchSnapshot {
 
 interface BhuvanAnalysisResponse {
   success: boolean;
-  report: BhuvanLandUseSummary;
+  report: LandUseSummary;
   error?: string;
 }
 
@@ -167,7 +174,7 @@ export function useEvaluateLandAnalysis({
     label: string;
     status: 'pending' | 'loading' | 'done' | 'error';
   }[]>([]);
-  const [bhuvanData, setBhuvanData] = useState<BhuvanLandUseSummary | null>(null);
+  const [landUseData, setLandUseData] = useState<LandUseSummary | null>(null);
   const [matchedRegulation, setMatchedRegulation] =
     useState<RegulationData | null>(null);
   const [buildVerdict, setBuildVerdict] = useState<BuildabilityVerdict | null>(null);
@@ -184,7 +191,7 @@ export function useEvaluateLandAnalysis({
     setAiSummary(null);
     setIsLoadingAiSummary(false);
     setAnalysisSteps([]);
-    setBhuvanData(null);
+    setLandUseData(null);
     setMatchedRegulation(null);
     setBuildVerdict(null);
     setAnalysisTarget(null);
@@ -217,6 +224,7 @@ export function useEvaluateLandAnalysis({
 
     const values = getInputValues();
     const { state, district, isUS } = inferScoreQueryLocation(values.location, coords);
+    const geography = inferRegulationGeography(values.location);
     const plotForAnalysis = selectedPlot || plots[0] || null;
 
     // Allow analysis to proceed without a plot when we have coordinates
@@ -238,7 +246,7 @@ export function useEvaluateLandAnalysis({
     setIsLoadingAiSummary(false);
     setRecommendedParcels([]);
     setIsSearchingParcels(false);
-    setBhuvanData(null);
+    setLandUseData(null);
     setMatchedRegulation(null);
     setBuildVerdict(null);
     setRegulationMatch(null);
@@ -291,6 +299,8 @@ export function useEvaluateLandAnalysis({
             landSizeSqm: Number(values.landSize),
             intendedUse: values.intendedUse,
             parcelAware: Boolean(plotForAnalysis) || Boolean(pointTarget),
+            market: geography.market,
+            countryCode: geography.countryCode,
           }),
         }).then(async (response) => {
           const payload = await response.json();
@@ -299,23 +309,26 @@ export function useEvaluateLandAnalysis({
           }
           return payload as ScoreResult;
         }),
-        fetch("/api/land-intelligence/bhuvan-landuse", {
+        fetch("/api/land-intelligence/land-use", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             coordinates: coords,
             location: values.location.trim(),
+            market: geography.market,
+            countryCode: geography.countryCode,
           }),
         }).then(async (response) => {
           const payload = (await response.json()) as BhuvanAnalysisResponse;
           if (!response.ok || !payload?.success) {
-            throw new Error(payload?.error || "Failed to fetch Bhuvan land use.");
+            throw new Error(payload?.error || "Failed to fetch land use.");
           }
           return payload.report;
         }),
         lookupRegulationForLocationAndUse({
           location: values.location.trim(),
           intendedUse: values.intendedUse,
+          market: geography.market,
         }),
       ]);
 
@@ -336,11 +349,11 @@ export function useEvaluateLandAnalysis({
         errors.push(scoreRes.reason?.message || "Developability score unavailable.");
       }
 
-      const nextBhuvan = bhuvanRes.status === "fulfilled" ? bhuvanRes.value : null;
+      const nextLandUse = bhuvanRes.status === "fulfilled" ? bhuvanRes.value : null;
       const nextRegulation =
         regulationRes.status === "fulfilled" ? regulationRes.value.regulation : null;
 
-      setBhuvanData(nextBhuvan);
+      setLandUseData(nextLandUse);
       setMatchedRegulation(nextRegulation);
       setRegulationMatch(
         regulationRes.status === "fulfilled"
@@ -351,20 +364,20 @@ export function useEvaluateLandAnalysis({
           : null,
       );
 
-      if (!nextBhuvan) {
+      if (!nextLandUse) {
         errors.push(
           bhuvanRes.status === "rejected"
-            ? bhuvanRes.reason?.message || "Bhuvan land use unavailable."
-            : "Bhuvan land use unavailable.",
+            ? bhuvanRes.reason?.message || "Land use unavailable."
+            : "Land use unavailable.",
         );
       }
 
-      if (nextBhuvan || nextRegulation) {
+      if (nextLandUse || nextRegulation) {
         setBuildVerdict(
           evaluateBuildabilityVerdict({
             intendedUse: values.intendedUse,
             zoningPreference: values.zoningPreference,
-            bhuvan: nextBhuvan,
+            landUse: nextLandUse,
             regulation: nextRegulation,
             regulationSource:
               regulationRes.status === "fulfilled"
@@ -508,7 +521,7 @@ export function useEvaluateLandAnalysis({
     aiSummary,
     isLoadingAiSummary,
     analysisSteps,
-    bhuvanData,
+    landUseData,
     matchedRegulation,
     regulationMatch,
     buildVerdict,

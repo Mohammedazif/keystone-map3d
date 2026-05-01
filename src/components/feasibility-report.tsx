@@ -6,6 +6,10 @@ import type {
   AdvancedKPIs,
   ProjectEstimates,
 } from "@/lib/types";
+import {
+  evaluateTransportationHeuristics,
+  resolveUsaTransportationContext,
+} from "@/lib/land-intelligence/transportation";
 import type { AlgoParams } from "@/lib/generators/basic-generator";
 import { calculateBuildingCoreAndCirculation } from "@/lib/generators/building-core-calc";
 
@@ -178,6 +182,30 @@ export function FeasibilityReport({
       return Math.round(Math.sqrt(plotArea * 4) * 2);
     }
   })();
+  const reportLocationName =
+    (typeof project.location === "string" && project.location) ||
+    project.locationLabel ||
+    plot.location ||
+    "";
+  const marketIsUsa = project.market === "USA" || project.countryCode === "US";
+  const usaTransportContext = marketIsUsa
+    ? resolveUsaTransportationContext(reportLocationName)
+    : null;
+  const usaTransportationMemo =
+    marketIsUsa
+      ? evaluateTransportationHeuristics({
+          location: reportLocationName,
+          landSizeSqm: plotArea,
+          intendedUse: project.intendedUse,
+          roadAccessSides: plot.roadAccessSides || [],
+          roadWidthMeters:
+            (plot.regulation?.geometry?.road_width?.value as number | undefined) ?? null,
+          frontageWidthMeters:
+            (plot.regulation?.geometry?.minimum_frontage_width?.value as number | undefined) ??
+            null,
+          pilotContext: usaTransportContext,
+        })
+      : null;
   // Amenity area: use same source as Section 9 (groundFloorRemovedArea = actual removed amenity space)
   const amenityArea = (() => {
     const realRemoved = (plot.buildings || []).reduce(
@@ -5599,6 +5627,30 @@ export function FeasibilityReport({
               <li>100 kW Construction load (30-45 days, ~₹5L cost)</li>
               <li>Temporary water tanker setup (15-30 days)</li>
             </ul>
+
+            {usaTransportationMemo && usaTransportContext ? (
+              <>
+                <strong className="block text-slate-700 mt-2 mb-1 border-b pb-1">
+                  Transportation Review (USA)
+                </strong>
+                <p className="text-slate-500 text-[8px] mb-1">
+                  Authority: {usaTransportContext.localAuthority} | Conditional:{" "}
+                  {usaTransportContext.stateAuthority}
+                </p>
+                <ul className="list-disc pl-3 space-y-[1px] text-slate-600">
+                  <li>TIA likelihood: {usaTransportationMemo.tia.likelihood}</li>
+                  <li>Access risk: {usaTransportationMemo.accessManagement.status}</li>
+                  {usaTransportationMemo.approvals.recommendedDocuments
+                    .slice(0, 4)
+                    .map((document) => (
+                      <li key={document}>{document}</li>
+                    ))}
+                </ul>
+                <p className="mt-1 text-[8px]">
+                  <strong>Note:</strong> {usaTransportContext.stateRouteTriggerNote}
+                </p>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
@@ -6286,6 +6338,26 @@ export function FeasibilityReport({
                 asp: "Fire Safety",
                 req: `${regLabel(plot.regulation?.location)} / Fire Act`,
                 prop: "Full compliance designed",
+                ok: true,
+              },
+              {
+                asp: "Stair Width",
+                req: plot.regulation?.facilities?.staircase_width?.value
+                  ? `${plot.regulation.facilities.staircase_width.value}m min`
+                  : "As per adopted building code",
+                prop: plot.regulation?.facilities?.staircase_width?.value
+                  ? `${plot.regulation.facilities.staircase_width.value}m baseline`
+                  : "Code review pending",
+                ok: true,
+              },
+              {
+                asp: "Exit Travel Distance",
+                req: plot.regulation?.safety_and_services?.fire_exits_travel_distance?.value
+                  ? `${plot.regulation.safety_and_services.fire_exits_travel_distance.value}m max`
+                  : "As per adopted building code",
+                prop: plot.regulation?.safety_and_services?.fire_exits_travel_distance?.value
+                  ? "Mapped into regulation baseline"
+                  : "Code review pending",
                 ok: true,
               },
               {
