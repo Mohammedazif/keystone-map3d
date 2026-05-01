@@ -5,94 +5,56 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { useBuildingStore, useSelectedPlot } from '@/hooks/use-building-store';
-import { Loader2, Globe, Info, MousePointer2, AlertTriangle, MapPin } from 'lucide-react';
+import { Loader2, Globe, MousePointer2, AlertTriangle, MapPin } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { BHUVAN_THEMES, getIndianStateCode, findBhuvanLayerByCoord, buildBhuvanLayerName, isLayerAvailableInIndex, BHUVAN_EXTENTS, getBestBhuvanDistrict, getBhuvanWmsUrl } from '@/lib/bhuvan-utils';
+import { inferRegulationGeography } from '@/lib/geography';
+import {
+  buildThematicLayerName,
+  checkThematicAvailability,
+  getThematicThemeById,
+  getThematicThemesForMarket,
+  getThematicWmsUrl,
+  inferThematicContextFromCoordinates,
+  type ThematicContext,
+  type ThematicLayerInfo,
+} from '@/lib/thematic-utils';
 
 interface BhuvanPanelProps {
   embedded?: boolean;
 }
 
-function getIndexType(themeId: string): 'amrut' | 'nuis' | 'sisdp' | undefined {
-  if (themeId === 'ulu_4k_amrut') return 'amrut';
-  if (themeId === 'ulu_10k_nuis') return 'nuis';
-  if (themeId === 'lulc_10k_sisdp') return 'sisdp';
-  return undefined;
-}
-
-// Availability check — returns { status, message }
-function checkAvailability(
-  themeId: string,
-  stateCode: string,
-  lat?: number,
-  lng?: number,
-  districtNameHint?: string
-): { status: 'available' | 'unavailable' | 'unknown'; message: string | null } {
-  const theme = BHUVAN_THEMES.find(t => t.id === themeId);
-  if (!theme) return { status: 'unknown', message: 'Theme not found.' };
-
-  if (stateCode === 'IN' || stateCode === '') {
-    return { status: 'unknown', message: 'Set a plot location to check availability.' };
-  }
-
-  const indexType = getIndexType(themeId);
-  if (indexType) {
-    const district = getBestBhuvanDistrict(indexType, stateCode, districtNameHint);
-    if (district) {
-      return { status: 'available', message: null };
-    }
-    return {
-      status: 'unavailable',
-      message: `${theme.categoryName || theme.name} is not available for ${stateCode} state.`
-    };
-  }
-
-  const suffix = theme.themeCode;
-
-  const hasStateCoverage = Object.keys(BHUVAN_EXTENTS).some(name =>
-    (name.includes(`_${stateCode}_`) || name.includes(`${stateCode}_`) || name.endsWith(`_${stateCode}`)) && 
-    (name.includes(suffix) || name.includes(theme.id))
-  );
-
-  if (!hasStateCoverage && !theme.fixedLayerName) {
-    return {
-      status: 'unavailable',
-      message: `${theme.categoryName || theme.name} is not available for ${stateCode} state.`
-    };
-  }
-
-  const layerName = buildBhuvanLayerName(themeId, stateCode, districtNameHint, lat, lng);
-  if (isLayerAvailableInIndex(layerName)) return { status: 'available', message: null };
-
-  return {
-    status: 'unavailable',
-    message: `${theme.categoryName || theme.name} data not found for this region.`
-  };
-}
-
 export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
-  const { activeBhuvanLayer, activeBhuvanOpacity, bhuvanData, isFetchingBhuvan, plots, actions, districtNameHint } = useBuildingStore(s => ({
+  const {
+    activeBhuvanLayer,
+    activeBhuvanOpacity,
+    bhuvanData,
+    isFetchingBhuvan,
+    plots,
+    actions,
+    districtNameHint,
+    activeProjectId,
+    projects,
+  } = useBuildingStore(s => ({
     activeBhuvanLayer: s.activeBhuvanLayer,
     activeBhuvanOpacity: s.activeBhuvanOpacity,
     bhuvanData: s.bhuvanData,
     isFetchingBhuvan: s.isFetchingBhuvan,
     plots: s.plots,
     actions: s.actions,
-    districtNameHint: s.districtNameHint
+    districtNameHint: s.districtNameHint,
+    activeProjectId: s.activeProjectId,
+    projects: s.projects,
   }));
 
   const selectedPlot = useSelectedPlot();
   const activePlot = selectedPlot || (plots.length > 0 ? plots[0] : null);
+  const activeProject = projects.find((project) => project.id === activeProjectId) || null;
 
   const { stateCode, plotLat, plotLng } = useMemo(() => {
     if (activePlot?.geometry?.geometry) {
       try {
         const coords = (activePlot.geometry.geometry as any).coordinates[0][0];
-        return {
-          stateCode: getIndianStateCode(coords[1], coords[0]),
-          plotLat: coords[1] as number,
-          plotLng: coords[0] as number,
-        };
+        return inferThematicContextFromCoordinates([coords[0], coords[1]]);
       } catch {
         return { stateCode: 'IN', plotLat: undefined, plotLng: undefined };
       }
@@ -101,18 +63,43 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
   }, [activePlot]);
 
   const isPlotCreated = plots.length > 0;
-  const activeTheme = BHUVAN_THEMES.find(t => t.id === activeBhuvanLayer);
+  const inferredGeography = inferRegulationGeography(
+    typeof activeProject?.location === 'string'
+      ? activeProject.location
+      : (activeProject?.location as { name?: string; text?: string } | undefined)?.name ||
+          (activeProject?.location as { name?: string; text?: string } | undefined)?.text ||
+          '',
+  );
+  const effectiveMarket = activeProject?.market || inferredGeography.market || 'India';
+  const effectiveCountryCode =
+    activeProject?.countryCode || inferredGeography.countryCode || 'IN';
+  const availableThemes = useMemo(
+    () => getThematicThemesForMarket(effectiveMarket, effectiveCountryCode),
+    [effectiveCountryCode, effectiveMarket],
+  );
+  const activeTheme = getThematicThemeById(activeBhuvanLayer);
+  const thematicContext = useMemo(
+    () => ({
+      market: effectiveMarket,
+      countryCode: effectiveCountryCode,
+      stateCode,
+      plotLat,
+      plotLng,
+      districtNameHint,
+    }),
+    [districtNameHint, effectiveCountryCode, effectiveMarket, plotLat, plotLng, stateCode],
+  );
 
   // Group themes by categoryId for the grid view
   const categories = useMemo(() => {
-    const groups: Map<string, typeof BHUVAN_THEMES> = new Map();
-    BHUVAN_THEMES.forEach(t => {
+    const groups: Map<string, ThematicLayerInfo[]> = new Map();
+    availableThemes.forEach(t => {
       const catId = t.categoryId || t.id;
       if (!groups.has(catId)) groups.set(catId, []);
       groups.get(catId)!.push(t);
     });
     return Array.from(groups.values());
-  }, []);
+  }, [availableThemes]);
 
   if (!isPlotCreated) {
     return (
@@ -144,9 +131,9 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
             <Globe className="h-3.5 w-3.5 text-blue-500" />
             Thematic Services
           </h2>
-          {stateCode !== 'IN' && (
+          {effectiveCountryCode !== 'IN' && (
             <Badge variant="secondary" className="text-[10px] font-mono">
-              Region: {stateCode}
+              Region: {effectiveCountryCode}
             </Badge>
           )}
         </div>
@@ -180,10 +167,15 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
               const categoryName = primaryTheme.categoryName || primaryTheme.name;
               const isCategoryActive = groupThemes.some(t => t.id === activeBhuvanLayer);
               
-              const firstAvailable = groupThemes.find(t => checkAvailability(t.id, stateCode, plotLat, plotLng, districtNameHint).status === 'available');
+              const firstAvailable = groupThemes.find(
+                t => checkThematicAvailability(t, thematicContext).status === 'available',
+              );
               const displayTheme = groupThemes.find(t => t.id === activeBhuvanLayer) || firstAvailable || primaryTheme;
               
-              const { status: availStatus, message: error } = checkAvailability(displayTheme.id, stateCode, plotLat, plotLng, districtNameHint);
+              const { status: availStatus, message: error } = checkThematicAvailability(
+                displayTheme,
+                thematicContext,
+              );
               const isUnavailable = availStatus === 'unavailable';
 
               return (
@@ -235,7 +227,10 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                           <Label className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Select Year / Scale</Label>
                           <div className="flex flex-wrap gap-1.5">
                             {groupThemes.map(variant => {
-                              const variantAvail = checkAvailability(variant.id, stateCode, plotLat, plotLng, districtNameHint);
+                              const variantAvail = checkThematicAvailability(
+                                variant,
+                                thematicContext,
+                              );
                               const vDisabled = variantAvail.status === 'unavailable';
                               const vActive = activeBhuvanLayer === variant.id;
 
@@ -288,11 +283,8 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
                             </Label> */}
                           </div>
                           <BhuvanLegend
-                            themeId={activeBhuvanLayer!}
-                            stateCode={stateCode}
-                            districtNameHint={districtNameHint}
-                            plotLat={plotLat}
-                            plotLng={plotLng}
+                            theme={activeTheme!}
+                            thematicContext={thematicContext}
                             fallbackLegend={activeTheme?.legend}
                           />
                         </div>
@@ -335,18 +327,12 @@ export function BhuvanPanel({ embedded = false }: BhuvanPanelProps) {
 
 // ── Dynamic Legend from WMS GetLegendGraphic ──
 function BhuvanLegend({
-  themeId,
-  stateCode,
-  districtNameHint,
-  plotLat,
-  plotLng,
+  theme,
+  thematicContext,
   fallbackLegend,
 }: {
-  themeId: string;
-  stateCode: string;
-  districtNameHint?: string;
-  plotLat?: number;
-  plotLng?: number;
+  theme: ThematicLayerInfo;
+  thematicContext: ThematicContext;
   fallbackLegend?: { label: string; color: string }[];
 }) {
   const [imgError, setImgError] = useState(false);
@@ -354,11 +340,10 @@ function BhuvanLegend({
   const [loading, setLoading] = useState(true);
 
   const legendUrl = useMemo(() => {
-    const theme = BHUVAN_THEMES.find(t => t.id === themeId);
-    if (!theme) return null;
+    if (theme.sourceType !== 'bhuvan') return null;
 
-    const layerName = buildBhuvanLayerName(themeId, stateCode, districtNameHint, plotLat, plotLng);
-    const bhuvanBaseUrl = getBhuvanWmsUrl(theme);
+    const layerName = buildThematicLayerName(theme, thematicContext);
+    const bhuvanBaseUrl = getThematicWmsUrl(theme);
 
     const url = new URL(window.location.origin + '/api/bhuvan');
     url.searchParams.set('_bhuvanUrl', bhuvanBaseUrl);
@@ -370,11 +355,15 @@ function BhuvanLegend({
     url.searchParams.set('width', '18');
     url.searchParams.set('height', '18');
     return url.toString();
-  }, [themeId, stateCode, districtNameHint, plotLat, plotLng]);
+  }, [theme, thematicContext]);
 
   // Fetch JSON version to render as native HTML
   React.useEffect(() => {
-    if (!legendUrl) return;
+    if (!legendUrl) {
+      setLoading(false);
+      setLegendData(null);
+      return;
+    }
     setLoading(true);
     setImgError(false);
     

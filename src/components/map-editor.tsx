@@ -45,13 +45,13 @@ import { Amenity } from "@/services/mapbox-places-service";
 import { GoogleRoadsService } from "@/services/google-roads-service";
 import { MapboxPlacesService } from "@/services/mapbox-places-service";
 import {
-  buildBhuvanLayerName,
-  getIndianStateCode,
-  getBhuvanWmsUrl,
-  BHUVAN_THEMES,
-  isLayerAvailableInIndex,
-  getBestBhuvanDistrict,
-} from "@/lib/bhuvan-utils";
+  buildThematicLayerName,
+  checkThematicAvailability,
+  getThematicThemeById,
+  getThematicWmsUrl,
+  inferThematicContextFromCoordinates,
+  NLCD_CLASS_LABEL_BY_CODE,
+} from "@/lib/thematic-utils";
 
 import { Map as MapIcon, Globe, Image as ImageIcon } from "lucide-react";
 
@@ -473,7 +473,6 @@ export function MapEditor({
           ]);
 
           const bbox = `${sw.lng},${sw.lat},${ne.lng},${ne.lat}`;
-
           const width = 10;
           const height = 10;
           const x = 5;
@@ -486,37 +485,61 @@ export function MapEditor({
             const geom = plots[0].geometry.geometry as Polygon;
             if (geom.coordinates?.[0]?.[0]) {
               const coord = geom.coordinates[0][0];
-              plotLng = coord[0];
-              plotLat = coord[1];
-              stateCode = getIndianStateCode(plotLat, plotLng);
+              const inferredContext = inferThematicContextFromCoordinates([
+                coord[0],
+                coord[1],
+              ]);
+              plotLng = inferredContext.plotLng;
+              plotLat = inferredContext.plotLat;
+              stateCode = inferredContext.stateCode || "IN";
             }
           }
 
           const distHint = getStoreState().districtNameHint;
-          const layerName = buildBhuvanLayerName(
-            activeBhuvanLayer,
+          const activeTheme = getThematicThemeById(activeBhuvanLayer);
+          if (!activeTheme) {
+            actions.setBhuvanData(
+              "Error: Could not resolve thematic layer metadata.",
+              false,
+            );
+            return;
+          }
+
+          const thematicContext = {
+            market: activeProject?.market,
+            countryCode: activeProject?.countryCode,
             stateCode,
-            distHint,
+            districtNameHint: distHint,
             plotLat,
             plotLng,
+          };
+          const layerName = buildThematicLayerName(activeTheme, thematicContext);
+          const wmsUrl = new URL(
+            window.location.origin +
+              (activeTheme.sourceType === "usgs-nlcd"
+                ? "/api/usgs-nlcd/wms"
+                : "/api/bhuvan"),
           );
-          const activeTheme = BHUVAN_THEMES.find(
-            (t) => t.id === activeBhuvanLayer,
-          );
-          const bhuvanBaseUrl = activeTheme
-            ? getBhuvanWmsUrl(activeTheme)
-            : undefined;
 
-          const wmsUrl = new URL(window.location.origin + "/api/bhuvan");
-          if (bhuvanBaseUrl)
-            wmsUrl.searchParams.set("_bhuvanUrl", bhuvanBaseUrl);
+          if (activeTheme.sourceType === "bhuvan") {
+            const baseUrl = getThematicWmsUrl(activeTheme);
+            if (baseUrl) {
+              wmsUrl.searchParams.set("_bhuvanUrl", baseUrl);
+            }
+          }
+
           wmsUrl.searchParams.set("service", "WMS");
-          wmsUrl.searchParams.set("version", "1.1.1");
+          wmsUrl.searchParams.set("version", activeTheme.wmsVersion || "1.1.1");
           wmsUrl.searchParams.set("request", "GetFeatureInfo");
           wmsUrl.searchParams.set("layers", layerName);
           wmsUrl.searchParams.set("query_layers", layerName);
           wmsUrl.searchParams.set("feature_count", "1");
-          wmsUrl.searchParams.set("info_format", "text/html");
+          wmsUrl.searchParams.set(
+            "info_format",
+            activeTheme.sourceType === "usgs-nlcd"
+              ? "application/json"
+              : "text/html",
+          );
           wmsUrl.searchParams.set("format", "image/png");
           wmsUrl.searchParams.set("srs", "EPSG:4326");
           wmsUrl.searchParams.set("bbox", bbox);
@@ -524,13 +547,39 @@ export function MapEditor({
           wmsUrl.searchParams.set("height", Math.floor(height).toString());
           wmsUrl.searchParams.set("x", Math.floor(x).toString());
           wmsUrl.searchParams.set("y", Math.floor(y).toString());
+          if (activeTheme.time) {
+            wmsUrl.searchParams.set("time", activeTheme.time);
+          }
 
           fetch(wmsUrl.toString())
             .then((res) => {
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              return res.text();
+              return activeTheme.sourceType === "usgs-nlcd"
+                ? res.json()
+                : res.text();
             })
-            .then((text) => {
+            .then((payload) => {
+              if (activeTheme.sourceType === "usgs-nlcd") {
+                const code = Number(payload?.features?.[0]?.properties?.PALETTE_INDEX);
+                if (!Number.isFinite(code)) {
+                  actions.setBhuvanData(
+                    "No NLCD land-cover value was found exactly at this point.",
+                    false,
+                  );
+                  return;
+                }
+
+                const label =
+                  NLCD_CLASS_LABEL_BY_CODE[code] || `Unknown NLCD Class (${code})`;
+                const yearLabel = activeTheme.time?.slice(0, 4) || "Latest";
+                actions.setBhuvanData(
+                  `<table><tr><th>Source</th><td>USGS NLCD Annual Land Cover</td></tr><tr><th>Year</th><td>${yearLabel}</td></tr><tr><th>Class</th><td>${label}</td></tr><tr><th>Code</th><td>${code}</td></tr></table>`,
+                  false,
+                );
+                return;
+              }
+
+              const text = payload;
               if (text.includes("ServiceException")) {
                 console.error("Bhuvan Service Exception:", text);
                 actions.setBhuvanData(
@@ -554,7 +603,7 @@ export function MapEditor({
               }
             })
             .catch((err) => {
-              console.error("Bhuvan GetFeatureInfo error:", err);
+              console.error("Thematic GetFeatureInfo error:", err);
               actions.setBhuvanData(
                 "Error: Could not retrieve thematic data for this location.",
                 false,
@@ -1610,7 +1659,6 @@ export function MapEditor({
       if (mapInst.getLayer(layerId)) mapInst.removeLayer(layerId);
       if (mapInst.getSource(sourceId)) mapInst.removeSource(sourceId);
 
-      // Detect state code and coordinates from the plot geometry
       const { plots: storePlots } = getStoreState();
       let stateCode = "IN";
       let plotLat: number | undefined;
@@ -1619,47 +1667,39 @@ export function MapEditor({
         const geom = storePlots[0].geometry.geometry as Polygon;
         if (geom.coordinates?.[0]?.[0]) {
           const coord = geom.coordinates[0][0];
-          plotLng = coord[0];
-          plotLat = coord[1];
-          stateCode = getIndianStateCode(plotLat, plotLng);
+          const inferredContext = inferThematicContextFromCoordinates([
+            coord[0],
+            coord[1],
+          ]);
+          plotLng = inferredContext.plotLng;
+          plotLat = inferredContext.plotLat;
+          stateCode = inferredContext.stateCode || "IN";
         }
       }
 
-      const layerName = buildBhuvanLayerName(
-        activeBhuvanLayer,
+      const activeTheme = getThematicThemeById(activeBhuvanLayer);
+      if (!activeTheme) {
+        return;
+      }
+
+      const thematicContext = {
+        market: activeProject?.market,
+        countryCode: activeProject?.countryCode,
         stateCode,
         districtNameHint,
         plotLat,
         plotLng,
-      );
-      const activeTheme = BHUVAN_THEMES.find((t) => t.id === activeBhuvanLayer);
-
-      const isDistrictTheme = activeTheme?.usesDistrict;
-      let isAvailable = true;
-      if (isDistrictTheme) {
-        if (activeBhuvanLayer === "ulu_4k_amrut") {
-          isAvailable = !!getBestBhuvanDistrict("amrut", stateCode);
-        } else if (activeBhuvanLayer === "ulu_10k_nuis") {
-          isAvailable = !!getBestBhuvanDistrict("nuis", stateCode);
-        } else if (activeBhuvanLayer === "lulc_10k_sisdp") {
-          isAvailable = isLayerAvailableInIndex(layerName);
-        }
-      } else {
-        isAvailable = isLayerAvailableInIndex(layerName);
-      }
-
-      if (!isAvailable) {
+      };
+      const availability = checkThematicAvailability(activeTheme, thematicContext);
+      if (availability.status === "unavailable") {
         return;
       }
 
-      const bhuvanBaseUrl = activeTheme
-        ? getBhuvanWmsUrl(activeTheme)
-        : undefined;
-      const bhuvanUrlParam = bhuvanBaseUrl
-        ? `&_bhuvanUrl=${encodeURIComponent(bhuvanBaseUrl)}`
-        : "";
-
-      const tileProxyBase = `/api/bhuvan?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(layerName)}&width=256&height=256&srs=EPSG:3857&format=image%2Fpng&transparent=true${bhuvanUrlParam}`;
+      const layerName = buildThematicLayerName(activeTheme, thematicContext);
+      const tileProxyBase =
+        activeTheme.sourceType === "usgs-nlcd"
+          ? `/api/usgs-nlcd/wms?service=WMS&version=${encodeURIComponent(activeTheme.wmsVersion || "1.1.1")}&request=GetMap&layers=${encodeURIComponent(layerName)}&width=256&height=256&srs=EPSG:3857&format=image%2Fpng&transparent=true${activeTheme.time ? `&time=${encodeURIComponent(activeTheme.time)}` : ""}`
+          : `/api/bhuvan?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(layerName)}&width=256&height=256&srs=EPSG:3857&format=image%2Fpng&transparent=true&_bhuvanUrl=${encodeURIComponent(getThematicWmsUrl(activeTheme))}`;
 
       mapInst.addSource(sourceId, {
         type: "raster",
@@ -1689,7 +1729,16 @@ export function MapEditor({
       if (mapInst.getStyle() && mapInst.getSource(sourceId))
         mapInst.removeSource(sourceId);
     };
-  }, [activeBhuvanLayer, isMapLoaded, styleLoaded, actions, getStoreState]);
+  }, [
+    activeBhuvanLayer,
+    activeProject?.countryCode,
+    activeProject?.market,
+    districtNameHint,
+    isMapLoaded,
+    styleLoaded,
+    actions,
+    getStoreState,
+  ]);
 
   useEffect(() => {
     const mapInst = map.current;
