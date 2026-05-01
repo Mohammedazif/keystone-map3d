@@ -49,6 +49,14 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
     const [isLoadingGreenRegs, setIsLoadingGreenRegs] = useState(false);
     const locationOptions = getLocationOptionsForMarket(market, { projectSelectableOnly: true });
     const selectedLocationOption = locationOptions.find(option => option.location === location);
+    const showComplianceStep = market !== 'USA';
+    const totalSteps = showComplianceStep ? 3 : 2;
+    const stepTitle =
+        step === 1
+            ? 'Project Details'
+            : step === 2
+              ? 'Intended Use'
+              : 'Compliance & Sustainability';
 
     useEffect(() => {
         const fetchGreenRegs = async () => {
@@ -169,7 +177,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                 <DialogHeader>
                     <DialogTitle>Create New Project</DialogTitle>
                     <DialogDescription>
-                        Step {step} of 3: {step === 1 ? 'Project Details' : step === 2 ? 'Intended Use' : 'Compliance & Sustainability'}
+                        Step {step} of {totalSteps}: {stepTitle}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -283,7 +291,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                         </div>
                     )}
 
-                    {step === 3 && (
+                    {showComplianceStep && step === 3 && (
                         <div className="space-y-6">
                             <div className="space-y-3">
                                 <Label>Green Building Certification Goals</Label>
@@ -374,7 +382,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                     ) : (
                         <div /> // Spacer
                     )}
-                    {step < 3 ? (
+                    {step < totalSteps ? (
                         <Button onClick={() => setStep(step + 1)} disabled={step === 1 && !newProjectName.trim()}>
                             Next Step
                         </Button>
