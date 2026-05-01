@@ -72,21 +72,21 @@ export function toDevelopabilityScore(
 
   let recommendation = '';
   if (engineOutput.fail) {
-    recommendation = 'Not recommended. Mandatory compliance checks failed, so the parcel needs legal and zoning resolution first.';
+    recommendation = 'System Verdict: FAILED. Mandatory compliance checks failed (e.g. zoning mismatch or severe legal risk). This parcel requires resolution before proceeding.';
   } else if (dataCompleteness < 0.4) {
-    recommendation = 'Preliminary score only. Too many developability checks are still missing to treat this result as decision-ready.';
+    recommendation = 'System Verdict: INCOMPLETE. Less than 40% of the required data was found. We cannot confidently recommend this plot yet.';
   } else if (dataCompleteness < 0.65) {
-    recommendation = 'Provisional recommendation. Key checks are available, but additional parcel-level evidence is still needed before relying on this score.';
+    recommendation = 'System Verdict: PROVISIONAL. This is a preliminary mathematical score. More parcel-level evidence is required before making a final decision.';
   } else if (rating === 'Excellent') {
-    recommendation = 'Highly recommended for development. Strong growth signals, clear legal pathway, and favorable market conditions.';
+    recommendation = 'System Verdict: EXCELLENT. Strong mathematical indicators for growth, legal pathways, and market conditions. Please review the AI Investment Summary below for deep qualitative analysis.';
   } else if (rating === 'Good') {
-    recommendation = 'Recommended with due diligence. Positive indicators across most categories.';
+    recommendation = 'System Verdict: GOOD. Positive metrics across most categories indicate a solid opportunity. Review the AI Investment Summary below for further qualitative details.';
   } else if (rating === 'Moderate') {
-    recommendation = 'Proceed with caution. Mixed signals require a more detailed parcel feasibility review before committing.';
+    recommendation = 'System Verdict: MODERATE. The data shows mixed signals. A detailed feasibility review is required before committing.';
   } else if (rating === 'Poor') {
-    recommendation = 'Not recommended at this time. Significant risk factors were identified.';
+    recommendation = 'System Verdict: POOR. Significant mathematical risk factors detected. Development is not recommended at this time.';
   } else {
-    recommendation = 'Avoid. Multiple critical risk factors make development unviable.';
+    recommendation = 'System Verdict: AVOID. Multiple critical data flags make this plot unviable.';
   }
 
   return {

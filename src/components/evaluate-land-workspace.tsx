@@ -1554,7 +1554,7 @@ export function EvaluateLandWorkspace() {
                           <TrendingUp className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
                           <div>
                             <p className="text-sm font-semibold">
-                              Recommendation
+                              System Verdict
                             </p>
                             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                               {scoreData.score.recommendation}
