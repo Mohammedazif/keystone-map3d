@@ -361,9 +361,9 @@ export function GeoConstructApp({ projectId }: { projectId: string }) {
                     <TabsTrigger value="location" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Location">
                       <MapPin className="h-4 w-4" />
                     </TabsTrigger>
-                    <TabsTrigger value="intelligence" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Land Intelligence">
+                    {/* <TabsTrigger value="intelligence" className="justify-center w-8 h-8 p-0 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground hover:bg-muted transition-all" title="Land Intelligence">
                       <TrendingUp className="h-4 w-4" />
-                    </TabsTrigger>
+                    </TabsTrigger> */}
                   </TabsList>
                 </div>
 
