@@ -6,6 +6,7 @@ import {
 } from "@/lib/land-intelligence/buildability-verdict";
 import { calculateSellableAreaBreakdown } from "@/lib/land-intelligence/calculate-sellable-area-breakdown";
 import type { EnvironmentalScreeningReport } from "@/lib/land-intelligence/environmental";
+import type { TransportationScreeningReport } from "@/lib/land-intelligence/transportation";
 import { inferScoreQueryLocation } from "@/lib/land-intelligence/infer-score-query-location";
 import type { LandUseSummary } from "@/lib/land-intelligence/land-use";
 import { inferRegulationGeography } from "@/lib/geography";
@@ -22,6 +23,7 @@ import type {
 interface ScoreResult {
   score: DevelopabilityScore;
   environmentalScreening: EnvironmentalScreeningReport | null;
+  transportationScreening: TransportationScreeningReport | null;
   populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
@@ -60,6 +62,7 @@ interface ScoreResult {
     googleRoads: { count: number; available: boolean };
     proposedInfrastructure: { count: number; available: boolean };
     environmental: { count: number; available: boolean };
+    transportation: { count: number; available: boolean };
   };
 }
 

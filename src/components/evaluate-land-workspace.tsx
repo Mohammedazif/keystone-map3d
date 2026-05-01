@@ -33,6 +33,7 @@ import { MapSearch } from "@/components/map-search";
 import { PopulationMigrationCard } from "@/components/population-migration-card";
 import { DevelopabilityScoreOverview } from "@/components/developability-score-overview";
 import { DrawingStatus } from "@/components/drawing-status";
+import { TransportationScreeningCard } from "@/components/transportation-screening-card";
 import { AnalysisMode } from "@/components/solar-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1200,6 +1201,10 @@ export function EvaluateLandWorkspace() {
                             )}
                           </div>
                         </div>
+                      ) : null}
+
+                      {scoreData.transportationScreening ? (
+                        <TransportationScreeningCard report={scoreData.transportationScreening} />
                       ) : null}
 
                       <div className="rounded-lg border border-border/50 bg-background/70 p-3">

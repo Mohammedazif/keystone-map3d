@@ -140,11 +140,21 @@ function formatDevelopabilityItemDetail(
       const roadWidth = toNumber(value.roadWidth);
       const frontageWidth = toNumber(value.frontageWidth);
       const sides = Array.isArray(value.roadAccessSides) ? value.roadAccessSides.length : 0;
+      const tiaLikelihood =
+        typeof value.tiaLikelihood === 'string' ? value.tiaLikelihood : null;
+      const accessRisk =
+        typeof value.accessRisk === 'string' ? value.accessRisk : null;
+      const nearbyWorkZones = toNumber(value.nearbyWorkZones);
       const parts = [
         coverage != null ? `${Math.round(coverage * 100)}% boundary near roads` : null,
         sides > 0 ? `${sides} road-access side${sides === 1 ? '' : 's'}` : null,
         roadWidth != null ? `${roadWidth} m road width` : null,
         frontageWidth != null ? `${frontageWidth} m frontage norm` : null,
+        accessRisk ? `${accessRisk} access risk` : null,
+        tiaLikelihood ? `TIA ${tiaLikelihood}` : null,
+        nearbyWorkZones != null && nearbyWorkZones > 0
+          ? `${Math.round(nearbyWorkZones)} nearby work-zone signal${nearbyWorkZones === 1 ? '' : 's'} within 1 km`
+          : null,
       ].filter(Boolean);
       return parts.length > 0 ? parts.join(' | ') : undefined;
     }

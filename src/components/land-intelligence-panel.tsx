@@ -20,10 +20,12 @@ import { inferRegulationGeography } from "@/lib/geography";
 import type { EnvironmentalScreeningReport } from "@/lib/land-intelligence/environmental";
 import { inferScoreQueryLocation } from "@/lib/land-intelligence/infer-score-query-location";
 import type { LandUseSummary } from "@/lib/land-intelligence/land-use";
+import type { TransportationScreeningReport } from "@/lib/land-intelligence/transportation";
 import type { DevelopabilityScore, PopulationMigrationAnalysis } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useRegulations } from "@/hooks/use-regulations";
 import { PopulationMigrationCard } from "./population-migration-card";
+import { TransportationScreeningCard } from "./transportation-screening-card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
@@ -32,6 +34,7 @@ import { DevelopabilityScoreOverview } from "./developability-score-overview";
 interface ScoreResult {
   score: DevelopabilityScore;
   environmentalScreening: EnvironmentalScreeningReport | null;
+  transportationScreening: TransportationScreeningReport | null;
   populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
@@ -70,6 +73,7 @@ interface ScoreResult {
     googleRoads: { count: number; available: boolean };
     proposedInfrastructure: { count: number; available: boolean };
     environmental: { count: number; available: boolean };
+    transportation: { count: number; available: boolean };
   };
 }
 
@@ -656,6 +660,10 @@ export function LandIntelligencePanel() {
                   ))}
                 </div>
               </InfoCard>
+            ) : null}
+
+            {scoreData.transportationScreening ? (
+              <TransportationScreeningCard report={scoreData.transportationScreening} />
             ) : null}
 
             {scoreData.score.recommendation ? (
