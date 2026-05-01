@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import * as turf from "@turf/turf";
+import ReactMarkdown from 'react-markdown';
 import {
   AlertCircle,
   AlertTriangle,
@@ -24,6 +25,11 @@ import {
   TrendingUp,
   Users,
   XCircle,
+  Brain,
+  ShieldCheck,
+  Banknote,
+  Landmark,
+  FileText,
 } from "lucide-react";
 
 import { DrawingToolbar } from "@/components/drawing-toolbar";
@@ -59,6 +65,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useBuildingStore, useSelectedPlot } from "@/hooks/use-building-store";
 import { useEvaluateLandAnalysis } from "@/hooks/use-evaluate-land-analysis";
+import { useDebounce } from "@/hooks/use-debounce";
 import { useToast } from "@/hooks/use-toast";
 import {
   BuildingIntendedUse,
@@ -68,6 +75,7 @@ import {
   type EvaluateLandInput,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { checkZoningSuitability, checkAreaSuitability } from "@/lib/land-intelligence/us-zoning-suitability";
 
 const PLOT_TYPE_OPTIONS = Object.values(LandPlotType);
 const PROXIMITY_OPTIONS = Object.values(LandProximity);
@@ -80,6 +88,13 @@ const INTENDED_USE_OPTIONS = [
 ] as const;
 const DEFAULT_SIDEBAR_WIDTH = 380;
 const ANALYSIS_SIDEBAR_WIDTH = 500;
+const MAPBOX_GEOCODING_API = 'https://api.mapbox.com/geocoding/v5/mapbox.places/';
+
+interface GeocodingSuggestion {
+  id: string;
+  place_name: string;
+  center: [number, number];
+}
 
 // Schema
 const evaluateLandFormSchema = z.object({
@@ -220,6 +235,7 @@ export function EvaluateLandWorkspace() {
     useState(false);
   const isResizing = useRef(false);
   const autoRunRequestKeyRef = useRef<string | null>(null);
+  const geocodedCoordsRef = useRef<[number, number] | null>(null);
 
   const form = useForm<EvaluateLandForm>({
     resolver: zodResolver(evaluateLandFormSchema),
@@ -228,7 +244,83 @@ export function EvaluateLandWorkspace() {
     reValidateMode: "onChange",
   });
 
-  const { control, getValues, reset, setValue, trigger } = form;
+  const { control, getValues, reset, setValue, trigger, watch } = form;
+
+  const [locationSuggestions, setLocationSuggestions] = useState<GeocodingSuggestion[]>([]);
+  const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+  const [isLocationSearching, setIsLocationSearching] = useState(false);
+  const locationDropdownRef = useRef<HTMLDivElement>(null);
+  const locationSearchTerm = form.watch('location');
+  const debouncedLocationSearch = useDebounce(locationSearchTerm, 350);
+
+  const isUSLocation = useCallback((location?: string, coords?: [number, number] | null) => {
+    // Coordinate-based detection (contiguous US bounding box)
+    if (coords) {
+      const [lng, lat] = coords;
+      if (lat >= 24.5 && lat <= 49.5 && lng >= -125 && lng <= -66) return true;
+    }
+    // Text-based detection
+    if (location) {
+      const loc = location.toLowerCase();
+      return /united states|usa|u\.s\.a/.test(loc)
+        || loc.includes(', tx') || loc.includes(', az') || loc.includes(', wa')
+        || loc.includes(', ca') || loc.includes(', ny') || loc.includes(', fl')
+        || loc.includes('texas') || loc.includes('arizona') || loc.includes('washington')
+        || loc.includes('california') || loc.includes('new york') || loc.includes('florida')
+        || loc.includes('austin') || loc.includes('phoenix') || loc.includes('seattle');
+    }
+    return false;
+  }, []);
+
+
+  useEffect(() => {
+    if (!isLocationManuallyEdited) return;
+    if (!debouncedLocationSearch || debouncedLocationSearch.length < 3) {
+      setLocationSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const fetchSuggestions = async () => {
+      setIsLocationSearching(true);
+      try {
+        const response = await fetch(
+          `${MAPBOX_GEOCODING_API}${encodeURIComponent(debouncedLocationSearch)}.json?access_token=${process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN}&autocomplete=true&limit=5`
+        );
+        const data = await response.json();
+        if (!cancelled) {
+          setLocationSuggestions(data.features || []);
+          setShowLocationDropdown(true);
+        }
+      } catch (error) {
+        console.error('Location geocoding error:', error);
+      } finally {
+        if (!cancelled) setIsLocationSearching(false);
+      }
+    };
+    fetchSuggestions();
+    return () => { cancelled = true; };
+  }, [debouncedLocationSearch, isLocationManuallyEdited]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (locationDropdownRef.current && !locationDropdownRef.current.contains(e.target as Node)) {
+        setShowLocationDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelectLocationSuggestion = useCallback((feature: GeocodingSuggestion) => {
+    setValue('location', feature.place_name, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+    setLocationSuggestions([]);
+    setShowLocationDropdown(false);
+    setIsLocationManuallyEdited(false); 
+    actions.setMapLocation(feature.place_name);
+    // Store geocoded coordinates so analysis can run without drawing a plot
+    geocodedCoordsRef.current = [feature.center[0], feature.center[1]];
+    window.dispatchEvent(new CustomEvent('flyTo', { detail: { center: feature.center } }));
+  }, [setValue, actions]);
 
   useEffect(() => {
     // Evaluate Land should always start from a clean workspace and a fresh form.
@@ -383,15 +475,20 @@ export function EvaluateLandWorkspace() {
       return instantAnalysisTarget.coordinates;
     }
     const plotForAnalysis = selectedPlot || plots[0];
-    if (!plotForAnalysis?.geometry) return null;
-
-    try {
-      const centroid = turf.centroid(plotForAnalysis.geometry);
-      const [lng, lat] = centroid.geometry.coordinates;
-      return [lng, lat];
-    } catch {
-      return null;
+    if (plotForAnalysis?.geometry) {
+      try {
+        const centroid = turf.centroid(plotForAnalysis.geometry);
+        const [lng, lat] = centroid.geometry.coordinates;
+        return [lng, lat];
+      } catch {
+        // fall through to geocoded fallback
+      }
     }
+    // Fallback: use coordinates from geocoded location selection
+    if (geocodedCoordsRef.current) {
+      return geocodedCoordsRef.current;
+    }
+    return null;
   }, [instantAnalysisTarget?.coordinates, plots, selectedPlot]);
 
   const analysisCoordinates = getAnalysisCoordinates();
@@ -401,12 +498,17 @@ export function EvaluateLandWorkspace() {
     isRunningScore,
     scoreError,
     scoreData,
+    aiSummary,
+    isLoadingAiSummary,
+    analysisSteps,
     bhuvanData,
     matchedRegulation,
     regulationMatch,
     buildVerdict,
     analysisTarget,
     sellableAreaBreakdown,
+    recommendedParcels,
+    isSearchingParcels,
     runAnalysis,
     resetAnalysis,
   } = useEvaluateLandAnalysis({
@@ -422,6 +524,8 @@ export function EvaluateLandWorkspace() {
         landSize: values.landSize,
         intendedUse: values.intendedUse,
         zoningPreference: values.zoningPreference,
+        priceRange: values.priceRange,
+        plotType: values.plotType,
       };
     },
     validateRequired: () =>
@@ -649,17 +753,43 @@ export function EvaluateLandWorkspace() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Location *</FormLabel>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              placeholder="Search on the map or type city, district, or locality"
-                              onChange={(event) => {
-                                const nextValue = event.target.value;
-                                setIsLocationManuallyEdited(true);
-                                field.onChange(nextValue);
-                              }}
-                            />
-                          </FormControl>
+                          <div className="relative" ref={locationDropdownRef}>
+                            <FormControl>
+                              <div className="relative">
+                                <MapPin className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                                <Input
+                                  {...field}
+                                  className="pl-8 pr-8"
+                                  placeholder="Type a city, address, or locality..."
+                                  onChange={(event) => {
+                                    const nextValue = event.target.value;
+                                    setIsLocationManuallyEdited(true);
+                                    field.onChange(nextValue);
+                                  }}
+                                  onFocus={() => locationSuggestions.length > 0 && setShowLocationDropdown(true)}
+                                  autoComplete="off"
+                                />
+                                {isLocationSearching && (
+                                  <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                )}
+                              </div>
+                            </FormControl>
+                            {showLocationDropdown && locationSuggestions.length > 0 && (
+                              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg z-50 overflow-hidden">
+                                {locationSuggestions.map((feature) => (
+                                  <button
+                                    key={feature.id}
+                                    type="button"
+                                    onClick={() => handleSelectLocationSuggestion(feature)}
+                                    className="w-full text-left px-3 py-2.5 text-xs hover:bg-accent flex items-center gap-2 transition-colors border-b border-border/20 last:border-0"
+                                  >
+                                    <MapPin className="h-3 w-3 text-muted-foreground shrink-0" />
+                                    <span className="truncate">{feature.place_name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -725,6 +855,39 @@ export function EvaluateLandWorkspace() {
                         )}
                       />
                     </div>
+
+                    {/* Area Suitability Warning Block */}
+                    {(() => {
+                      const currentUse = watch('intendedUse');
+                      const currentSizeStr = watch('landSize');
+                      const currentSize = parseFloat(currentSizeStr || '0');
+                      if (!currentUse || currentSize <= 0) return null;
+
+                      const areaWarnings = checkAreaSuitability(currentUse, currentSize);
+                      if (areaWarnings.length === 0) return null;
+
+                      return (
+                        <div className="space-y-1.5 animate-in fade-in slide-in-from-top-1">
+                          {areaWarnings.map((w, i) => (
+                            <div
+                              key={i}
+                              className={`flex items-start gap-1.5 text-[11px] leading-tight px-2.5 py-2 rounded-lg border ${
+                                w.level === 'error'
+                                  ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                  : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                              }`}
+                            >
+                              {w.level === 'error' ? (
+                                <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                              ) : (
+                                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                              )}
+                              <span>{w.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
 
                     <FormField
                       control={control}
@@ -832,11 +995,28 @@ export function EvaluateLandWorkspace() {
                       name="proximity"
                       render={({ field }) => (
                         <FormItem>
-                          <div className="flex items-center justify-between">
-                            <FormLabel>Proximity</FormLabel>
-                            <span className="text-xs text-muted-foreground">
-                              Optional nearby infrastructure preferences
-                            </span>
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
+                              <FormLabel>Proximity</FormLabel>
+                              <span className="text-[10px] text-muted-foreground hidden sm:inline-block">
+                                Optional nearby infrastructure preferences
+                              </span>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-[10px] text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                              onClick={() => {
+                                if (field.value.length === PROXIMITY_OPTIONS.length) {
+                                  field.onChange([]);
+                                } else {
+                                  field.onChange([...PROXIMITY_OPTIONS]);
+                                }
+                              }}
+                            >
+                              {field.value.length === PROXIMITY_OPTIONS.length ? "Deselect All" : "Select All"}
+                            </Button>
                           </div>
                           <div className="grid gap-2 rounded-lg border border-border/50 bg-muted/10 p-3">
                             {PROXIMITY_OPTIONS.map((proximity) => {
@@ -927,9 +1107,16 @@ export function EvaluateLandWorkspace() {
 
                   <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <p className="mt-1 text-sm font-semibold">
-                        Developability Score
-                      </p>
+                      <div>
+                        <p className="text-sm font-semibold">
+                          Land Intelligence
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {isUSLocation(getValues('location'), analysisCoordinates)
+                            ? 'Development Score + US Plot Intelligence'
+                            : 'Development Score + Regulation Check'}
+                        </p>
+                      </div>
                       <Button
                         type="button"
                         size="sm"
@@ -945,9 +1132,9 @@ export function EvaluateLandWorkspace() {
                           <TrendingUp className="mr-2 h-4 w-4" />
                         )}
                         {isRunningScore
-                          ? "Running..."
+                          ? "Analyzing..."
                           : scoreData || buildVerdict
-                            ? "Re-run Analysis"
+                            ? "Re-run"
                             : "Run Analysis"}
                       </Button>
                     </div>
@@ -960,7 +1147,7 @@ export function EvaluateLandWorkspace() {
                     </div>
                   ) : null}
 
-                  {!scoreData && !scoreError ? (
+                  {!scoreData && !scoreError && !isRunningScore ? (
                     <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 p-5 text-center">
                       <TrendingUp className="mx-auto h-8 w-8 text-muted-foreground" />
                       <p className="mt-3 text-sm font-semibold">
@@ -973,7 +1160,40 @@ export function EvaluateLandWorkspace() {
                     </div>
                   ) : null}
 
-                  {scoreData ? (
+                  {/* Progressive Loading State */}
+                  {isRunningScore && analysisSteps.length > 0 && (
+                    <div className="rounded-xl border border-border/60 bg-background/80 p-4">
+                      <h3 className="text-sm font-bold mb-3">Running Analysis</h3>
+                      <div className="space-y-3">
+                        {analysisSteps.map((step) => (
+                          <div key={step.id} className="flex items-center gap-3">
+                            <div className="shrink-0">
+                              {step.status === 'done' ? (
+                                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                              ) : step.status === 'error' ? (
+                                <XCircle className="h-4 w-4 text-destructive" />
+                              ) : step.status === 'loading' ? (
+                                <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />
+                              ) : (
+                                <div className="h-4 w-4 rounded-full border-2 border-muted" />
+                              )}
+                            </div>
+                            <span className={cn(
+                              "text-xs",
+                              step.status === 'loading' ? "text-foreground font-medium" : 
+                              step.status === 'done' ? "text-muted-foreground" :
+                              step.status === 'error' ? "text-destructive" :
+                              "text-muted-foreground/50"
+                            )}>
+                              {step.label}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {scoreData && !isRunningScore ? (
                     <div className="space-y-4">
                       {analysisTarget ? (
                         <div className="rounded-xl border border-border/60 bg-background/80 p-4">
@@ -991,7 +1211,9 @@ export function EvaluateLandWorkspace() {
                               variant="outline"
                               className="text-[10px] font-medium"
                             >
-                              {analysisTarget.mode === "point"
+                              {analysisTarget.mode === "search"
+                                ? "Location Search"
+                                : analysisTarget.mode === "point"
                                 ? "Map Click"
                                 : analysisTarget.usedFallbackPlot
                                   ? "Fallback Plot"
@@ -1002,7 +1224,7 @@ export function EvaluateLandWorkspace() {
                           <div className="mt-4 grid gap-2 rounded-lg border border-border/50 bg-background/70 p-3">
                             <div className="flex items-center justify-between gap-3 text-xs">
                               <span className="text-muted-foreground">
-                                {analysisTarget.mode === "point"
+                                {analysisTarget.mode === "point" || analysisTarget.mode === "search"
                                   ? "Target"
                                   : "Plot name"}
                               </span>
@@ -1012,7 +1234,7 @@ export function EvaluateLandWorkspace() {
                             </div>
                             <div className="flex items-center justify-between gap-3 text-xs">
                               <span className="text-muted-foreground">
-                                {analysisTarget.mode === "point"
+                                {analysisTarget.mode === "point" || analysisTarget.mode === "search"
                                   ? "Reference area"
                                   : "Plot area"}
                               </span>
@@ -1031,9 +1253,9 @@ export function EvaluateLandWorkspace() {
                             </div>
                           </div>
 
-                          {analysisTarget.mode === "point" ? (
+                          {analysisTarget.mode === "point" || analysisTarget.mode === "search" ? (
                             <div className="mt-4 rounded-lg border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-blue-700">
-                              This score was triggered from a map click. If you
+                              This score was triggered from a {analysisTarget.mode === "search" ? "location search" : "map click"}. If you
                               want a parcel-aware score, draw a plot or click
                               inside one before running again.
                             </div>
@@ -1055,13 +1277,102 @@ export function EvaluateLandWorkspace() {
                         rating={scoreData.score.rating}
                       />
 
-                      <PopulationMigrationCard analysis={scoreData.populationMigration} emphasized />
+                      {/* Population Migration â€” India only (Census 2011 data) */}
+                      {!scoreData.isUS && (
+                        <PopulationMigrationCard analysis={scoreData.populationMigration} emphasized />
+                      )}
 
                       <DevelopabilityScoreOverview
                         score={scoreData.score}
                         dataSources={scoreData.dataSources}
                         nearbyAmenities={scoreData.nearbyAmenities}
                       />
+
+                      {/* -- US Market Intelligence */}
+                      {scoreData.isUS && scoreData.usMarketData && (
+                        <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 space-y-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm" aria-label="US Flag">{"\uD83C\uDDFA\uD83C\uDDF8"}</span>
+                            <p className="text-sm font-semibold text-blue-400">US Market Intelligence</p>
+                            <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-400 ml-auto">
+                              {scoreData.usMarketData.marketZone.tier}
+                            </Badge>
+                          </div>
+
+                          {/* Economy row */}
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="rounded-md bg-background/60 p-2 text-center">
+                              <p className="text-[10px] text-muted-foreground">Unemployment</p>
+                              <p className="text-sm font-bold text-emerald-400">
+                                {scoreData.usMarketData.economy.unemploymentRate}%
+                              </p>
+                            </div>
+                            <div className="rounded-md bg-background/60 p-2 text-center">
+                              <p className="text-[10px] text-muted-foreground">Median Income</p>
+                              <p className="text-sm font-bold text-blue-400">
+                                ${(scoreData.usMarketData.economy.medianIncome / 1000).toFixed(0)}K
+                              </p>
+                            </div>
+                            <div className="rounded-md bg-background/60 p-2 text-center">
+                              <p className="text-[10px] text-muted-foreground">Labor Force</p>
+                              <p className="text-sm font-bold text-foreground">
+                                {(scoreData.usMarketData.economy.laborForce / 1000).toFixed(0)}K
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Population row */}
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="rounded-md bg-background/60 p-2 text-center">
+                              <p className="text-[10px] text-muted-foreground">Population</p>
+                              <p className="text-sm font-bold text-foreground">
+                                {(scoreData.usMarketData.population.population / 1000).toFixed(0)}K
+                              </p>
+                            </div>
+                            <div className="rounded-md bg-background/60 p-2 text-center">
+                              <p className="text-[10px] text-muted-foreground">Median Age</p>
+                              <p className="text-sm font-bold text-foreground">
+                                {scoreData.usMarketData.population.medianAge}
+                              </p>
+                            </div>
+                            <div className="rounded-md bg-background/60 p-2 text-center">
+                              <p className="text-[10px] text-muted-foreground">Market Tier</p>
+                              <p className="text-[11px] font-bold text-amber-400 truncate">
+                                {scoreData.usMarketData.population.growthTier}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Permits row */}
+                          <div className="rounded-md bg-background/60 p-2">
+                            <p className="text-[10px] text-muted-foreground mb-1">Building Permits (Annual)</p>
+                            <div className="grid grid-cols-3 gap-1 text-center">
+                              <div>
+                                <p className="text-xs font-bold">{scoreData.usMarketData.permits.totalUnits.toLocaleString()}</p>
+                                <p className="text-[9px] text-muted-foreground">Total Units</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-bold">{scoreData.usMarketData.permits.singleFamily.toLocaleString()}</p>
+                                <p className="text-[9px] text-muted-foreground">Single Family</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-bold">{scoreData.usMarketData.permits.multiFamily.toLocaleString()}</p>
+                                <p className="text-[9px] text-muted-foreground">Multi Family</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Market signal */}
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <TrendingUp className="h-3 w-3 text-emerald-500 shrink-0" />
+                            <span>
+                              {scoreData.usMarketData.marketZone.permitGrowthIndicator} ·{" "}
+                              Absorption rate {scoreData.usMarketData.absorptionRate} units/1K pop
+                            </span>
+                          </div>
+                          <p className="text-[9px] text-muted-foreground">Sources: US Census ACS · Bureau of Labor Statistics · Census BPS</p>
+                        </div>
+                      )}
 
                       <div className="rounded-lg border border-border/50 bg-background/70 p-3">
                         <div className="flex items-start gap-2">
@@ -1077,9 +1388,451 @@ export function EvaluateLandWorkspace() {
                         </div>
                       </div>
                     </div>
+
                   ) : null}
 
-                  {buildVerdict ? (
+                  {/* ========== UNIFIED US INTELLIGENCE (from score route) ========== */}
+                  {scoreData?.isUS && scoreData.usMarketData?.buyabilityScore != null && (
+                    <div className="space-y-3">
+                      <Separator />
+                      <div className="flex items-center gap-2">
+                        <Brain className="h-4 w-4 text-blue-500" />
+                        <h3 className="text-sm font-bold">US Buyability &amp; Parcel</h3>
+                      </div>
+
+                      {/* Buyability Score */}
+                      <div className="rounded-xl border border-border/60 bg-background/80 p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                              Buyability Score
+                            </p>
+                            <div className="mt-2 flex items-end gap-2">
+                              <span
+                                className="text-4xl font-black tabular-nums"
+                                style={{
+                                  color: scoreData.usMarketData.buyabilityScore >= 75 ? '#10b981'
+                                    : scoreData.usMarketData.buyabilityScore >= 50 ? '#f59e0b'
+                                    : '#ef4444'
+                                }}
+                              >
+                                {scoreData.usMarketData.buyabilityScore}
+                              </span>
+                              <span className="pb-1 text-sm text-muted-foreground">/ 100</span>
+                            </div>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[11px] font-semibold',
+                              scoreData.usMarketData.developmentProspect === 'Excellent' && 'border-emerald-500/40 text-emerald-600',
+                              scoreData.usMarketData.developmentProspect === 'Good' && 'border-blue-500/40 text-blue-600',
+                              scoreData.usMarketData.developmentProspect === 'Moderate' && 'border-amber-500/40 text-amber-600',
+                              scoreData.usMarketData.developmentProspect === 'Risky' && 'border-red-500/40 text-red-600',
+                            )}
+                          >
+                            {scoreData.usMarketData.developmentProspect}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      {/* Parcel Info */}
+                      {scoreData.usMarketData.parcel && (() => {
+                        const p = scoreData.usMarketData.parcel!;
+                        return (
+                          <div className="rounded-xl border border-border/60 bg-background/80 overflow-hidden">
+                            {/* Header */}
+                            <div className="flex items-center justify-between gap-2 border-b border-border/40 bg-muted/30 px-3 py-2">
+                              <div className="flex items-center gap-1.5">
+                                <Landmark className="h-3.5 w-3.5 text-blue-400" />
+                                <span className="text-[11px] font-bold uppercase tracking-wider text-blue-400">Parcel Record</span>
+                              </div>
+                              <span className="text-[10px] text-muted-foreground font-mono">{p.parcelId}</span>
+                            </div>
+
+                            <div className="p-3 space-y-3">
+                              {/* Zoning block */}
+                              {p.zoning && (
+                                <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-2.5 space-y-1.5">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Zoning</p>
+                                  <div className="flex items-center gap-2">
+                                    <span className="rounded bg-blue-500/15 px-2 py-0.5 text-xs font-bold text-blue-400">{p.zoning.zoningCode}</span>
+                                    <span className="text-xs text-muted-foreground">{p.zoning.zoningDescription}</span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-1.5 text-xs">
+                                    <div>
+                                      <span className="text-muted-foreground">Jurisdiction: </span>
+                                      <span className="font-medium">{p.zoning.jurisdiction}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-muted-foreground">Flood Zone: </span>
+                                      <span className={cn("font-bold", p.zoning.floodZone === 'X' || p.zoning.floodZone === 'C' ? "text-emerald-500" : "text-amber-500")}>
+                                        {p.zoning.floodZone}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Suitability Warning for clicked parcel */}
+                              {p.zoning && (() => {
+                                const currentUse = getValues('intendedUse') || '';
+                                const parcelArea = p.lotAreaSqFt ? Math.round(p.lotAreaSqFt / 10.7639) : Number(getValues('landSize') || 0);
+                                if (!currentUse) return null;
+                                const suit = checkZoningSuitability(
+                                  p.zoning.zoningCode || '',
+                                  p.zoning.zoningDescription || p.zoning.description || '',
+                                  currentUse,
+                                  parcelArea,
+                                );
+                                const nonInfoWarnings = suit.warnings.filter(w => w.level !== 'info');
+                                if (nonInfoWarnings.length === 0) return null;
+                                return (
+                                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 space-y-1.5">
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-amber-500">⚠ Suitability Check</p>
+                                    {nonInfoWarnings.map((w, wi) => (
+                                      <div
+                                        key={wi}
+                                        className={`flex items-start gap-1.5 text-[10px] leading-tight px-2 py-1.5 rounded ${
+                                          w.level === 'error' ? 'bg-red-500/10 text-red-400' : 'bg-amber-500/10 text-amber-400'
+                                        }`}
+                                      >
+                                        {w.level === 'error' ? (
+                                          <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                                        ) : (
+                                          <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                                        )}
+                                        <span>{w.message}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+
+                              {/* Title / Ownership */}
+                              {p.title && (
+                                <div className="space-y-1.5">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Title &amp; Ownership</p>
+                                  <div className="rounded-lg border border-border/40 bg-background/60 p-2.5 space-y-1.5">
+                                    <div className="flex justify-between text-xs">
+                                      <span className="text-muted-foreground">Owner</span>
+                                      <span className="font-semibold">{p.title.ownerName}</span>
+                                    </div>
+                                    {p.title.ownerType && (
+                                      <div className="flex justify-between text-xs">
+                                        <span className="text-muted-foreground">Owner Type</span>
+                                        <span className="font-medium">{p.title.ownerType}</span>
+                                      </div>
+                                    )}
+                                    <div className="flex justify-between text-xs">
+                                      <span className="text-muted-foreground">Assessed Value</span>
+                                      <span className="font-bold text-emerald-400">${p.title.assessedValue?.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs">
+                                      <span className="text-muted-foreground">Last Sale Price</span>
+                                      <span className="font-semibold tabular-nums">${p.title.lastSalePrice?.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs">
+                                      <span className="text-muted-foreground">Last Sale Date</span>
+                                      <span className="font-medium tabular-nums">{p.title.lastSaleDate}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Encumbrances */}
+                              <div className="space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Encumbrances &amp; Liens</p>
+                                  <span className={cn("text-[10px] font-semibold rounded-full px-2 py-0.5",
+                                    (p.encumbrances?.length ?? 0) === 0
+                                      ? "bg-emerald-500/15 text-emerald-500"
+                                      : "bg-amber-500/15 text-amber-500"
+                                  )}>
+                                    {(p.encumbrances?.length ?? 0) === 0 ? "Clear" : `${p.encumbrances!.length} on record`}
+                                  </span>
+                                </div>
+                                {(p.encumbrances?.length ?? 0) > 0 ? (
+                                  <div className="space-y-1.5">
+                                    {p.encumbrances!.map((enc, i) => (
+                                      <div key={i} className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2 text-xs">
+                                        <div className="flex items-center gap-1.5 mb-0.5">
+                                          <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-500">{enc.type}</span>
+                                          <span className={cn("text-[10px] font-medium", enc.status === 'Active' ? "text-amber-400" : "text-muted-foreground")}>{enc.status}</span>
+                                        </div>
+                                        <p className="text-muted-foreground leading-relaxed">{enc.description}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-muted-foreground">No encumbrances, easements, or liens on record.</p>
+                                )}
+                              </div>
+
+                              {/* Due Diligence & Site Acquisition */}
+                              {p.dueDiligence && (
+                                <div className="space-y-1.5 mt-4">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Due Diligence &amp; Site Acquisition</p>
+                                  <div className="rounded-lg border border-border/40 bg-background/60 p-2.5 space-y-2.5">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="text-muted-foreground">ALTA/NSPS Survey</span>
+                                      <span className={cn("font-medium", p.dueDiligence.altaSurveyStatus === 'Available' ? "text-emerald-400" : p.dueDiligence.altaSurveyStatus === 'In Progress' ? "text-amber-400" : "text-muted-foreground")}>
+                                        {p.dueDiligence.altaSurveyStatus}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-start gap-4 text-xs">
+                                      <span className="text-muted-foreground shrink-0" title="Relative Positional Precision">RPP Limit</span>
+                                      <span className="font-medium text-right text-muted-foreground leading-tight">{p.dueDiligence.relativePositionalPrecision}</span>
+                                    </div>
+                                    <div className="flex justify-between items-start gap-4 text-xs">
+                                      <span className="text-muted-foreground shrink-0" title="Recognized Environmental Conditions">Environmental RECs</span>
+                                      <span className={cn("font-medium text-right leading-tight", p.dueDiligence.recognizedEnvironmentalConditions === 'Clear' ? "text-emerald-400" : "text-amber-400")}>{p.dueDiligence.recognizedEnvironmentalConditions}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-xs pt-1 border-t border-border/30">
+                                      <span className="text-muted-foreground">Title Commitment</span>
+                                      <span className={cn("font-medium", p.dueDiligence.titleCommitmentStatus === 'Issued' ? "text-emerald-400" : p.dueDiligence.titleCommitmentStatus === 'Pending' ? "text-amber-400" : "text-destructive")}>{p.dueDiligence.titleCommitmentStatus}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  {/* US AI Summary */}
+                  {scoreData?.isUS && (aiSummary || isLoadingAiSummary) && (
+                    <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 mt-3 overflow-hidden relative">
+                      <div className="flex items-center gap-2 mb-3">
+                        {isLoadingAiSummary ? (
+                          <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />
+                        ) : (
+                          <FileText className="h-3.5 w-3.5 text-blue-500" />
+                        )}
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-blue-500">
+                          {isLoadingAiSummary ? "Generating Investment Summary..." : "AI Investment Summary"}
+                        </p>
+                      </div>
+                      
+                      {aiSummary && !isLoadingAiSummary ? (
+                        <div className="us-ai-summary">
+                          <ReactMarkdown
+                            components={{
+                              h2: ({ children }) => (
+                                <h4 className="text-xs font-bold text-foreground mt-3 mb-1.5 first:mt-0 border-b border-border/30 pb-1">{children}</h4>
+                              ),
+                              h3: ({ children }) => (
+                                <h5 className="text-xs font-semibold text-foreground mt-2 mb-1">{children}</h5>
+                              ),
+                              p: ({ children }) => (
+                                <p className="text-xs leading-relaxed text-muted-foreground mb-2">{children}</p>
+                              ),
+                              ul: ({ children }) => (
+                                <ul className="space-y-1 mb-2 ml-1">{children}</ul>
+                              ),
+                              li: ({ children }) => (
+                                <li className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400" />
+                                  <span>{children}</span>
+                                </li>
+                              ),
+                              strong: ({ children }) => (
+                                <strong className="font-semibold text-foreground">{children}</strong>
+                              ),
+                            }}
+                          >
+                            {aiSummary}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 opacity-50 animate-pulse">
+                          <div className="h-2 w-3/4 bg-blue-500/20 rounded"></div>
+                          <div className="h-2 w-full bg-blue-500/20 rounded"></div>
+                          <div className="h-2 w-5/6 bg-blue-500/20 rounded"></div>
+                          <div className="h-2 w-1/2 bg-blue-500/20 rounded mt-4"></div>
+                          <div className="h-2 w-2/3 bg-blue-500/20 rounded"></div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Recommended Parcels */}
+                  {scoreData?.isUS && (recommendedParcels.length > 0 || isSearchingParcels) && (
+                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 mt-3">
+                      <div className="flex items-center gap-2 mb-3">
+                        {isSearchingParcels ? (
+                          <Loader2 className="h-3.5 w-3.5 text-emerald-500 animate-spin" />
+                        ) : (
+                          <MapPin className="h-3.5 w-3.5 text-emerald-500" />
+                        )}
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-500">
+                          {isSearchingParcels ? 'Scanning nearby parcels...' : `${recommendedParcels.length} Matching Parcels`}
+                        </p>
+                      </div>
+
+                      {!isSearchingParcels && recommendedParcels.length > 0 && (
+                        <div className="space-y-2">
+                          {recommendedParcels.map((parcel: any, idx: number) => {
+                            // ── Suitability check per parcel ──
+                            const currentIntendedUse = getValues('intendedUse') || '';
+                            const parcelAreaSqm = parcel.areaSqm || Math.round((parcel.areaSqft || 0) / 10.7639);
+                            const suitability = parcel.zoning
+                              ? checkZoningSuitability(
+                                  parcel.zoning,
+                                  parcel.zoningDescription || '',
+                                  currentIntendedUse,
+                                  parcelAreaSqm,
+                                )
+                              : null;
+                            const hasErrors = suitability?.warnings.some(w => w.level === 'error');
+                            const hasWarnings = suitability?.warnings.some(w => w.level === 'warning');
+                            const borderColor = hasErrors
+                              ? 'border-red-500/40 hover:border-red-500/60'
+                              : hasWarnings
+                                ? 'border-amber-500/40 hover:border-amber-500/60'
+                                : 'border-border/40 hover:border-emerald-500/40';
+
+                            return (
+                              <div
+                                key={parcel.apn || idx}
+                                className={`rounded-lg border ${borderColor} bg-background/60 transition-all cursor-pointer group`}
+                                onClick={() => {
+                                  const c = parcel.centroid;
+                                  if (c) {
+                                    // 1. Fly map to parcel
+                                    window.dispatchEvent(new CustomEvent('flyTo', {
+                                      detail: { center: c, zoom: 18 },
+                                    }));
+
+                                    // 2. Highlight the parcel polygon on map
+                                    if (parcel.geometry) {
+                                      window.dispatchEvent(new CustomEvent('highlightParcel', {
+                                        detail: { geometry: parcel.geometry, apn: parcel.apn },
+                                      }));
+                                    }
+
+                                    // 3. Update form with parcel's actual area so analysis uses correct data
+                                    if (parcel.areaSqm > 0 || parcel.areaSqft > 0) {
+                                      const areaSqm = parcel.areaSqm || Math.round(parcel.areaSqft / 10.7639);
+                                      setValue('landSize', String(areaSqm), { shouldDirty: true, shouldValidate: true });
+                                    }
+
+                                    // 4. Enable click-to-analyze mode + trigger analysis
+                                    actions.setInstantAnalysisMode(true);
+                                    actions.setInstantAnalysisTarget({
+                                      coordinates: c,
+                                      locationLabel: parcel.address && parcel.address !== 'Unknown' && parcel.address !== '' 
+                                        ? `${parcel.address}, ${getValues().location.split(',')[0]}, ${parcel.county}` 
+                                        : `Parcel ${parcel.apn}, ${getValues().location.split(',')[0]}, ${parcel.county}`,
+                                      district: parcel.county,
+                                      stateCode: "US",
+                                      stateName: "",
+                                      plotId: null,
+                                      plotName: null,
+                                      parcelAware: true,
+                                      source: "map-click",
+                                      requestKey: `${c[0].toFixed(6)}:${c[1].toFixed(6)}:${Date.now()}`,
+                                      capturedAt: new Date().toISOString(),
+                                    });
+                                  }
+                                }}
+                              >
+                                <div className="flex items-start gap-3 p-2.5">
+                                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-xs font-bold ${
+                                    hasErrors ? 'bg-red-500/10 text-red-500' : hasWarnings ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'
+                                  }`}>
+                                    {idx + 1}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <p className="text-xs font-semibold text-foreground truncate">
+                                        {parcel.address && parcel.address !== 'Unknown' && parcel.address !== '' ? parcel.address : `Parcel ${parcel.apn}`}
+                                      </p>
+                                      {parcel.assessedValue > 0 && (
+                                        <span className="text-[10px] font-bold text-emerald-400 shrink-0">
+                                          ${(parcel.assessedValue / 1000).toFixed(0)}K
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-3 mt-1">
+                                      {parcel.areaSqft > 0 && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium">
+                                          {parcel.areaSqft.toLocaleString()} sqft · {parcel.areaSqm?.toLocaleString() || Math.round(parcel.areaSqft / 10.7639).toLocaleString()} sqm
+                                        </span>
+                                      )}
+                                      {parcel.zoning && (
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                          hasErrors ? 'bg-red-500/10 text-red-400' : hasWarnings ? 'bg-amber-500/10 text-amber-400' : 'bg-blue-500/10 text-blue-400'
+                                        }`}>
+                                          {parcel.zoning}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <span className="text-[10px] text-muted-foreground">{parcel.county}</span>
+                                      {parcel.apn && <span className="text-[10px] text-muted-foreground">APN: {parcel.apn}</span>}
+                                    </div>
+
+                                    {/* ── Suitability Warnings ── */}
+                                    {suitability && suitability.warnings.filter(w => w.level !== 'info').length > 0 && (
+                                      <div className="mt-2 space-y-1">
+                                        {suitability.warnings.filter(w => w.level !== 'info').map((w, wi) => (
+                                          <div
+                                            key={wi}
+                                            className={`flex items-start gap-1.5 text-[10px] leading-tight px-2 py-1.5 rounded ${
+                                              w.level === 'error'
+                                                ? 'bg-red-500/10 text-red-400'
+                                                : 'bg-amber-500/10 text-amber-400'
+                                            }`}
+                                          >
+                                            {w.level === 'error' ? (
+                                              <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                                            ) : (
+                                              <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                                            )}
+                                            <span>{w.message}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center gap-0.5">
+                                    <MapPin className="h-3.5 w-3.5 text-emerald-400" />
+                                    <span className="text-[8px] text-emerald-400">View</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {isSearchingParcels && (
+                        <div className="space-y-2 opacity-50 animate-pulse">
+                          {[1, 2, 3].map(i => (
+                            <div key={i} className="h-16 bg-emerald-500/10 rounded-lg"></div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* US location hint when no analysis has been run yet */}
+                  {isUSLocation(getValues('location'), analysisCoordinates) && !scoreData && !isRunningScore ? (
+                    <div className="mt-2 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-xs text-white">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <Brain className="h-3.5 w-3.5" />
+                        <span className="font-semibold">US location detected</span>
+                      </div>
+                      Run the analysis to get Development Score + US Market Intelligence + Parcel Data in one report.
+                    </div>
+                  ) : null}
+
+
+                  {/* Build Verdict — only for non-US locations (Bhuvan is India-only) */}
+                  {buildVerdict && !scoreData?.isUS ? (
                     <div className="space-y-4">
                       <div className="rounded-xl border border-border/60 bg-background/80 p-4">
                         <div className="flex items-start justify-between gap-3">

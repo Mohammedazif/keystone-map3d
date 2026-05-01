@@ -931,11 +931,61 @@ export function MapEditor({
     };
     const handleFinishRoad = () => finishRoad();
 
+    // Highlight a parcel polygon on the map (dispatched from recommended parcels list)
+    const HIGHLIGHT_SOURCE = 'highlight-parcel-source';
+    const HIGHLIGHT_FILL = 'highlight-parcel-fill';
+    const HIGHLIGHT_LINE = 'highlight-parcel-line';
+    const handleHighlightParcel = (e: Event) => {
+      const mapInst = map.current;
+      if (!mapInst || !isMapLoaded) return;
+      const { geometry, apn } = (e as CustomEvent).detail;
+      if (!geometry) return;
+
+      const geojson = {
+        type: 'FeatureCollection' as const,
+        features: [{
+          type: 'Feature' as const,
+          properties: { apn: apn || '' },
+          geometry,
+        }],
+      };
+
+      try {
+        if (mapInst.getSource(HIGHLIGHT_SOURCE)) {
+          (mapInst.getSource(HIGHLIGHT_SOURCE) as GeoJSONSource).setData(geojson as any);
+        } else {
+          mapInst.addSource(HIGHLIGHT_SOURCE, { type: 'geojson', data: geojson as any });
+          mapInst.addLayer({
+            id: HIGHLIGHT_FILL,
+            type: 'fill',
+            source: HIGHLIGHT_SOURCE,
+            paint: {
+              'fill-color': 'rgba(16, 185, 129, 0.25)',
+              'fill-outline-color': 'rgba(16, 185, 129, 0.8)',
+            },
+          });
+          mapInst.addLayer({
+            id: HIGHLIGHT_LINE,
+            type: 'line',
+            source: HIGHLIGHT_SOURCE,
+            paint: {
+              'line-color': '#10b981',
+              'line-width': 3,
+              'line-dasharray': [2, 1],
+            },
+          });
+        }
+      } catch (err) {
+        console.warn('[HighlightParcel] Failed to render:', err);
+      }
+    };
+
     window.addEventListener("locateUser", handleLocate);
     window.addEventListener("closePolygon", handleCloseEvent);
     window.addEventListener("finishRoad", handleFinishRoad);
     window.addEventListener("resizeMap", handleResize);
     window.addEventListener("flyTo", handleFlyTo);
+    window.addEventListener("highlightParcel", handleHighlightParcel);
 
     return () => {
       window.removeEventListener("locateUser", handleLocate);
@@ -943,6 +993,7 @@ export function MapEditor({
       window.removeEventListener("finishRoad", handleFinishRoad);
       window.removeEventListener("resizeMap", handleResize);
       window.removeEventListener("flyTo", handleFlyTo);
+      window.removeEventListener("highlightParcel", handleHighlightParcel);
     };
   }, [locateUser, closePolygon, finishRoad]);
 
@@ -1097,6 +1148,172 @@ export function MapEditor({
       map.current = null;
     };
   }, []);
+
+  // ── US Parcel Layer ──────────────────────────────────────────────────────────
+
+  const usParcelFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const US_PARCEL_SOURCE = 'us-parcels-source';
+  const US_PARCEL_FILL_LAYER = 'us-parcels-fill';
+  const US_PARCEL_OUTLINE_LAYER = 'us-parcels-outline';
+  const US_PARCEL_LABEL_LAYER = 'us-parcels-label';
+
+  const isInstantAnalysisModeForParcels = useBuildingStore(
+    (s) => s.uiState.isInstantAnalysisMode,
+  );
+
+  useEffect(() => {
+    const mapInst = map.current;
+    if (!mapInst || !isMapLoaded) return;
+
+    const hideParcels = () => {
+      if (mapInst.getLayer(US_PARCEL_FILL_LAYER)) {
+        mapInst.setLayoutProperty(US_PARCEL_FILL_LAYER, 'visibility', 'none');
+        mapInst.setLayoutProperty(US_PARCEL_OUTLINE_LAYER, 'visibility', 'none');
+        mapInst.setLayoutProperty(US_PARCEL_LABEL_LAYER, 'visibility', 'none');
+      }
+    };
+
+    if (!isInstantAnalysisModeForParcels) {
+      hideParcels();
+      return;
+    }
+
+    const fetchAndRenderParcels = async () => {
+      if (!mapInst.isStyleLoaded()) {
+        console.log('[USParcels] Style not loaded yet, skipping');
+        return;
+      }
+      const zoom = mapInst.getZoom();
+      console.log('[USParcels] fetchAndRenderParcels called, zoom:', zoom.toFixed(1));
+      if (zoom < 13) {
+        console.log('[USParcels] Zoom too low, hiding parcels');
+        hideParcels();
+        return;
+      }
+
+      const bounds = mapInst.getBounds();
+      const center = mapInst.getCenter();
+      if (!bounds) return;
+
+      // Quick check: is the center within a supported US county?
+      const { isInSupportedUSCounty } = await import('@/services/us/us-parcel-fetcher');
+      if (!isInSupportedUSCounty(center.lng, center.lat)) {
+        console.log('[USParcels] Not in supported US county, hiding', center.lng.toFixed(4), center.lat.toFixed(4));
+        hideParcels();
+        return;
+      }
+      console.log('[USParcels] In supported US county, fetching parcels...');
+
+      try {
+        const res = await fetch(
+          `/api/us/parcels?west=${bounds.getWest()}&south=${bounds.getSouth()}&east=${bounds.getEast()}&north=${bounds.getNorth()}`
+        );
+        if (!res.ok) {
+          console.warn('[USParcels] API returned', res.status);
+          return;
+        }
+        const geojson = await res.json();
+        console.log('[USParcels] Got', geojson.features?.length || 0, 'features');
+
+        if (!geojson.features || geojson.features.length === 0) return;
+
+        // Add or update source
+        const existingSource = mapInst.getSource(US_PARCEL_SOURCE) as mapboxgl.GeoJSONSource;
+        if (existingSource) {
+          console.log('[USParcels] Updating existing source');
+          existingSource.setData(geojson);
+          if (mapInst.getLayer(US_PARCEL_FILL_LAYER)) {
+            mapInst.setLayoutProperty(US_PARCEL_FILL_LAYER, 'visibility', 'visible');
+            mapInst.setLayoutProperty(US_PARCEL_OUTLINE_LAYER, 'visibility', 'visible');
+            mapInst.setLayoutProperty(US_PARCEL_LABEL_LAYER, 'visibility', 'visible');
+          }
+        } else {
+          mapInst.addSource(US_PARCEL_SOURCE, {
+            type: 'geojson',
+            data: geojson,
+          });
+
+          // Fill layer — semi-transparent parcels
+          mapInst.addLayer({
+            id: US_PARCEL_FILL_LAYER,
+            type: 'fill',
+            source: US_PARCEL_SOURCE,
+            paint: {
+              'fill-color': [
+                'case',
+                ['boolean', ['feature-state', 'hover'], false],
+                'rgba(59, 130, 246, 0.4)',
+                'rgba(59, 130, 246, 0.1)',
+              ],
+              'fill-outline-color': 'rgba(59, 130, 246, 0.6)',
+            },
+          });
+
+          // Outline layer — parcel borders
+          mapInst.addLayer({
+            id: US_PARCEL_OUTLINE_LAYER,
+            type: 'line',
+            source: US_PARCEL_SOURCE,
+            paint: {
+              'line-color': 'rgba(59, 130, 246, 0.5)',
+              'line-width': 1.5,
+            },
+          });
+
+          // Label layer — show APN at high zoom
+          mapInst.addLayer({
+            id: US_PARCEL_LABEL_LAYER,
+            type: 'symbol',
+            source: US_PARCEL_SOURCE,
+            minzoom: 17,
+            layout: {
+              'text-field': ['get', 'apn'],
+              'text-size': 10,
+              'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+              'text-allow-overlap': false,
+            },
+            paint: {
+              'text-color': '#3b82f6',
+              'text-halo-color': '#ffffff',
+              'text-halo-width': 1,
+            },
+          });
+
+          // Click handler — we no longer show a mapbox popup here to avoid conflicts
+          // with the highly detailed sidebar data. Let the generic map click handle selection.
+          mapInst.on('click', US_PARCEL_FILL_LAYER, (e) => {
+            // Future: could highlight the selected parcel vector here
+          });
+
+          // Hover cursor
+          mapInst.on('mouseenter', US_PARCEL_FILL_LAYER, () => {
+            mapInst.getCanvas().style.cursor = 'pointer';
+          });
+          mapInst.on('mouseleave', US_PARCEL_FILL_LAYER, () => {
+            mapInst.getCanvas().style.cursor = '';
+          });
+        }
+      } catch (err) {
+        console.error('[USParcels] Failed to fetch parcels:', err);
+      }
+    };
+
+    // Debounced fetch on map movement
+    const onMoveEnd = () => {
+      if (usParcelFetchTimerRef.current) clearTimeout(usParcelFetchTimerRef.current);
+      usParcelFetchTimerRef.current = setTimeout(fetchAndRenderParcels, 500);
+    };
+
+    mapInst.on('moveend', onMoveEnd);
+
+    fetchAndRenderParcels();
+
+    return () => {
+      mapInst.off('moveend', onMoveEnd);
+      if (usParcelFetchTimerRef.current) clearTimeout(usParcelFetchTimerRef.current);
+    };
+  }, [isMapLoaded, isInstantAnalysisModeForParcels]);
+
 
   // Auto-navigate to project location or first plot on load
   useEffect(() => {
@@ -3560,7 +3777,7 @@ export function MapEditor({
               }
               if (!mapInstance.hasImage(circPatternName)) {
                 const imgC = generateBuildingTexture(
-                  "Circulation",
+                  "Circulation" as any,
                   "#78909C", // Slate Gray for corridors
                   coreOpacity,
                 );
@@ -3577,8 +3794,8 @@ export function MapEditor({
                 data: coreGeoData as any,
               });
 
-            const colorExpression = ["case", ["==", ["get", "type"], "Circulation"], "#78909C", "#9370DB"];
-            const patternExpression = ["case", ["==", ["get", "type"], "Circulation"], circPatternName, patternName];
+            const colorExpression = ["case", ["==", ["get", "type"], "Circulation"], "#78909C", "#9370DB"] as any;
+            const patternExpression = ["case", ["==", ["get", "type"], "Circulation"], circPatternName, patternName] as any;
 
             if (!mapInstance.getLayer(layerId)) {
               const paintProps: any = {

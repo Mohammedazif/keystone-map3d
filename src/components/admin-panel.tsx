@@ -5,7 +5,7 @@ import { collection, doc, getDocs, setDoc, writeBatch, deleteDoc } from 'firebas
 import type { RegulationData, GreenRegulationData, VastuRegulationData } from '@/lib/types';
 import { Button } from './ui/button';
 import { toast } from '@/hooks/use-toast';
-import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload, Leaf, Compass, Pencil, MapPin, Landmark, Ruler, LayoutGrid, ArrowUpDown, Users, Car, DoorOpen, Flame, TreePine, Wrench, HardHat, CircleDollarSign } from 'lucide-react';
+import { Loader2, Plus, Building, Scaling, Droplets, ShieldCheck, Banknote, Trash2, Upload, Leaf, Compass, Pencil, MapPin, Landmark, Ruler, LayoutGrid, ArrowUpDown, Users, Car, DoorOpen, Flame, TreePine, Wrench, HardHat, CircleDollarSign, Accessibility } from 'lucide-react';
 import { AdminDetailsSidebar } from './admin-details-sidebar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { cn } from '@/lib/utils';
@@ -190,6 +190,27 @@ const DEFAULT_REGULATION_DATA: Omit<RegulationData, 'location' | 'type' | 'marke
         absorption_assumptions: { desc: "Absorption assumptions (for large projects)", unit: "%/year", value: "", exampleStr: "e.g. 20" },
         infra_load_vs_financial_viability: { desc: "Infrastructure load vs financial viability", unit: "", value: "", exampleStr: "e.g. 0" },
     },
+    accessibility: {
+        // IFC Fire Code (US — IFC 2021)
+        hydrant_spacing: { desc: "Fire hydrant max spacing (IFC 507)", unit: "m", value: "122", exampleStr: "e.g. 122" },
+        fire_lane_width: { desc: "Fire lane minimum width (IFC 503)", unit: "m", value: "6.1", exampleStr: "e.g. 6.1" },
+        standpipe_required: { desc: "Standpipe system required (IFC 905)", unit: "", value: "1", exampleStr: "e.g. 1 = yes" },
+        fire_sprinkler_threshold: { desc: "Area threshold requiring sprinkler (IFC 903)", unit: "sqm", value: "464", exampleStr: "e.g. 464" },
+        fire_alarm_threshold_occupants: { desc: "Occupant load requiring fire alarm (IFC 907)", unit: "", value: "50", exampleStr: "e.g. 50" },
+        travel_distance_sprinklered: { desc: "Max travel distance - sprinklered (IFC 1017)", unit: "m", value: "76", exampleStr: "e.g. 76" },
+        travel_distance_unsprinklered: { desc: "Max travel distance - unsprinklered (IFC 1017)", unit: "m", value: "61", exampleStr: "e.g. 61" },
+        smoke_control_threshold: { desc: "Height for smoke control system (IFC 909)", unit: "m", value: "22.9", exampleStr: "e.g. 22.9" },
+        // ADA Accessibility (US — ADA 2010)
+        accessible_route_width: { desc: "Accessible route min width (ADA 403)", unit: "m", value: "0.915", exampleStr: "e.g. 0.915" },
+        accessible_parking_pct: { desc: "Accessible parking percentage (ADA 208)", unit: "%", value: "2", exampleStr: "e.g. 2" },
+        accessible_parking_van: { desc: "Van-accessible spaces (1 per 6 accessible)", unit: "spaces", value: "1", exampleStr: "e.g. 1" },
+        ramp_max_slope: { desc: "Maximum ramp slope ratio (ADA 405)", unit: "ratio", value: "0.0833", exampleStr: "e.g. 0.083" },
+        door_clearance_width: { desc: "Minimum door clearance width (ADA 404)", unit: "m", value: "0.815", exampleStr: "e.g. 0.815" },
+        elevator_required_floors: { desc: "Floors above which elevator required (ADA 206)", unit: "", value: "1", exampleStr: "e.g. 1" },
+        accessible_restrooms: { desc: "Accessible restrooms per floor (ADA 213)", unit: "", value: "1", exampleStr: "e.g. 1" },
+        signage_compliance: { desc: "Signage compliance — Braille + visual (ADA 703)", unit: "", value: "1", exampleStr: "e.g. 1 = yes" },
+        common_area_accessible: { desc: "Common areas fully accessible (ADA 206)", unit: "", value: "1", exampleStr: "e.g. 1 = yes" },
+    },
 };
 
 const sanitizeFirestoreData = <T,>(value: T): T =>
@@ -223,11 +244,24 @@ export function AdminPanel() {
     const fetchRegulations = async () => {
         setIsLoading(true);
         try {
-            const [indiaSnapshot, usSnapshot] = await Promise.all([
-                getDocs(getRegulationsCollection(INDIA_REGULATIONS_COLLECTION)),
-                getDocs(getRegulationsCollection(US_REGULATIONS_COLLECTION)),
-            ]);
-            const data = [...indiaSnapshot.docs, ...usSnapshot.docs].map(doc => doc.data() as RegulationData);
+            let indiaDocs: any[] = [];
+            let usDocs: any[] = [];
+
+            try {
+                const indiaSnapshot = await getDocs(getRegulationsCollection(INDIA_REGULATIONS_COLLECTION));
+                indiaDocs = indiaSnapshot.docs.map(doc => doc.data());
+            } catch (err) {
+                console.error("Error fetching India regulations:", err);
+            }
+
+            try {
+                const usSnapshot = await getDocs(getRegulationsCollection(US_REGULATIONS_COLLECTION));
+                usDocs = usSnapshot.docs.map(doc => doc.data());
+            } catch (err) {
+                console.error("Error fetching US regulations:", err);
+            }
+
+            const data = [...indiaDocs, ...usDocs] as RegulationData[];
             setRegulations(data);
 
             const greenSnapshot = await getDocs(greenRegulationsCollection);
@@ -280,19 +314,29 @@ export function AdminPanel() {
         }
     }, [selectedRegulation, selectedCategory]);
 
-    const groupedRegulations = useMemo(() => {
-        const groups: Record<string, RegulationData[]> = {};
+    const groupedRegulationsByMarket = useMemo(() => {
+        const markets: Record<string, Record<string, RegulationData[]>> = {
+            'India': {},
+            'USA': {}
+        };
         regulations.forEach(reg => {
-            if (!groups[reg.location]) {
-                groups[reg.location] = [];
+            const market = reg.market || inferRegulationGeography(reg.location).market || 'India';
+            if (!markets[market]) {
+                markets[market] = {};
             }
-            groups[reg.location].push(reg);
+            if (!markets[market][reg.location]) {
+                markets[market][reg.location] = [];
+            }
+            markets[market][reg.location].push(reg);
         });
         // Sort keys alphabetically
-        return Object.keys(groups).sort().reduce((acc, key) => {
-            acc[key] = groups[key];
-            return acc;
-        }, {} as Record<string, RegulationData[]>);
+        Object.keys(markets).forEach(market => {
+            markets[market] = Object.keys(markets[market]).sort().reduce((acc, key) => {
+                acc[key] = markets[market][key];
+                return acc;
+            }, {} as Record<string, RegulationData[]>);
+        });
+        return markets;
     }, [regulations]);
 
     const handleUpdate = (path: string, value: any) => {
@@ -431,7 +475,7 @@ export function AdminPanel() {
     }
 
     const handleDeleteLocation = async (location: string) => {
-        const locationRegulations = groupedRegulations[location];
+        const locationRegulations = regulations.filter(reg => reg.location === location);
         if (!locationRegulations || locationRegulations.length === 0) return;
 
         setDeletingId(location);
@@ -582,6 +626,8 @@ export function AdminPanel() {
         setSelectedCategory(null);
     };
 
+    const isUS = selectedRegulation ? (selectedRegulation.market === 'USA' || inferRegulationGeography(selectedRegulation.location).market === 'USA') : false;
+
     const categories: { key: keyof typeof DEFAULT_REGULATION_DATA, icon: React.ElementType }[] = [
         { key: 'geometry', icon: Scaling },
         { key: 'highrise', icon: ArrowUpDown },
@@ -589,6 +635,7 @@ export function AdminPanel() {
         { key: 'sustainability', icon: Droplets },
         { key: 'safety_and_services', icon: ShieldCheck },
         { key: 'administration', icon: Banknote },
+        ...(isUS ? [{ key: 'accessibility' as const, icon: Accessibility }] : []),
     ];
 
 
@@ -640,107 +687,121 @@ export function AdminPanel() {
                                     </div>
 
                                     {regulations.length > 0 ? (
-                                        <Accordion type="single" collapsible className="w-full space-y-4">
-                                            {Object.entries(groupedRegulations).map(([location, locationRegulations]) => (
-                                                <AccordionItem value={location} key={location} className="border rounded-lg bg-card px-4 group/item">
-                                                    <AccordionTrigger className="hover:no-underline py-4 group">
-                                                        <div className="flex items-center justify-between w-full pr-4">
-                                                            <div className="flex items-center gap-4">
-                                                                <span className="text-xl font-semibold text-primary">{location}</span>
-                                                                <Badge variant="secondary" className="ml-2">{locationRegulations.length} Types</Badge>
-                                                            </div>
-                                                            <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
-                                                                <AlertDialog>
-                                                                    <AlertDialogTrigger asChild>
-                                                                        <div 
-                                                                            role="button"
-                                                                            className={cn(
-                                                                                "flex items-center justify-center h-8 w-8 rounded-md transition-opacity",
-                                                                                deletingId === location 
-                                                                                    ? "opacity-50 cursor-not-allowed text-destructive" 
-                                                                                    : "text-destructive/50 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover/item:opacity-100 cursor-pointer"
-                                                                            )}
-                                                                        >
-                                                                            {deletingId === location ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                                                                        </div>
-                                                                    </AlertDialogTrigger>
-                                                                    <AlertDialogContent>
-                                                                        <AlertDialogHeader>
-                                                                            <AlertDialogTitle>Delete all regulations for {location}?</AlertDialogTitle>
-                                                                            <AlertDialogDescription>
-                                                                                This will permanently delete all {locationRegulations.length} regulation types for this location. This action cannot be undone.
-                                                                            </AlertDialogDescription>
-                                                                        </AlertDialogHeader>
-                                                                        <AlertDialogFooter>
-                                                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                                            <AlertDialogAction 
-                                                                                className="bg-destructive hover:bg-destructive/90"
-                                                                                onClick={() => handleDeleteLocation(location)}
-                                                                            >
-                                                                                Delete All
-                                                                            </AlertDialogAction>
-                                                                        </AlertDialogFooter>
-                                                                    </AlertDialogContent>
-                                                                </AlertDialog>
-                                                            </div>
-                                                        </div>
-                                                    </AccordionTrigger>
-                                                    <AccordionContent className="pt-2 pb-6">
-                                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pt-4">
-                                                            {locationRegulations.map(reg => {
-                                                                const docId = `${reg.location}-${reg.type}`.replace(/[\s/]+/g, '-');
-                                                                const isDeleting = deletingId === docId;
-                                                                return (
-                                                                    <Card
-                                                                        key={docId}
-                                                                        className="cursor-pointer hover:bg-secondary/50 transition-colors hover:shadow-lg relative group border-border/50"
-                                                                        onClick={() => setSelectedRegulation(reg)}
-                                                                    >
-                                                                        <CardHeader>
-                                                                            <div className="flex items-start justify-between">
-                                                                                <Badge variant="outline" className="mb-2 truncate max-w-[85%]">{reg.type}</Badge>
-                                                                                <div onClick={(e) => e.stopPropagation()}>
+                                        <Accordion type="multiple" defaultValue={Object.keys(groupedRegulationsByMarket)} className="w-full space-y-8">
+                                            {Object.entries(groupedRegulationsByMarket).map(([market, groupedRegulations]) => {
+                                                if (Object.keys(groupedRegulations).length === 0) return null;
+                                                return (
+                                                    <AccordionItem value={market} key={market} className="border-0">
+                                                        <AccordionTrigger className="hover:no-underline py-2 border-b border-border mb-4">
+                                                            <h3 className="text-xl font-semibold text-primary/80">{market} Regulations</h3>
+                                                        </AccordionTrigger>
+                                                        <AccordionContent className="pt-0 pb-6 overflow-visible">
+                                                            <Accordion type="single" collapsible className="w-full space-y-4">
+                                                                {Object.entries(groupedRegulations).map(([location, locationRegulations]) => (
+                                                                    <AccordionItem value={location} key={location} className="border rounded-lg bg-card px-4 group/item">
+                                                                        <AccordionTrigger className="hover:no-underline py-4 group">
+                                                                            <div className="flex items-center justify-between w-full pr-4">
+                                                                                <div className="flex items-center gap-4">
+                                                                                    <span className="text-xl font-semibold text-primary">{location}</span>
+                                                                                    <Badge variant="secondary" className="ml-2">{locationRegulations.length} Types</Badge>
+                                                                                </div>
+                                                                                <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
                                                                                     <AlertDialog>
                                                                                         <AlertDialogTrigger asChild>
-                                                                                            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity -mr-2 -mt-2" disabled={isDeleting}>
-                                                                                                {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                                                                                            </Button>
+                                                                                            <div 
+                                                                                                role="button"
+                                                                                                className={cn(
+                                                                                                    "flex items-center justify-center h-8 w-8 rounded-md transition-opacity",
+                                                                                                    deletingId === location 
+                                                                                                        ? "opacity-50 cursor-not-allowed text-destructive" 
+                                                                                                        : "text-destructive/50 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover/item:opacity-100 cursor-pointer"
+                                                                                                )}
+                                                                                            >
+                                                                                                {deletingId === location ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                                                                            </div>
                                                                                         </AlertDialogTrigger>
-                                                                                    <AlertDialogContent>
-                                                                                        <AlertDialogHeader>
-                                                                                            <AlertDialogTitle>Delete {reg.type}?</AlertDialogTitle>
-                                                                                            <AlertDialogDescription>
-                                                                                                This will permanently delete the regulation for {reg.location} - {reg.type}.
-                                                                                            </AlertDialogDescription>
-                                                                                        </AlertDialogHeader>
-                                                                                        <AlertDialogFooter>
-                                                                                            <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
-                                                                                            <AlertDialogAction className="bg-destructive hover:bg-destructive/90" onClick={(e) => { e.stopPropagation(); handleDeleteRegulation(reg); }}>
-                                                                                                Delete
-                                                                                            </AlertDialogAction>
-                                                                                        </AlertDialogFooter>
-                                                                                    </AlertDialogContent>
-                                                                                </AlertDialog>
+                                                                                        <AlertDialogContent>
+                                                                                            <AlertDialogHeader>
+                                                                                                <AlertDialogTitle>Delete all regulations for {location}?</AlertDialogTitle>
+                                                                                                <AlertDialogDescription>
+                                                                                                    This will permanently delete all {locationRegulations.length} regulation types for this location. This action cannot be undone.
+                                                                                                </AlertDialogDescription>
+                                                                                            </AlertDialogHeader>
+                                                                                            <AlertDialogFooter>
+                                                                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                                                                <AlertDialogAction 
+                                                                                                    className="bg-destructive hover:bg-destructive/90"
+                                                                                                    onClick={() => handleDeleteLocation(location)}
+                                                                                                >
+                                                                                                    Delete All
+                                                                                                </AlertDialogAction>
+                                                                                            </AlertDialogFooter>
+                                                                                        </AlertDialogContent>
+                                                                                    </AlertDialog>
                                                                                 </div>
                                                                             </div>
-                                                                            <div className="space-y-1">
-                                                                                <div className="text-sm text-muted-foreground flex justify-between">
-                                                                                    <span>Max Height:</span>
-                                                                                    <span className="font-medium text-foreground">{reg.geometry?.max_height?.value || '-'}m</span>
-                                                                                </div>
-                                                                                <div className="text-sm text-muted-foreground flex justify-between">
-                                                                                    <span>FAR:</span>
-                                                                                    <span className="font-medium text-foreground">{reg.geometry?.floor_area_ratio?.value || '-'}</span>
-                                                                                </div>
+                                                                        </AccordionTrigger>
+                                                                        <AccordionContent className="pt-2 pb-6">
+                                                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pt-4">
+                                                                                {locationRegulations.map(reg => {
+                                                                                    const docId = `${reg.location}-${reg.type}`.replace(/[\s/]+/g, '-');
+                                                                                    const isDeleting = deletingId === docId;
+                                                                                    return (
+                                                                                        <Card
+                                                                                            key={docId}
+                                                                                            className="cursor-pointer hover:bg-secondary/50 transition-colors hover:shadow-lg relative group border-border/50"
+                                                                                            onClick={() => setSelectedRegulation(reg)}
+                                                                                        >
+                                                                                            <CardHeader>
+                                                                                                <div className="flex items-start justify-between">
+                                                                                                    <Badge variant="outline" className="mb-2 truncate max-w-[85%]">{reg.type}</Badge>
+                                                                                                    <div onClick={(e) => e.stopPropagation()}>
+                                                                                                        <AlertDialog>
+                                                                                                            <AlertDialogTrigger asChild>
+                                                                                                                <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity -mr-2 -mt-2" disabled={isDeleting}>
+                                                                                                                    {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                                                                                                                </Button>
+                                                                                                            </AlertDialogTrigger>
+                                                                                                            <AlertDialogContent>
+                                                                                                                <AlertDialogHeader>
+                                                                                                                    <AlertDialogTitle>Delete {reg.type}?</AlertDialogTitle>
+                                                                                                                    <AlertDialogDescription>
+                                                                                                                        This will permanently delete the regulation for {reg.location} - {reg.type}.
+                                                                                                                    </AlertDialogDescription>
+                                                                                                                </AlertDialogHeader>
+                                                                                                                <AlertDialogFooter>
+                                                                                                                    <AlertDialogCancel onClick={(e) => e.stopPropagation()}>Cancel</AlertDialogCancel>
+                                                                                                                    <AlertDialogAction className="bg-destructive hover:bg-destructive/90" onClick={(e) => { e.stopPropagation(); handleDeleteRegulation(reg); }}>
+                                                                                                                        Delete
+                                                                                                                    </AlertDialogAction>
+                                                                                                                </AlertDialogFooter>
+                                                                                                            </AlertDialogContent>
+                                                                                                        </AlertDialog>
+                                                                                                        </div>
+                                                                                                </div>
+                                                                                                <div className="space-y-1">
+                                                                                                    <div className="text-sm text-muted-foreground flex justify-between">
+                                                                                                        <span>Max Height:</span>
+                                                                                                        <span className="font-medium text-foreground">{reg.geometry?.max_height?.value || '-'}m</span>
+                                                                                                    </div>
+                                                                                                    <div className="text-sm text-muted-foreground flex justify-between">
+                                                                                                        <span>FAR:</span>
+                                                                                                        <span className="font-medium text-foreground">{reg.geometry?.floor_area_ratio?.value || '-'}</span>
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                            </CardHeader>
+                                                                                        </Card>
+                                                                                    );
+                                                                                })}
                                                                             </div>
-                                                                        </CardHeader>
-                                                                    </Card>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                    </AccordionContent>
-                                                </AccordionItem>
-                                            ))}
+                                                                        </AccordionContent>
+                                                                    </AccordionItem>
+                                                                ))}
+                                                            </Accordion>
+                                                        </AccordionContent>
+                                                    </AccordionItem>
+                                                );
+                                            })}
                                         </Accordion>
                                     ) : (
                                         <div className="text-center py-16 border-2 border-dashed border-border rounded-lg">

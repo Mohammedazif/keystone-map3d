@@ -5,6 +5,7 @@ import { GoogleMapsServerService } from '@/services/land-intelligence/google-map
 import { PopulationMigrationService } from '@/services/land-intelligence/population-migration-service';
 import { ProposedInfraService } from '@/services/land-intelligence/proposed-infra-service';
 import { lookupRegulationForLocationAndUse } from '@/lib/regulation-lookup';
+import { getUSScoreInputs, isUSCoordinates } from '@/services/us/us-score-data-service';
 import { evaluateDevelopability, toDevelopabilityScore } from '@/lib/scoring/developability-engine';
 import type { ItemResult } from '@/lib/scoring/schema-engine';
 import type {
@@ -73,10 +74,13 @@ function getRegulationText(regulation: RegulationData | null) {
 // Current legal scoring is driven by admin/regulation records only.
 // Until master-plan extraction is wired in, this is the best available zoning/CLU evidence,
 // but it is still incomplete for locations where regulation data is missing or sparse.
-function regulationAllowsUse(regulation: RegulationData | null, intendedUse: string | undefined) {
-  if (!regulation || !intendedUse) return false;
+function regulationAllowsUse(
+  regulation: RegulationData | null,
+  options?: { intendedUse?: string; parcelAware?: boolean },
+) {
+  if (!regulation || !options?.intendedUse) return !!options?.parcelAware;
 
-  const intended = normalizeText(intendedUse);
+  const intended = normalizeText(options.intendedUse);
   const regType = normalizeText(regulation.type);
   const { zoneText } = getRegulationText(regulation);
   const haystack = `${regType} ${zoneText}`.trim();
@@ -307,7 +311,23 @@ export async function POST(request: NextRequest) {
     const state = query.location;
     const district = query.district;
 
-    console.log(`[Land Intel] Computing Developability Score for ${state}${district ? ` / ${district}` : ''}`);
+    const isUS = isUSCoordinates(coords[0], coords[1]);
+    console.log(`[Land Intel] Computing Developability Score for ${state}${district ? ` / ${district}` : ''} [${isUS ? 'US' : 'Global'}]`);
+
+    // The US data services expect "City, State" to properly map to Census/BLS FIPS codes.
+    // In our payload, query.location is usually the State and query.district is the City.
+    // However, we now pass query.rawLocation to preserve the original unmodified search string (like "Parcel X, Austin, Texas").
+    const fullUSLocation = query.rawLocation || (district ? `${district}, ${state}` : state);
+
+    const usScoreInputsPromise = isUS ? getUSScoreInputs(fullUSLocation) : Promise.resolve(null);
+    // Fetch US parcel data inline ONLY if a parcel-aware request is made (drawn plot or clicked point)
+    const usParcelPromise = (isUS && query.parcelAware)
+      ? import('@/services/us/us-parcel-service').then(m => m.USParcelService.getParcelData(fullUSLocation, Number(query.landSizeSqm) || 1000, coords)).catch(() => null)
+      : Promise.resolve(null);
+
+    // AI Summary is intentionally excluded from this response to keep latency low.
+    // The frontend calls /api/land-intelligence/ai-summary separately after the score loads.
+    const usAiSummaryPromise = Promise.resolve(null);
 
     // Parcel-aware access scoring samples the parcel boundary when geometry is available.
     // Without parcel geometry, connectivity falls back to the centroid only, which is less reliable.
@@ -396,6 +416,51 @@ export async function POST(request: NextRequest) {
       proposedInfraData.status === 'fulfilled'
         ? proposedInfraData.value
         : EMPTY_PROPOSED_INFRA_SIGNAL;
+
+    const usAiSummary = await usAiSummaryPromise;
+
+    const usInputs = await usScoreInputsPromise;
+    const usParcel = await usParcelPromise;
+
+    // Compute buyability score server-side (no AI needed) from parcel + market data
+    let usBuyabilityScore: number | null = null;
+    let usDevelopmentProspect: string | null = null;
+    if (isUS && usInputs) {
+      let score = 0;
+      
+      // Economy contribution (0-30)
+      const unemp = usInputs.economicHealthValue.unemploymentRate;
+      score += unemp <= 3.5 ? 15 : unemp <= 5.0 ? 12 : unemp < 7.0 ? 8 : 4;
+      
+      const income = usInputs.economicHealthValue.medianIncome;
+      score += income >= 100000 ? 15 : income >= 75000 ? 12 : income > 50000 ? 8 : 4;
+
+      // Population contribution (0-30)
+      const pop = usInputs.populationGrowthValue.population;
+      score += pop > 1000000 ? 15 : pop >= 500000 ? 12 : pop > 100000 ? 8 : 4;
+      
+      const tier = (usInputs.populationGrowthValue.growthTier || '').toLowerCase();
+      score += (tier.includes('high') || tier.includes('major') || tier.includes('strong')) ? 15 : (tier.includes('mod') || tier.includes('stable') || tier.includes('emerging')) ? 10 : 5;
+
+      // Permits / Market contribution (0-20)
+      const permits = usInputs.permitActivityValue.totalUnits;
+      score += permits > 10000 ? 20 : permits > 5000 ? 15 : permits > 1000 ? 10 : 5;
+
+      // Parcel specific readiness (0-20)
+      if (usParcel) {
+        if (usParcel.zoning?.zoningCode && usParcel.zoning.zoningCode !== 'Unknown') score += 8;
+        if (usParcel.title?.assessedValue && usParcel.title.assessedValue > 0) score += 4;
+        const hasLien = usParcel.encumbrances?.some(e => e.type?.toLowerCase().includes('lien') || e.status?.toLowerCase().includes('dispute'));
+        if (!hasLien) score += 8;
+      } else {
+        // General location search gets generic points
+        score += 10;
+      }
+
+      usBuyabilityScore = Math.min(100, Math.max(0, score));
+      usDevelopmentProspect = usBuyabilityScore >= 80 ? 'Excellent' : usBuyabilityScore >= 65 ? 'Good' : usBuyabilityScore >= 45 ? 'Moderate' : 'Risky';
+    }
+
     const underwriting = query.underwriting;
     const storedAmenities: AmenityRecord[] = Array.isArray(query.locationAmenities) ? query.locationAmenities : [];
     const roadAccessSides = Array.isArray(query.roadAccessSides)
@@ -461,7 +526,7 @@ export async function POST(request: NextRequest) {
     const roadWidth = getNumericRegulationValue(regulation, ['geometry', 'road_width', 'value']);
     const frontageWidth = getNumericRegulationValue(regulation, ['geometry', 'minimum_frontage_width', 'value']);
     const absorptionRate = getNumericRegulationValue(regulation, ['administration', 'absorption_assumptions', 'value']);
-    const regulationPermitsUse = regulationAllowsUse(regulation, query.intendedUse);
+    const regulationPermitsUse = regulationAllowsUse(regulation, { intendedUse: query.intendedUse, parcelAware: query.parcelAware });
     const cluPossible = canPotentiallyConvert(regulation);
     const nearestOperationalSez = await getNearestOperationalSez(coords, sez);
     const populationMigration = PopulationMigrationService.analyze({
@@ -609,8 +674,13 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    // GP2 remains a broad FDI proxy until we ingest actual corridor/growth-zone geodata.
-    if (fdi.length > 0) {
+    if (isUS && usInputs) {
+      results['GP2'] = {
+        score: usInputs.economicHealthScore,
+        status: usInputs.economicHealthValue.unemploymentRate < 5,
+        value: usInputs.economicHealthValue,
+      };
+    } else if (fdi.length > 0) {
       const totalFDI = fdi.reduce((sum, record) => sum + record.amountUsdMillions, 0);
       results['GP2'] = {
         score: totalFDI > 1000 ? 60 : totalFDI > 500 ? 45 : totalFDI > 100 ? 30 : 15,
@@ -619,7 +689,7 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    // GP3 still uses area-level satellite change, not parcel-specific historical land-cover change.
+    // GP3 — Satellite NDVI (works globally via Earth Engine)
     if (satellite) {
       results['GP3'] = {
         score: Math.min(80, Math.round(satellite.builtUpChange5yr * 3.2)),
@@ -628,7 +698,14 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    if (populationMigration) {
+    // GP4 — US: Population size/growth tier (Census ACS) / India: Census 2011 migration
+    if (isUS && usInputs) {
+      results['GP4'] = {
+        score: usInputs.populationGrowthScore,
+        status: usInputs.populationGrowthValue.population > 200_000,
+        value: usInputs.populationGrowthValue,
+      };
+    } else if (populationMigration) {
       const annualGrowth = populationMigration.projectedAnnualGrowthRate2011To2025;
       const confidenceMultiplier = 0.85 + populationMigration.confidence * 0.15;
       const rawGp4Score =
@@ -650,9 +727,18 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    // GP5 uses a lightweight public-source parser for now.
-    // This is intentionally treated as a signal, not a fully authoritative planned-infra dataset.
-    if (proposedInfra.available) {
+    // GP5 — US: Building permit activity (Census BPS) / India: MoSPI proposed infra
+    if (isUS && usInputs) {
+      results['GP5'] = {
+        score: usInputs.permitActivityScore,
+        status: usInputs.permitActivityValue.totalUnits > 5000,
+        value: {
+          count: usInputs.permitActivityValue.totalUnits,
+          source: 'US Census Bureau Building Permits Survey',
+          permits: usInputs.permitActivityValue,
+        },
+      };
+    } else if (proposedInfra.available) {
       results['GP5'] = {
         score:
           proposedInfra.count >= 4
@@ -669,7 +755,68 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    if (regulation) {
+    if (isUS && usParcel) {
+      // LR1 — Zoning compliance: US parcel has a zoning code
+      const hasZoning = !!usParcel.zoning?.zoningCode;
+      results['LR1'] = {
+        score: hasZoning ? 80 : 0,
+        status: hasZoning,
+        value: usParcel.zoning,
+      };
+
+      // LR2 — CLU feasibility: Based on zoning description matching intended use
+      const zoningDesc = (usParcel.zoning?.zoningDescription || '').toLowerCase();
+      const intendedUse = (query.intendedUse || '').toLowerCase();
+      const zoningAligns = 
+        (intendedUse.includes('residential') && (zoningDesc.includes('residential') || zoningDesc.includes('mixed'))) ||
+        (intendedUse.includes('commercial') && (zoningDesc.includes('commercial') || zoningDesc.includes('mixed') || zoningDesc.includes('business'))) ||
+        (intendedUse.includes('industrial') && (zoningDesc.includes('industrial') || zoningDesc.includes('manufacturing'))) ||
+        zoningDesc.includes('mixed');
+      results['LR2'] = {
+        score: zoningAligns ? 50 : 20,
+        status: zoningAligns,
+        value: { zoningCode: usParcel.zoning?.zoningCode, intendedUse: query.intendedUse, compatible: zoningAligns },
+      };
+
+      // LR3 — Encumbrances / legal flags
+      const encCount = usParcel.encumbrances?.length ?? 0;
+      const hasLien = usParcel.encumbrances?.some(e => e.type?.toLowerCase().includes('lien'));
+      results['LR3'] = {
+        score: encCount === 0 ? 60 : hasLien ? 15 : 35,
+        status: !hasLien,
+        value: { encumbrances: usParcel.encumbrances, count: encCount },
+      };
+
+      // LR4 — Title / ownership status (assessed value > 0 = clear title signal)
+      const hasTitle = usParcel.title && usParcel.title.assessedValue > 0;
+      results['LR4'] = {
+        score: hasTitle ? 30 : 10,
+        status: !!hasTitle,
+        value: usParcel.title,
+      };
+
+      // LR5 — ALTA survey / flood zone
+      const altaAvailable = usParcel.altaSurveyAvailable;
+      const floodZone = usParcel.zoning?.floodZone || 'Unknown';
+      const safeFoodZone = floodZone === 'X' || floodZone === 'X500' || floodZone === 'B' || floodZone === 'C';
+      results['LR5'] = {
+        score: (altaAvailable ? 15 : 5) + (safeFoodZone ? 15 : 5),
+        status: altaAvailable && safeFoodZone,
+        value: { altaSurveyAvailable: altaAvailable, floodZone },
+      };
+    } else if (isUS && !usParcel) {
+      // US city-level search: no parcel data available — assign moderate baseline scores
+      // LR1: US zoning frameworks are generally well-defined, give partial credit
+      results['LR1'] = { score: 45, status: true, value: { zoningCode: 'N/A', zoningDescription: 'Parcel-level zoning not available for city-level search. Draw or click a parcel for details.', jurisdiction: state } };
+      // LR2: Without parcel data, CLU check is inconclusive
+      results['LR2'] = { score: 25, status: true, value: { zoningCode: 'N/A', intendedUse: query.intendedUse || 'Unknown', compatible: null } };
+      // LR3: No encumbrances data without parcel
+      results['LR3'] = { score: 30, status: true, value: { encumbrances: [], count: 0 } };
+      // LR4: No title data without parcel
+      results['LR4'] = { score: 15, status: true, value: null };
+      // LR5: No survey data without parcel
+      results['LR5'] = { score: 15, status: true, value: { altaSurveyAvailable: false, floodZone: 'Unknown' } };
+    } else if (regulation) {
       if (regulationPermitsUse) {
         results['LR1'] = { score: 80, status: true };
       } else {
@@ -685,22 +832,33 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // LR3 remains intentionally unscored until we have a reliable legal-risk source.
-    results['LR3'] = undefined;
+    if (!isUS) {
+      // LR3 remains intentionally unscored until we have a reliable legal-risk source.
+      results['LR3'] = undefined;
+    }
     const reraRegistration = underwriting?.approvals?.reraRegistration?.trim();
-    if (reraRegistration) {
+    if (!isUS && reraRegistration) {
       results['LR4'] = {
         score: reraRegistration.toLowerCase() !== 'pending' ? 30 : 10,
         status: reraRegistration.toLowerCase() !== 'pending',
         value: reraRegistration,
       };
     }
-    // LR5 is deferred until master-plan extraction is wired into the score flow.
-    results['LR5'] = undefined;
+    if (!isUS) {
+      // LR5 is deferred until master-plan extraction is wired into the score flow.
+      results['LR5'] = undefined;
+    }
     // ME1 stays blank until we have historical price-trend data by locality/micro-market.
     results['ME1'] = undefined;
 
-    if (nearestOperationalSez) {
+    // ME2 — US: Market zone / permit growth tier / India: SEZ distance
+    if (isUS && usInputs) {
+      results['ME2'] = {
+        score: usInputs.marketZoneScore,
+        status: usInputs.marketZoneValue.tier !== 'Tier 3',
+        value: usInputs.marketZoneValue,
+      };
+    } else if (nearestOperationalSez) {
       const distanceKm = round(nearestOperationalSez.distanceMeters / 1000, 2);
       results['ME2'] = {
         score: scoreByDistance(
@@ -723,8 +881,6 @@ export async function POST(request: NextRequest) {
         },
       };
     } else if (sez.length > 0) {
-      // Fallback when SEZ names exist but cannot be reliably geocoded.
-      // This is weaker than parcel-distance scoring, but better than dropping ME2 entirely.
       const operationalSEZ = sez.filter((entry) => entry.status === 'Operational').length;
       results['ME2'] = {
         score: operationalSEZ > 5 ? 24 : operationalSEZ > 2 ? 18 : operationalSEZ > 0 ? 12 : 5,
@@ -745,9 +901,14 @@ export async function POST(request: NextRequest) {
         : null;
     const marketAbsorptionSignal = absorptionRate ?? averageCompetitorAbsorption;
 
-    // ME3 is still only as good as the admin assumptions / competitor underwriting we have.
-    // It is not yet a market-wide absorption feed.
-    if (marketAbsorptionSignal != null) {
+    // ME3 — US: building permit absorption rate / India: admin underwriting assumptions
+    if (isUS && usInputs) {
+      results['ME3'] = {
+        score: usInputs.absorptionScore,
+        status: usInputs.absorptionValue > 6,
+        value: usInputs.absorptionValue,
+      };
+    } else if (marketAbsorptionSignal != null) {
       results['ME3'] = {
         score:
           marketAbsorptionSignal >= 25
@@ -762,7 +923,14 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    if (populationMigration) {
+    // ME4 — US: demand density (population + income tier) / India: Census population density
+    if (isUS && usInputs) {
+      results['ME4'] = {
+        score: usInputs.demandDensityScore,
+        status: usInputs.demandDensityValue.tier !== 'Emerging',
+        value: usInputs.demandDensityValue,
+      };
+    } else if (populationMigration) {
       const projectedDensity = populationMigration.projectedDensity2025;
       const annualGrowth = populationMigration.projectedAnnualGrowthRate2011To2025;
       const migrationBoost =
@@ -804,13 +972,41 @@ export async function POST(request: NextRequest) {
       success: true,
       query: responseQuery,
       score: developabilityScore,
-      populationMigration: populationMigration as PopulationMigrationResponse | null,
+      isUS,
+      usMarketData: isUS && usInputs ? {
+        city: usInputs.resolvedCity,
+        state: usInputs.resolvedState,
+        economy: usInputs.economicHealthValue,
+        population: usInputs.populationGrowthValue,
+        permits: usInputs.permitActivityValue,
+        marketZone: usInputs.marketZoneValue,
+        absorptionRate: usInputs.absorptionValue,
+        demandDensity: usInputs.demandDensityValue,
+        buyabilityScore: usBuyabilityScore,
+        developmentProspect: usDevelopmentProspect,
+        parcel: usParcel ? {
+          parcelId: usParcel.parcelId,
+          zoning: usParcel.zoning,
+          title: usParcel.title,
+          encumbrances: usParcel.encumbrances,
+        } : null,
+        aiSummary: usAiSummary,
+      } : null,
+      populationMigration: (!isUS ? populationMigration : null) as PopulationMigrationResponse | null,
       nearbyAmenities,
       dataSources: {
-        census: { count: census.length, available: census.length > 0 },
-        populationMigration: { count: populationMigration ? populationMigration.timeSeries.length : 0, available: populationMigration !== null },
-        fdi: { count: fdi.length, available: fdi.length > 0 },
-        sez: { count: sez.length, available: sez.length > 0 },
+        census: isUS
+          ? { count: 1, available: usInputs !== null, source: 'US Census ACS 5-Year' }
+          : { count: census.length, available: census.length > 0 },
+        populationMigration: { count: populationMigration ? populationMigration.timeSeries.length : 0, available: !isUS && populationMigration !== null },
+        fdi: isUS
+          ? { count: 0, available: false }
+          : { count: fdi.length, available: fdi.length > 0 },
+        sez: isUS
+          ? { count: 0, available: false }
+          : { count: sez.length, available: sez.length > 0 },
+        usEconomy: isUS ? { available: usInputs !== null, source: 'Bureau of Labor Statistics' } : undefined,
+        usPermits: isUS ? { available: usInputs !== null, source: 'US Census BPS' } : undefined,
         satellite: { available: satellite !== null, isMock: EarthEngineService.isMockMode() },
         regulation: { available: regulation !== null },
         googlePlaces: {
@@ -835,10 +1031,9 @@ export async function POST(request: NextRequest) {
           count: snappedRoads.length,
           available: snappedRoads.length > 0,
         },
-        proposedInfrastructure: {
-          count: proposedInfra.count,
-          available: proposedInfra.available,
-        },
+        proposedInfrastructure: isUS
+          ? { count: usInputs?.permitActivityValue.totalUnits ?? 0, available: usInputs !== null, source: 'US Census BPS' }
+          : { count: proposedInfra.count, available: proposedInfra.available },
       },
     });
   } catch (error: any) {

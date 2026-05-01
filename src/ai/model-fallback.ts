@@ -1,4 +1,4 @@
-import { ai } from './genkit';
+import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
 
 /**
@@ -10,6 +10,15 @@ function getOpenAIClient(): OpenAI {
     }
     return new OpenAI({
         apiKey: process.env.OPENAI_API_KEY,
+    });
+}
+
+function getGeminiClient(): GoogleGenAI {
+    if (!process.env.GEMINI_API_KEY) {
+        throw new Error('GEMINI_API_KEY is missing');
+    }
+    return new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
     });
 }
 
@@ -35,15 +44,18 @@ export async function generateWithFallback(prompt: string, preferredModel?: stri
 
         return completion.choices[0]?.message?.content || '';
     } catch (openaiError: any) {
-        console.warn('OpenAI failed, falling back to Gemini:', openaiError.message);
+        if (!preferredModel?.includes('gemini')) {
+            console.warn('OpenAI failed, falling back to Gemini:', openaiError.message);
+        }
 
         // Fallback to Gemini
         try {
-            const { text } = await ai.generate({
-                model: 'googleai/gemini-3.1-pro-preview',
-                prompt,
+            const ai = getGeminiClient();
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-pro',
+                contents: prompt,
             });
-            return text;
+            return response.text || '';
         } catch (geminiError: any) {
             console.error('Both OpenAI and Gemini failed:', geminiError.message);
             throw new Error(`All models failed. OpenAI: ${openaiError.message}, Gemini: ${geminiError.message}`);
@@ -77,18 +89,18 @@ export async function generateStructuredWithFallback<T>(
     } catch (openaiError: any) {
         console.warn('OpenAI structured generation failed, falling back to Gemini:', openaiError.message);
 
-        // Fallback to Gemini (text-based JSON parsing)
+        // Fallback to Gemini using native SDK JSON mode
         try {
-            const { text } = await ai.generate({
-                model: 'googleai/gemini-3.1-pro-preview',
-                prompt: prompt + '\n\nReturn ONLY valid JSON, no other text.',
+            const ai = getGeminiClient();
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-pro',
+                contents: prompt + '\n\nReturn ONLY valid JSON.',
+                config: {
+                    responseMimeType: "application/json",
+                }
             });
 
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                throw new Error('No JSON found in Gemini response');
-            }
-            return JSON.parse(jsonMatch[0]) as T;
+            return JSON.parse(response.text || '{}') as T;
         } catch (geminiError: any) {
             console.error('Both models failed for structured generation:', geminiError.message);
             throw new Error(`All models failed. OpenAI: ${openaiError.message}, Gemini: ${geminiError.message}`);

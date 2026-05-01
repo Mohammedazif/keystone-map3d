@@ -123,6 +123,16 @@ export function evaluateSchema(schema: ScoringSchema, results: Record<string, It
       if (res !== undefined && res !== null) {
         if (typeof res.score === 'number') {
           itemScore = res.score;
+          // Infer pass/fail from numeric score when no explicit boolean status is set
+          const statusVal = res.status;
+          const statusBool = (typeof statusVal === 'boolean') ? statusVal
+            : (typeof statusVal === 'string' ? (statusVal === 'pass') : null);
+          if (statusBool !== null) {
+            itemStatus = statusBool;
+          } else if (itemMax !== null && itemMax > 0) {
+            // Infer: score > 50% of max = pass, otherwise fail
+            itemStatus = itemScore > 0;
+          }
         } else {
           // Accept both boolean status and string status ('pass'|'fail')
           const statusVal = res.status;

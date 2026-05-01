@@ -155,6 +155,22 @@ function formatDevelopabilityItemDetail(
         : `Nearest airport is ${distanceKm.toFixed(2)} km away.`;
     }
     case 'GP2': {
+      // US: economicHealthValue object { unemploymentRate, medianIncome, laborForce }
+      const value = toRecord(result?.value);
+      if (value) {
+        const unemp = toNumber(value.unemploymentRate);
+        const income = toNumber(value.medianIncome);
+        const labor = toNumber(value.laborForce);
+        if (unemp != null) {
+          const parts = [
+            `Unemployment: ${unemp}%`,
+            income != null ? `Median Income: $${formatCompact(income)}` : null,
+            labor != null ? `Labor Force: ${formatCompact(labor)}` : null,
+          ].filter(Boolean);
+          return parts.join(' | ');
+        }
+      }
+      // India: raw FDI number
       const totalFdi = toNumber(result?.value);
       return totalFdi == null
         ? undefined
@@ -169,6 +185,19 @@ function formatDevelopabilityItemDetail(
     case 'GP4': {
       const value = toRecord(result?.value);
       if (value) {
+        // US: { population, medianAge, growthTier }
+        const population = toNumber(value.population);
+        const medianAge = toNumber(value.medianAge);
+        const growthTier = typeof value.growthTier === 'string' ? value.growthTier : null;
+        if (population != null && growthTier) {
+          const parts = [
+            `Population: ${formatCompact(population)}`,
+            growthTier ? `Market Tier: ${growthTier}` : null,
+            medianAge != null ? `Median Age: ${medianAge}` : null,
+          ].filter(Boolean);
+          return parts.join(' | ');
+        }
+        // India: { population2001, population2011, projectedPopulation2025, migrationDirection, confidence }
         const pop2001 = toNumber(value.population2001);
         const pop2011 = toNumber(value.population2011);
         const pop2025 = toNumber(value.projectedPopulation2025);
@@ -190,34 +219,102 @@ function formatDevelopabilityItemDetail(
     }
     case 'GP5': {
       const value = toRecord(result?.value);
+      // US: { count (totalUnits), source, permits: { totalUnits, singleFamily, multiFamily, valuation } }
+      const permits = toRecord(value?.permits);
+      if (permits) {
+        const total = toNumber(permits.totalUnits);
+        const sf = toNumber(permits.singleFamily);
+        const mf = toNumber(permits.multiFamily);
+        const source = typeof value?.source === 'string' ? value.source : 'US Census BPS';
+        const parts = [
+          total != null ? `${formatCompact(total)} permits/yr` : null,
+          sf != null ? `SF: ${formatCompact(sf)}` : null,
+          mf != null ? `MF: ${formatCompact(mf)}` : null,
+          `Source: ${source}`,
+        ].filter(Boolean);
+        return parts.join(' | ');
+      }
+      // India: generic count + source
       const count = toNumber(value?.count);
       const source = typeof value?.source === 'string' ? value.source : null;
       if (count == null && !source) return undefined;
       return `${count != null ? `${Math.round(count)} proposed infrastructure signal${count === 1 ? '' : 's'}` : 'Proposed infrastructure signal'}${source ? ` from ${source}` : ''}.`;
     }
-    case 'LR1':
+    case 'LR1': {
+      // US: value is zoning object { zoningCode, zoningDescription, jurisdiction, floodZone }
+      const value = toRecord(result?.value);
+      if (value && typeof value.zoningCode === 'string') {
+        return `Zoning: ${value.zoningCode} — ${value.zoningDescription || 'N/A'} (${value.jurisdiction || 'County'})`;
+      }
       return result?.status === false
         ? 'Current regulation does not match the selected intended use.'
         : 'Current regulation aligns with the selected intended use.';
-    case 'LR2':
+    }
+    case 'LR2': {
+      // US: value is { zoningCode, intendedUse, compatible }
+      const value = toRecord(result?.value);
+      if (value && typeof value.zoningCode === 'string' && typeof value.intendedUse === 'string') {
+        return value.compatible
+          ? `Zoning ${value.zoningCode} is compatible with ${value.intendedUse} use.`
+          : `Zoning ${value.zoningCode} may not directly permit ${value.intendedUse} use — conversion or variance may be required.`;
+      }
       return result?.score === 30
         ? 'Direct zoning match failed, but CLU text suggests conversion may be possible.'
         : result?.status === false
           ? 'No clear CLU pathway was found in the available regulation text.'
           : 'Current use is already permitted under the available regulation.';
-    case 'LR3':
+    }
+    case 'LR3': {
+      // US: value is { encumbrances: [...], count }
+      const value = toRecord(result?.value);
+      if (value && Array.isArray(value.encumbrances)) {
+        const enc = value.encumbrances as { type: string; description: string; status: string }[];
+        if (enc.length === 0) return 'No encumbrances, liens, or easements on record. Title appears clean.';
+        return enc.map(e => `${e.type}: ${e.description} (${e.status})`).join(' | ');
+      }
       return 'Pending dispute and litigation data source.';
-    case 'LR4':
+    }
+    case 'LR4': {
+      // US: value is title object { ownerName, ownerType, assessedValue, lastSaleDate, lastSalePrice }
+      const value = toRecord(result?.value);
+      if (value && typeof value.ownerName === 'string') {
+        const parts = [
+          `Owner: ${value.ownerName}`,
+          value.ownerType ? `(${value.ownerType})` : null,
+          toNumber(value.assessedValue) != null ? `Assessed: $${formatCompact(toNumber(value.assessedValue)!)}` : null,
+          typeof value.lastSaleDate === 'string' ? `Last Sale: ${value.lastSaleDate}` : null,
+          toNumber(value.lastSalePrice) != null ? `at $${formatCompact(toNumber(value.lastSalePrice)!)}` : null,
+        ].filter(Boolean);
+        return parts.join(' | ');
+      }
       return typeof result?.value === 'string'
         ? `RERA or approval reference: ${result.value as string}.`
         : undefined;
-    case 'LR5':
+    }
+    case 'LR5': {
+      // US: value is { altaSurveyAvailable, floodZone }
+      const value = toRecord(result?.value);
+      if (value && typeof value.floodZone === 'string') {
+        const parts = [
+          `Flood Zone: ${value.floodZone}`,
+          value.altaSurveyAvailable ? 'ALTA Survey: Available' : 'ALTA Survey: Not Available',
+        ];
+        return parts.join(' | ');
+      }
       return 'Pending master plan extraction and conformity check.';
+    }
     case 'ME1':
       return 'Pending locality-level price trend data.';
     case 'ME2': {
       const value = toRecord(result?.value);
       if (!value) return undefined;
+      // US: { tier, permitGrowthIndicator }
+      const tier = typeof value.tier === 'string' ? value.tier : null;
+      const indicator = typeof value.permitGrowthIndicator === 'string' ? value.permitGrowthIndicator : null;
+      if (tier && indicator) {
+        return `US Market Zone: ${tier} — ${indicator}.`;
+      }
+      // India: { distanceKm, name, count }
       const distanceKm = toNumber(value.distanceKm);
       const name = typeof value.name === 'string' ? value.name : null;
       const count = toNumber(value.count);
@@ -230,14 +327,28 @@ function formatDevelopabilityItemDetail(
       return undefined;
     }
     case 'ME3': {
+      // US: result.value is the absorptionRate number (units per 1K pop)
       const absorption = toNumber(result?.value);
       return absorption == null
         ? undefined
-        : `Absorption signal is ${absorption.toFixed(1)} based on available assumptions and competitor inputs.`;
+        : `Absorption rate: ${absorption.toFixed(1)} permitted units per 1,000 residents/year.`;
     }
     case 'ME4': {
       const value = toRecord(result?.value);
       if (value) {
+        // US: { population, medianIncome, tier }
+        const population = toNumber(value.population);
+        const medianIncome = toNumber(value.medianIncome);
+        const demandTier = typeof value.tier === 'string' ? value.tier : null;
+        if (demandTier && population != null) {
+          const parts = [
+            `Demand Tier: ${demandTier}`,
+            `Population: ${formatCompact(population)}`,
+            medianIncome != null ? `Median Income: $${formatCompact(medianIncome)}` : null,
+          ].filter(Boolean);
+          return parts.join(' | ');
+        }
+        // India: { density2011, projectedDensity2025, migrationDirection, projectedUrbanPopulationPct2025 }
         const density2011 = toNumber(value.density2011);
         const density2025 = toNumber(value.projectedDensity2025);
         const direction = typeof value.migrationDirection === 'string' ? value.migrationDirection : null;

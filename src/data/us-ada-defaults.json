@@ -1,0 +1,38 @@
+{
+  "name": "ADA Standards for Accessible Design — US Federal Law",
+  "source": "ADA 2010 Standards (28 CFR Part 36)",
+  "applicableTo": "All US jurisdictions (federal law)",
+  "defaults": {
+    "accessible_route_width_m": 0.915,
+    "accessible_route_passing_width_m": 1.525,
+    "door_clearance_width_m": 0.815,
+    "ramp_max_slope_ratio": 0.0833,
+    "ramp_max_rise_m": 0.762,
+    "ramp_min_width_m": 0.915,
+    "elevator_required_above_stories": 1,
+    "elevator_min_width_m": 2.032,
+    "elevator_min_depth_m": 1.372,
+    "accessible_parking_total_pct": 2,
+    "accessible_parking_van_ratio": "1 per 6 accessible",
+    "accessible_parking_min_width_m": 2.44,
+    "accessible_restroom_per_floor": 1,
+    "signage_braille_required": true,
+    "signage_tactile_required": true,
+    "common_area_accessible": true,
+    "counter_max_height_m": 0.865,
+    "reach_range_forward_max_m": 1.22
+  },
+  "parkingTable": [
+    { "totalSpaces": "1-25", "accessibleSpaces": 1 },
+    { "totalSpaces": "26-50", "accessibleSpaces": 2 },
+    { "totalSpaces": "51-75", "accessibleSpaces": 3 },
+    { "totalSpaces": "76-100", "accessibleSpaces": 4 },
+    { "totalSpaces": "101-150", "accessibleSpaces": 5 },
+    { "totalSpaces": "151-200", "accessibleSpaces": 6 },
+    { "totalSpaces": "201-300", "accessibleSpaces": 7 },
+    { "totalSpaces": "301-400", "accessibleSpaces": 8 },
+    { "totalSpaces": "401-500", "accessibleSpaces": 9 },
+    { "totalSpaces": "501-1000", "accessibleSpaces": "2% of total" },
+    { "totalSpaces": "1001+", "accessibleSpaces": "20 + 1 per 100 over 1000" }
+  ]
+}

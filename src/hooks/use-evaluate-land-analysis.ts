@@ -11,6 +11,7 @@ import { lookupRegulationForLocationAndUse } from "@/lib/regulation-lookup";
 import type {
   BuildingIntendedUse,
   DevelopabilityScore,
+  LandPlotType,
   LandZoningPreference,
   PopulationMigrationAnalysis,
   Plot,
@@ -19,6 +20,46 @@ import type {
 
 interface ScoreResult {
   score: DevelopabilityScore;
+  isUS?: boolean;
+  usMarketData?: {
+    city: string;
+    state: string;
+    economy: { unemploymentRate: number; medianIncome: number; laborForce: number };
+    population: { population: number; medianAge: number; growthTier: string };
+    permits: { totalUnits: number; singleFamily: number; multiFamily: number; valuation: number };
+    marketZone: { tier: string; permitGrowthIndicator: string };
+    absorptionRate: number;
+    demandDensity: { population: number; medianIncome: number; tier: string };
+    buyabilityScore: number | null;
+    developmentProspect: string | null;
+    parcel?: {
+      parcelId: string;
+      lotAreaSqFt?: number;
+      zoning?: {
+        zoningCode: string;
+        zoningDescription?: string;
+        description?: string;
+        jurisdiction?: string;
+        floodZone?: string;
+        allowedUses?: string[];
+      } | null;
+      title?: {
+        ownerName: string;
+        ownerType?: string;
+        assessedValue: number;
+        lastSaleDate: string;
+        lastSalePrice: number;
+      } | null;
+      encumbrances?: { type: string; description: string; status?: string }[] | null;
+      dueDiligence?: {
+        altaSurveyStatus: string;
+        relativePositionalPrecision: string;
+        recognizedEnvironmentalConditions: string;
+        titleCommitmentStatus: string;
+      };
+    } | null;
+    aiSummary?: string | null;
+  } | null;
   populationMigration: PopulationMigrationAnalysis | null;
   nearbyAmenities: {
     transit: {
@@ -47,15 +88,17 @@ interface ScoreResult {
     };
   };
   dataSources: {
-    census: { count: number; available: boolean };
+    census: { count: number; available: boolean; source?: string };
     populationMigration: { count: number; available: boolean };
     fdi: { count: number; available: boolean };
     sez: { count: number; available: boolean };
+    usEconomy?: { available: boolean; source: string };
+    usPermits?: { available: boolean; source: string };
     satellite: { available: boolean; isMock: boolean };
     regulation: { available: boolean };
     googlePlaces: { count: number; available: boolean };
     googleRoads: { count: number; available: boolean };
-    proposedInfrastructure: { count: number; available: boolean };
+    proposedInfrastructure: { count: number; available: boolean; source?: string };
   };
 }
 
@@ -65,7 +108,7 @@ interface AnalysisTargetSnapshot {
   plotAreaSqm: number;
   usedFallbackPlot: boolean;
   coordinates: [number, number];
-  mode: "plot" | "point";
+  mode: "plot" | "point" | "search";
   parcelAware: boolean;
 }
 
@@ -105,6 +148,8 @@ export function useEvaluateLandAnalysis({
     landSize: string;
     intendedUse: BuildingIntendedUse;
     zoningPreference: LandZoningPreference;
+    priceRange: string;
+    plotType: LandPlotType;
   };
   validateRequired: () => Promise<boolean>;
   pointTarget?: {
@@ -115,6 +160,13 @@ export function useEvaluateLandAnalysis({
   const [isRunningScore, setIsRunningScore] = useState(false);
   const [scoreError, setScoreError] = useState<string | null>(null);
   const [scoreData, setScoreData] = useState<ScoreResult | null>(null);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [isLoadingAiSummary, setIsLoadingAiSummary] = useState(false);
+  const [analysisSteps, setAnalysisSteps] = useState<{
+    id: string;
+    label: string;
+    status: 'pending' | 'loading' | 'done' | 'error';
+  }[]>([]);
   const [bhuvanData, setBhuvanData] = useState<BhuvanLandUseSummary | null>(null);
   const [matchedRegulation, setMatchedRegulation] =
     useState<RegulationData | null>(null);
@@ -123,10 +175,15 @@ export function useEvaluateLandAnalysis({
     useState<AnalysisTargetSnapshot | null>(null);
   const [regulationMatch, setRegulationMatch] =
     useState<RegulationMatchSnapshot | null>(null);
+  const [recommendedParcels, setRecommendedParcels] = useState<any[]>([]);
+  const [isSearchingParcels, setIsSearchingParcels] = useState(false);
   const latestRequestRef = useRef(0);
 
   const clearAnalysisResults = useCallback(() => {
     setScoreData(null);
+    setAiSummary(null);
+    setIsLoadingAiSummary(false);
+    setAnalysisSteps([]);
     setBhuvanData(null);
     setMatchedRegulation(null);
     setBuildVerdict(null);
@@ -159,12 +216,14 @@ export function useEvaluateLandAnalysis({
     }
 
     const values = getInputValues();
-    const { state, district } = inferScoreQueryLocation(values.location);
+    const { state, district, isUS } = inferScoreQueryLocation(values.location, coords);
     const plotForAnalysis = selectedPlot || plots[0] || null;
 
-    if (!plotForAnalysis && !pointTarget) {
+    // Allow analysis to proceed without a plot when we have coordinates
+    // (e.g., from geocoded location or map click)
+    if (!plotForAnalysis && !pointTarget && !coords) {
       setScoreError(
-        "Draw or select a plot before running the developability score.",
+        "Draw or select a plot, or select a location from the search bar.",
       );
       clearAnalysisResults();
       return false;
@@ -175,26 +234,55 @@ export function useEvaluateLandAnalysis({
     setIsRunningScore(true);
     setScoreError(null);
     setScoreData(null);
+    setAiSummary(null);
+    setIsLoadingAiSummary(false);
+    setRecommendedParcels([]);
+    setIsSearchingParcels(false);
     setBhuvanData(null);
     setMatchedRegulation(null);
     setBuildVerdict(null);
     setRegulationMatch(null);
+
+    // Build initial step list — US gets parcel step, non-US gets Bhuvan
+    const baseSteps = [
+      { id: 'market', label: isUS ? 'Fetching US market data (Census / BLS)' : 'Fetching census & FDI data', status: 'loading' as const },
+      { id: 'connectivity', label: 'Checking location & connectivity', status: 'pending' as const },
+      { id: 'legal', label: isUS ? 'Running legal & zoning checks' : 'Matching regulations & zoning', status: 'pending' as const },
+      ...(isUS && (Boolean(plotForAnalysis) || Boolean(pointTarget))
+        ? [{ id: 'parcel', label: 'Fetching parcel data (ArcGIS)', status: 'pending' as const }]
+        : []),
+      { id: 'score', label: 'Computing developability score', status: 'pending' as const },
+      { id: 'ai', label: 'Generating AI investment summary', status: 'pending' as const },
+    ];
+    setAnalysisSteps(baseSteps);
     setAnalysisTarget({
       plotId: plotForAnalysis?.id ?? null,
-      plotName: plotForAnalysis?.name ?? pointTarget?.label ?? "Clicked location",
+      plotName: plotForAnalysis?.name ?? pointTarget?.label ?? values.location?.split(',')[0] ?? "Selected location",
       plotAreaSqm: plotForAnalysis?.area ?? Number(values.landSize || 0),
       usedFallbackPlot: plotForAnalysis != null && selectedPlot == null,
       coordinates: coords,
-      mode: plotForAnalysis ? "plot" : "point",
+      mode: plotForAnalysis ? "plot" : pointTarget ? "point" : "search",
       parcelAware: Boolean(plotForAnalysis),
     });
 
     try {
+      const setStep = (id: string, status: 'loading' | 'done' | 'error') => {
+        if (latestRequestRef.current !== requestId) return;
+        setAnalysisSteps(prev => prev.map(s => s.id === id ? { ...s, status } : s));
+      };
+
+      // Fire score + bhuvan + regulation in parallel, but show steps as they resolve
+      setStep('market', 'loading');
+      setStep('connectivity', 'loading');
+      setStep('legal', 'loading');
+      if (isUS && (Boolean(plotForAnalysis) || Boolean(pointTarget))) setStep('parcel', 'loading');
+
       const [scoreRes, bhuvanRes, regulationRes] = await Promise.allSettled([
         fetch("/api/land-intelligence/score", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            rawLocation: values.location,
             location: state,
             district,
             coordinates: coords,
@@ -202,6 +290,7 @@ export function useEvaluateLandAnalysis({
             roadAccessSides: plotForAnalysis?.roadAccessSides,
             landSizeSqm: Number(values.landSize),
             intendedUse: values.intendedUse,
+            parcelAware: Boolean(plotForAnalysis) || Boolean(pointTarget),
           }),
         }).then(async (response) => {
           const payload = await response.json();
@@ -230,9 +319,13 @@ export function useEvaluateLandAnalysis({
         }),
       ]);
 
-      if (latestRequestRef.current !== requestId) {
-        return false;
-      }
+      if (latestRequestRef.current !== requestId) return false;
+
+      setStep('market', scoreRes.status === 'fulfilled' ? 'done' : 'error');
+      setStep('connectivity', scoreRes.status === 'fulfilled' ? 'done' : 'error');
+      setStep('legal', scoreRes.status === 'fulfilled' ? 'done' : 'error');
+      setStep('parcel', scoreRes.status === 'fulfilled' ? 'done' : 'error');
+      setStep('score', scoreRes.status === 'fulfilled' ? 'done' : 'error');
 
       const errors: string[] = [];
 
@@ -284,6 +377,96 @@ export function useEvaluateLandAnalysis({
       }
 
       setScoreError(errors.length > 0 ? errors.join(" ") : null);
+
+      // After score loads — fire AI summary separately (non-blocking)
+      if (scoreRes.status === 'fulfilled' && isUS) {
+        const scorePayload = scoreRes.value;
+        setIsLoadingAiSummary(true);
+        setStep('ai', 'loading');
+        fetch('/api/land-intelligence/ai-summary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            location: values.location,
+            marketData: {
+              economy: scorePayload.usMarketData?.economy,
+              population: scorePayload.usMarketData?.population,
+              permits: scorePayload.usMarketData?.permits,
+              marketZone: scorePayload.usMarketData?.marketZone,
+            },
+            parcelData: scorePayload.usMarketData?.parcel ?? null,
+            isParcelAware: Boolean(plotForAnalysis) || Boolean(pointTarget),
+          }),
+        })
+          .then(r => r.json())
+          .then(data => {
+            if (latestRequestRef.current === requestId) {
+              setAiSummary(data.summary ?? null);
+              setStep('ai', 'done');
+            }
+          })
+          .catch(() => {
+            if (latestRequestRef.current === requestId) setStep('ai', 'error');
+          })
+          .finally(() => {
+            if (latestRequestRef.current === requestId) setIsLoadingAiSummary(false);
+          });
+        // Fire parcel search ONLY if we are NOT analyzing a specific clicked parcel or drawn plot
+        const isAnalyzingSpecificParcel = Boolean(plotForAnalysis) || Boolean(pointTarget);
+        
+        if (isAnalyzingSpecificParcel) {
+          setIsSearchingParcels(false);
+          // Keep the existing recommendations visible
+        } else {
+          setIsSearchingParcels(true);
+          const landSizeSqft = Number(values.landSize) * 10.7639;
+          const priceStr = values.priceRange || '';
+          const [minLakhs, maxLakhs] = priceStr.split('-').map(s => {
+            const numStr = s.replace(/[^0-9.]/g, '');
+            let num = Number(numStr);
+            if (s.toLowerCase().includes('cr')) num *= 100; // convert Cr to Lakhs
+            if (s.toLowerCase().includes('m')) num *= 10;   // convert Million to Lakhs (rough)
+            return num;
+          });
+          // Note: The US ArcGIS query will use `minValue` in USD, so we convert the "Lakhs" value.
+          // 1 Lakh INR is roughly 1,200 USD, but if they mean 1 Lakh USD, it's 100,000 USD.
+          // Let's assume the user means USD if they are looking in the US.
+          const minValue = (minLakhs || 0) * 100000;
+          const maxValue = (maxLakhs || 0) * 100000;
+
+          fetch('/api/us/parcel-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              location: values.location,
+              coordinates: coords,
+              intendedUse: values.intendedUse,
+              zoningPreference: values.zoningPreference,
+              plotType: values.plotType,
+              priceRange: values.priceRange,
+              minAreaSqft: Math.max(0, landSizeSqft * 0.8),
+              maxAreaSqft: landSizeSqft * 1.5,
+              targetAreaSqft: landSizeSqft,
+              minValue: minValue > 0 ? minValue : undefined,
+              maxValue: maxValue > 0 ? maxValue : undefined,
+              maxResults: 10,
+            }),
+          })
+            .then(r => r.json())
+            .then(data => {
+              if (latestRequestRef.current === requestId && data.success) {
+                setRecommendedParcels(data.parcels || []);
+              }
+            })
+            .catch(err => console.warn('[ParcelSearch] Failed:', err))
+            .finally(() => {
+              if (latestRequestRef.current === requestId) setIsSearchingParcels(false);
+            });
+        }
+      } else {
+        setStep('ai', 'done');
+      }
+
       return true;
     } catch (error: any) {
       if (latestRequestRef.current === requestId) {
@@ -322,12 +505,17 @@ export function useEvaluateLandAnalysis({
     isRunningScore,
     scoreError,
     scoreData,
+    aiSummary,
+    isLoadingAiSummary,
+    analysisSteps,
     bhuvanData,
     matchedRegulation,
     regulationMatch,
     buildVerdict,
     analysisTarget,
     sellableAreaBreakdown,
+    recommendedParcels,
+    isSearchingParcels,
     runAnalysis,
     resetAnalysis,
     clearAnalysisResults,

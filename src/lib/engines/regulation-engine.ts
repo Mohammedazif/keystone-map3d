@@ -722,6 +722,162 @@ export class RegulationEngine {
             greenItems.push(this.createScoreItem(`${c.code} ${c.name}`, this.greenStandards ? 'pass' : 'warn', this.greenStandards ? 'Standard match' : 'Fallback credit', c.points, this.greenStandards ? 1 : 0));
         });
 
+        // ========== IFC / ADA (US) ==========
+        // Only score IFC/ADA items when the regulation includes accessibility data (US regulations)
+        const accessibility = (this.regulations as any)?.accessibility;
+        if (accessibility && typeof accessibility === 'object') {
+            const hasLift = visibleBuildings.some((b: any) => b.cores?.some((c: any) => c.type === 'Lift'));
+            const hasStairs = visibleBuildings.some((b: any) => b.cores?.some((c: any) => c.type === 'Stair'));
+            const hasFire = allUtilities.some((u: any) => String(u.type || '').toLowerCase().includes('fire'));
+
+            // IFC: Fire Access Road
+            const fireAccessWidth = Number(accessibility.fire_lane_width?.value) || 0;
+            if (fireAccessWidth > 0) {
+                bylawItems.push(this.createScoreItem(
+                    `IFC: Fire Lane Width (≥${fireAccessWidth}m)`,
+                    hasRoadUtility ? 'pass' : 'fail',
+                    hasRoadUtility ? `Road utility present (IFC 503)` : 'No fire lane detected',
+                    50
+                ));
+            }
+
+            // IFC: Sprinkler System
+            const sprinklerThreshold = Number(accessibility.fire_sprinkler_threshold?.value) || 0;
+            if (sprinklerThreshold > 0 && areaMetrics.totalBuiltUpArea > sprinklerThreshold) {
+                bylawItems.push(this.createScoreItem(
+                    `IFC: Sprinkler System (area > ${sprinklerThreshold} sqm)`,
+                    hasFire ? 'pass' : 'fail',
+                    hasFire ? 'Fire system present (IFC 903)' : `Required — ${Math.round(areaMetrics.totalBuiltUpArea)} sqm exceeds threshold`,
+                    60
+                ));
+            }
+
+            // IFC: Standpipe
+            const standpipeRequired = Number(accessibility.standpipe_required?.value) || 0;
+            if (standpipeRequired && tallestBuilding > 9.1) {
+                bylawItems.push(this.createScoreItem(
+                    'IFC: Standpipe System (≥3 stories)',
+                    hasFire ? 'pass' : 'warn',
+                    hasFire ? 'Standpipe assumed with fire system' : 'Verify standpipe (IFC 905)',
+                    40
+                ));
+            }
+
+            // IFC: Travel Distance
+            const travelSprinklered = Number(accessibility.travel_distance_sprinklered?.value) || 0;
+            const travelUnsprinklered = Number(accessibility.travel_distance_unsprinklered?.value) || 0;
+            if (travelSprinklered > 0 || travelUnsprinklered > 0) {
+                const maxTravel = hasFire ? travelSprinklered : travelUnsprinklered;
+                bylawItems.push(this.createScoreItem(
+                    `IFC: Egress Travel Distance (≤${maxTravel}m)`,
+                    hasStairs ? 'pass' : 'warn',
+                    hasStairs ? `Stair cores present — verify ≤${maxTravel}m (IFC 1017)` : 'No stair cores detected',
+                    40
+                ));
+            }
+
+            // IFC: Fire Hydrant Spacing
+            const hydrantSpacing = Number(accessibility.hydrant_spacing?.value) || 0;
+            if (hydrantSpacing > 0) {
+                bylawItems.push(this.createScoreItem(
+                    `IFC: Fire Hydrant Spacing (≤${hydrantSpacing}m)`,
+                    hasFire ? 'pass' : 'warn',
+                    hasFire ? `Fire utility present (IFC 507)` : 'Verify hydrant placement',
+                    30
+                ));
+            }
+
+            // IFC: Smoke Control (high-rise)
+            const smokeThreshold = Number(accessibility.smoke_control_threshold?.value) || 0;
+            if (smokeThreshold > 0 && tallestBuilding > smokeThreshold) {
+                bylawItems.push(this.createScoreItem(
+                    'IFC: Smoke Control System (high-rise)',
+                    'warn',
+                    `Building ${tallestBuilding.toFixed(1)}m > ${smokeThreshold}m — verify smoke control (IFC 909)`,
+                    30
+                ));
+            }
+
+            // ADA: Elevator Access
+            const elevatorThreshold = Number(accessibility.elevator_required_floors?.value) || 0;
+            if (elevatorThreshold > 0 && visibleBuildings.some((b: any) => b.numFloors > elevatorThreshold)) {
+                bylawItems.push(this.createScoreItem(
+                    `ADA: Elevator Access (≥${elevatorThreshold + 1} floors)`,
+                    hasLift ? 'pass' : 'fail',
+                    hasLift ? 'Elevator core present (ADA 206.2.3)' : 'No elevator detected — ADA violation',
+                    50
+                ));
+            }
+
+            // ADA: Accessible Route Width
+            const routeWidth = Number(accessibility.accessible_route_width?.value) || 0;
+            if (routeWidth > 0) {
+                const corridorWidth = Number(this.regulations?.facilities?.corridor_widths?.value) || 0;
+                bylawItems.push(this.createScoreItem(
+                    `ADA: Accessible Route (≥${routeWidth}m)`,
+                    corridorWidth >= routeWidth ? 'pass' : corridorWidth > 0 ? 'fail' : 'warn',
+                    corridorWidth > 0 ? `${corridorWidth}m corridor vs ${routeWidth}m required (ADA 403)` : 'Verify accessible route width',
+                    40
+                ));
+            }
+
+            // ADA: Accessible Parking
+            const parkingPct = Number(accessibility.accessible_parking_pct?.value) || 0;
+            if (parkingPct > 0 && provParking > 0) {
+                const requiredAccessible = Math.max(1, Math.ceil(provParking * parkingPct / 100));
+                bylawItems.push(this.createScoreItem(
+                    `ADA: Accessible Parking (≥${requiredAccessible} spaces)`,
+                    'warn',
+                    `${requiredAccessible} accessible of ${provParking} total (ADA 208) — verify placement`,
+                    30
+                ));
+            }
+
+            // ADA: Door Clearance
+            const doorWidth = Number(accessibility.door_clearance_width?.value) || 0;
+            if (doorWidth > 0) {
+                bylawItems.push(this.createScoreItem(
+                    `ADA: Door Clearance (≥${doorWidth}m)`,
+                    'warn',
+                    `Verify ≥${doorWidth}m clear width on all accessible doors (ADA 404)`,
+                    20
+                ));
+            }
+
+            // ADA: Ramp Slope
+            const rampSlope = Number(accessibility.ramp_max_slope?.value) || 0;
+            if (rampSlope > 0) {
+                bylawItems.push(this.createScoreItem(
+                    `ADA: Ramp Slope (≤1:12 / ${rampSlope})`,
+                    'warn',
+                    `Verify all ramps ≤${rampSlope} slope ratio (ADA 405)`,
+                    20
+                ));
+            }
+
+            // ADA: Signage
+            const signage = Number(accessibility.signage_compliance?.value) || 0;
+            if (signage) {
+                bylawItems.push(this.createScoreItem(
+                    'ADA: Braille & Tactile Signage',
+                    'warn',
+                    'Verify Braille + visual contrast signage (ADA 703)',
+                    15
+                ));
+            }
+
+            // ADA: Accessible Restrooms
+            const restrooms = Number(accessibility.accessible_restrooms?.value) || 0;
+            if (restrooms) {
+                bylawItems.push(this.createScoreItem(
+                    'ADA: Accessible Restrooms',
+                    'warn',
+                    `≥${restrooms} accessible restroom per floor (ADA 213)`,
+                    20
+                ));
+            }
+        }
+
         // ========== VASTU ==========
         const vastuItems = this.calculateVastuItems();
         const bylawScoreSummary = this.calcAdditiveScore(bylawItems);

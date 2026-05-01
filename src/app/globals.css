@@ -75,27 +75,41 @@
     }
   }
 
-  /* Custom Scrollbar Utilities */
-  .scrollbar-thin {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
-  }
-
-  .scrollbar-thin::-webkit-scrollbar {
+  /* Custom Scrollbar Utilities - Global */
+  ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
 
-  .scrollbar-thin::-webkit-scrollbar-track {
+  ::-webkit-scrollbar-track {
     background: transparent;
   }
 
-  .scrollbar-thin::-webkit-scrollbar-thumb {
+  ::-webkit-scrollbar-thumb {
     background: hsl(var(--muted-foreground) / 0.2);
     border-radius: 10px;
   }
 
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  /* Keep the thin variant for specific narrow use cases */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  /* Mapbox Parcel Popup overrides for Dark Theme */
+  .dark-parcel-popup .mapboxgl-popup-content {
+    background-color: #09090b !important;
+    padding: 12px !important;
+    border: 1px solid #27272a !important;
+    border-radius: 8px !important;
+  }
+  
+  .dark-parcel-popup .mapboxgl-popup-tip {
+    border-top-color: #09090b !important;
+    border-bottom-color: #09090b !important;
   }
 }
