@@ -184,6 +184,19 @@ export const USParcelService = {
         else if (/TRUST|ESTATE|TRUSTEE/.test(upperOwner)) ownerType = 'Trust';
         else if (/CITY|COUNTY|STATE|GOVERNMENT|MUNICIPAL|SCHOOL|PUBLIC/.test(upperOwner)) ownerType = 'Government';
 
+        // Fetch real FEMA flood zone data
+        let floodZone = 'X';
+        try {
+            const { USEnvironmentalService } = await import('./us-environmental-service');
+            const femaData = await USEnvironmentalService.fetchFEMAFloodZone(coordinates[0], coordinates[1]);
+            if (femaData) {
+                floodZone = femaData.zone;
+                console.log(`[USParcelService] FEMA flood zone: ${floodZone} (${femaData.zoneDescription})`);
+            }
+        } catch {
+            // FEMA fetch failed, keep default 'X'
+        }
+
         return {
             parcelId,
             lotAreaSqFt: lotArea > 0 ? Math.round(lotArea) : 0,
@@ -198,7 +211,7 @@ export const USParcelService = {
                 zoningCode,
                 zoningDescription: this.inferZoningDescription(zoningCode),
                 jurisdiction: 'County',
-                floodZone: 'X', // FEMA data needs a separate service; default to safe zone
+                floodZone,
             },
             encumbrances: [],
             dueDiligence: {

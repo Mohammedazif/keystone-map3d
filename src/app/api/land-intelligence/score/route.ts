@@ -332,6 +332,10 @@ export async function POST(request: NextRequest) {
     const usParcelPromise = (isUS && query.parcelAware)
       ? import('@/services/us/us-parcel-service').then(m => m.USParcelService.getParcelData(fullUSLocation, Number(query.landSizeSqm) || 1000, coords)).catch(() => null)
       : Promise.resolve(null);
+    // Fetch expanded US environmental data (FEMA flood, EPA EJScreen, Historic Places)
+    const usEnvironmentalPromise = isUS
+      ? import('@/services/us/us-environmental-service').then(m => m.USEnvironmentalService.getEnvironmentalData(coords)).catch(() => null)
+      : Promise.resolve(null);
 
     // AI Summary is intentionally excluded from this response to keep latency low.
     // The frontend calls /api/land-intelligence/ai-summary separately after the score loads.
@@ -444,6 +448,7 @@ export async function POST(request: NextRequest) {
 
     const usInputs = await usScoreInputsPromise;
     const usParcel = await usParcelPromise;
+    const usEnvironmental = await usEnvironmentalPromise;
 
     // Compute buyability score server-side (no AI needed) from parcel + market data
     let usBuyabilityScore: number | null = null;
@@ -1044,6 +1049,12 @@ export async function POST(request: NextRequest) {
           title: usParcel.title,
           encumbrances: usParcel.encumbrances,
         } : null,
+        environmental: usEnvironmental ? {
+          elevationMeters: usEnvironmental.elevationMeters,
+          floodZone: usEnvironmental.floodZone,
+          ejscreen: usEnvironmental.ejscreen,
+          historicDistrict: usEnvironmental.historicDistrict,
+        } : null,
         aiSummary: usAiSummary,
       } : null,
       environmentalScreening,
@@ -1063,6 +1074,13 @@ export async function POST(request: NextRequest) {
           : { count: sez.length, available: sez.length > 0 },
         usEconomy: isUS ? { available: usInputs !== null, source: 'Bureau of Labor Statistics' } : undefined,
         usPermits: isUS ? { available: usInputs !== null, source: 'US Census BPS' } : undefined,
+        usEnvironmental: isUS ? {
+          available: usEnvironmental !== null,
+          femaFlood: usEnvironmental?.floodZone?.source === 'fema-nfhl',
+          epaEjscreen: usEnvironmental?.ejscreen?.source === 'epa-ejscreen',
+          historicPlaces: usEnvironmental?.historicDistrict?.source === 'nps-api',
+          source: 'FEMA NFHL + EPA EJScreen + NPS NRHP',
+        } : undefined,
         satellite: { available: satellite !== null, isMock: EarthEngineService.isMockMode() },
         regulation: { available: regulation !== null },
         googlePlaces: {

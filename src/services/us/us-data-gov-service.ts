@@ -214,22 +214,64 @@ export const USDataGovService = {
      */
     async fetchPermits(fips: FIPSResult, location: string): Promise<USPermits> {
         const apiKey = process.env.US_CENSUS_API_KEY;
-        if (!apiKey || !fips.placeFips) {
+        if (!apiKey) {
             return this.fetchPermitsViaLLM(location);
         }
 
-        try {
-            // Census BPS annual data
-            const url = `https://api.census.gov/data/2022/cbp?get=ESTAB,EMPSZES&for=place:${fips.placeFips}&in=state:${fips.stateFips}&key=${apiKey}`;
-            const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-            if (res.ok) {
-                // BPS has limited granularity — use LLM to supplement
-                console.log('[USDataGovService] Census BPS partial data, supplementing with LLM');
+        // Census Building Permits Survey (BPS) — correct endpoint
+        // Variables: BLDGS (buildings), UNITS (total units), VALUATION (total valuation $1000s)
+        // Data includes single-family and multi-family breakdowns
+        const urls: string[] = [];
+
+        // Try place-level BPS data first (if we have a place FIPS)
+        if (fips.placeFips) {
+            urls.push(
+                `https://api.census.gov/data/2022/bps/place?get=BLDGS,UNITS,VALUATION&for=place:${fips.placeFips}&in=state:${fips.stateFips}&key=${apiKey}`
+            );
+        }
+        // State-level BPS fallback (aggregated across all places in the state)
+        urls.push(
+            `https://api.census.gov/data/2022/bps/state?get=BLDGS,UNITS,VALUATION&for=state:${fips.stateFips}&key=${apiKey}`
+        );
+
+        for (const url of urls) {
+            try {
+                const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+                if (!res.ok) continue;
+                const data = await res.json();
+
+                // Census BPS returns: [ [header...], [values...], ... ]
+                if (Array.isArray(data) && data.length > 1) {
+                    // Sum across all rows (there may be multiple rows for different building sizes)
+                    let totalBldgs = 0, totalUnits = 0, totalVal = 0;
+                    for (let i = 1; i < data.length; i++) {
+                        totalBldgs += parseInt(data[i][0]) || 0;
+                        totalUnits += parseInt(data[i][1]) || 0;
+                        totalVal += parseInt(data[i][2]) || 0;
+                    }
+
+                    if (totalUnits > 0) {
+                        // Estimate SF/MF split — BPS place-level doesn't always separate,
+                        // so we use a 60/40 heuristic if not available
+                        const singleFamily = Math.round(totalUnits * 0.6);
+                        const multiFamily = totalUnits - singleFamily;
+
+                        console.log(`[USDataGovService] Census BPS success: ${totalUnits} units, $${totalVal}K valuation`);
+                        return {
+                            totalUnits,
+                            singleFamily,
+                            multiFamily,
+                            valuation: totalVal * 1000, // BPS reports in $1000s
+                            source: 'census-bps',
+                        };
+                    }
+                }
+            } catch (err) {
+                console.warn(`[USDataGovService] Census BPS call failed:`, err);
             }
-        } catch {
-            // Expected — BPS API is notoriously complex
         }
 
+        console.warn('[USDataGovService] Census BPS failed for all URLs — using LLM fallback');
         return this.fetchPermitsViaLLM(location);
     },
 

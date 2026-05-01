@@ -167,6 +167,59 @@ function computeCentroid(geometry: any): [number, number] | null {
     return count > 0 ? [lngSum / count, latSum / count] : null;
 }
 
+/**
+ * Searches ArcGIS Hub for a public parcel layer for the given city,
+ * fetches its metadata to identify the correct field names, and returns
+ * a dynamic endpoint configuration.
+ */
+async function findArcGISHubEndpoint(location: string): Promise<{ queryUrl: string, areaField: string, addressFields: string[], label: string } | null> {
+    try {
+        const city = location.split(',')[0].trim();
+        const searchUrl = `https://hub.arcgis.com/api/v3/datasets?filter[type]=Feature%20Service&filter[keyword]=parcel%20${encodeURIComponent(city)}&page[size]=3`;
+        
+        const res = await fetch(searchUrl, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) return null;
+        const data = await res.json();
+
+        if (data.data && data.data.length > 0) {
+            let serviceUrl = data.data[0].attributes?.url;
+            if (!serviceUrl) return null;
+            
+            // Remove any trailing query path just in case
+            serviceUrl = serviceUrl.replace(/\/query\/?$/, '');
+            
+            // Fetch layer metadata to determine fields
+            const metaRes = await fetch(`${serviceUrl}?f=json`, { signal: AbortSignal.timeout(5000) });
+            if (!metaRes.ok) return null;
+            const meta = await metaRes.json();
+            
+            if (!meta.fields || !Array.isArray(meta.fields)) return null;
+            
+            let areaField = 'Shape__Area';
+            const addressFields: string[] = [];
+            
+            for (const f of meta.fields) {
+                const name = f.name.toUpperCase();
+                if (name.includes('AREA')) areaField = f.name;
+                if (name.includes('SITUS') || name.includes('ADDR')) addressFields.push(f.name);
+            }
+            
+            const label = data.data[0].attributes?.name || `${city} Parcels`;
+            console.log(`[ParcelSearch] Found Hub service for ${city}: ${label} (Area: ${areaField})`);
+            
+            return {
+                queryUrl: `${serviceUrl}/query`,
+                areaField,
+                addressFields,
+                label,
+            };
+        }
+    } catch (err) {
+        console.warn('[ParcelSearch] ArcGIS Hub search failed:', err);
+    }
+    return null;
+}
+
 export async function POST(request: NextRequest) {
     try {
         const params: ParcelSearchParams = await request.json();
@@ -179,14 +232,19 @@ export async function POST(request: NextRequest) {
         const [lng, lat] = coordinates;
         const county = resolveCounty(location, lng, lat);
 
-        if (!county || !COUNTY_ENDPOINTS[county]) {
-            return NextResponse.json({
-                success: true, parcels: [],
-                message: 'No supported county ArcGIS service found for this location.',
-            });
-        }
+        let endpoint = county ? COUNTY_ENDPOINTS[county] : null;
 
-        const endpoint = COUNTY_ENDPOINTS[county];
+        if (!endpoint) {
+            console.log(`[ParcelSearch] No hardcoded county for ${location}. Attempting ArcGIS Hub fallback...`);
+            endpoint = await findArcGISHubEndpoint(location);
+            
+            if (!endpoint) {
+                return NextResponse.json({
+                    success: true, parcels: [],
+                    message: 'No supported county ArcGIS service found for this location.',
+                });
+            }
+        }
         const maxResults = params.maxResults || 10;
         const strategy = getAreaStrategy(params);
 
