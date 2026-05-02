@@ -49,7 +49,7 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
     const [isLoadingGreenRegs, setIsLoadingGreenRegs] = useState(false);
     const locationOptions = getLocationOptionsForMarket(market, { projectSelectableOnly: true });
     const selectedLocationOption = locationOptions.find(option => option.location === location);
-    const showComplianceStep = market !== 'USA';
+    const showComplianceStep = true; // market !== 'USA';
     const totalSteps = showComplianceStep ? 3 : 2;
     const stepTitle =
         step === 1
@@ -350,26 +350,28 @@ export function CreateProjectDialog({ children }: CreateProjectDialogProps) {
                                 </div>
                             </div>
 
-                            <div className="flex items-center justify-between rounded-lg border p-4 space-x-4">
-                                <div className="space-y-0.5">
-                                    <Label className="text-base">Vastu Compliance</Label>
-                                    <p className="text-sm text-muted-foreground">
-                                        Optimize layout for Vastu Shastra principles?
-                                    </p>
+                            {market !== 'USA' && (
+                                <div className="flex items-center justify-between rounded-lg border p-4 space-x-4">
+                                    <div className="space-y-0.5">
+                                        <Label className="text-base">Vastu Compliance</Label>
+                                        <p className="text-sm text-muted-foreground">
+                                            Optimize layout for Vastu Shastra principles?
+                                        </p>
+                                    </div>
+                                    <div
+                                        className={cn(
+                                            "w-11 h-6 bg-muted rounded-full relative cursor-pointer transition-colors",
+                                            vastuCompliant ? "bg-primary" : "bg-input"
+                                        )}
+                                        onClick={() => setVastuCompliant(!vastuCompliant)}
+                                    >
+                                        <div className={cn(
+                                            "absolute top-0.5 left-0.5 h-5 w-5 bg-background rounded-full shadow-sm transition-transform",
+                                            vastuCompliant ? "translate-x-5" : "translate-x-0"
+                                        )} />
+                                    </div>
                                 </div>
-                                <div
-                                    className={cn(
-                                        "w-11 h-6 bg-muted rounded-full relative cursor-pointer transition-colors",
-                                        vastuCompliant ? "bg-primary" : "bg-input"
-                                    )}
-                                    onClick={() => setVastuCompliant(!vastuCompliant)}
-                                >
-                                    <div className={cn(
-                                        "absolute top-0.5 left-0.5 h-5 w-5 bg-background rounded-full shadow-sm transition-transform",
-                                        vastuCompliant ? "translate-x-5" : "translate-x-0"
-                                    )} />
-                                </div>
-                            </div>
+                            )}
                         </div>
                     )}
                 </div>
