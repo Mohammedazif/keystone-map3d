@@ -284,7 +284,14 @@ const safeParse = (data: any, label: string) => {
     }
 };
 
-const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+const deepClone = <T>(value: T): T => {
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch (e) {
+        // Fallback for circular references (e.g. turf.js geometry.properties back-references)
+        return structuredClone(value);
+    }
+};
 
 // function normalizeRotation(angle: number) {
 //     let normalized = ((angle % 360) + 360) % 360;
@@ -4788,11 +4795,11 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const scenGeneratedBldgs = (scenPlot.buildings || []).filter(
                             (b: Building) => !b.id.startsWith('bldg-')
                         );
-                        draft.plots[plotIndex].buildings = JSON.parse(JSON.stringify([
+                        draft.plots[plotIndex].buildings = structuredClone([
                             ...currentManualBldgs,
                             ...scenGeneratedBldgs
-                        ]));
-                        draft.plots[plotIndex].buildableAreas = JSON.parse(JSON.stringify(scenPlot.buildableAreas));
+                        ]);
+                        draft.plots[plotIndex].buildableAreas = structuredClone(scenPlot.buildableAreas);
 
                         // Merge: keep user-drawn green areas, replace generated ones from scenario
                         const currentUserGreens = (draft.plots[plotIndex].greenAreas || []).filter(
@@ -4801,10 +4808,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const scenGeneratedGreens = (scenPlot.greenAreas || []).filter(
                             (ga: GreenArea) => ga.id.includes('green-area-')
                         );
-                        draft.plots[plotIndex].greenAreas = JSON.parse(JSON.stringify([
+                        draft.plots[plotIndex].greenAreas = structuredClone([
                             ...currentUserGreens,
                             ...scenGeneratedGreens
-                        ]));
+                        ]);
 
                         // Merge: keep user-drawn parking areas, replace generated ones from scenario
                         const currentUserParking = (draft.plots[plotIndex].parkingAreas || []).filter(
@@ -4813,10 +4820,10 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const scenGeneratedParking = (scenPlot.parkingAreas || []).filter(
                             (pa: ParkingArea) => pa.id.includes('parking-peripheral-') || pa.name?.includes('Generated')
                         );
-                        draft.plots[plotIndex].parkingAreas = JSON.parse(JSON.stringify([
+                        draft.plots[plotIndex].parkingAreas = structuredClone([
                             ...currentUserParking,
                             ...scenGeneratedParking
-                        ]));
+                        ]);
 
                         // Merge: keep manually drawn roads AND user-drawn utilities, replace generated utilities from scenario
                         const currentUserDrawn = (draft.plots[plotIndex].utilityAreas || []).filter(
@@ -4825,13 +4832,13 @@ const useBuildingStoreWithoutUndo = create<BuildingState>((set, get) => ({
                         const scenarioGeneratedUtils = (scenPlot.utilityAreas || []).filter(
                             (ua: UtilityArea) => !(ua.type === UtilityType.Roads && !ua.name?.includes('Peripheral Road')) && !ua.id.startsWith('obj-')
                         );
-                        draft.plots[plotIndex].utilityAreas = JSON.parse(JSON.stringify([
+                        draft.plots[plotIndex].utilityAreas = structuredClone([
                             ...currentUserDrawn,
                             ...scenarioGeneratedUtils
-                        ]));
+                        ]);
                         // Fix: Copy generated gates
                         if (scenPlot.entries) {
-                            draft.plots[plotIndex].entries = JSON.parse(JSON.stringify(scenPlot.entries));
+                            draft.plots[plotIndex].entries = structuredClone(scenPlot.entries);
                         }
 
                         // Copy user defined targets

@@ -23,6 +23,11 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
   const [formData, setFormData] = useState<UnderwritingData>(project.underwriting || {});
   const [isPrinting, setIsPrinting] = useState(false);
 
+  // Currency helpers — derived from project market
+  const isUSD = project.market === 'USA' || project.countryCode === 'US';
+  const curr = isUSD ? '$' : '₹';
+  const sqmUnit = isUSD ? '/sqft' : '/sqm';
+
   const [activeTab, setActiveTab] = useState('borrower');
   const tabs = ['borrower', 'financials', 'legal', 'market'];
 
@@ -108,7 +113,7 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
             <div className="p-6 space-y-4">
               <h4 className="font-semibold text-sm">Land Economics</h4>
               <div className="space-y-2">
-                <Label>Actual Land Purchase Cost (₹)</Label>
+                <Label>Actual Land Purchase Cost ({curr})</Label>
                 <Input type="number" value={formData.actualLandPurchaseCost || ''} onChange={e => handleChange('', 'actualLandPurchaseCost', parseInt(e.target.value))} placeholder="e.g. 40000000" />
               </div>
             </div>
@@ -160,11 +165,11 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
               <TabsContent value="financials" className="space-y-4 m-0">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Requested Loan Amount (₹)</Label>
+                    <Label>Requested Loan Amount ({curr})</Label>
                     <Input type="number" value={formData.requestedLoanAmount || ''} onChange={e => handleChange('', 'requestedLoanAmount', parseInt(e.target.value))} placeholder="e.g. 150000000" />
                   </div>
                   <div className="space-y-2">
-                    <Label>Promoter's Equity Contribution (₹)</Label>
+                    <Label>Promoter's Equity Contribution ({curr})</Label>
                     <Input type="number" value={formData.promoterEquity || ''} onChange={e => handleChange('', 'promoterEquity', parseInt(e.target.value))} placeholder="e.g. 50000000" />
                   </div>
                   <div className="space-y-2">
@@ -179,7 +184,7 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
                     <h4 className="font-semibold text-sm">Land Economics</h4>
                   </div>
                   <div className="space-y-2">
-                    <Label>Actual Land Purchase Cost (₹)</Label>
+                    <Label>Actual Land Purchase Cost ({curr})</Label>
                     <Input type="number" value={formData.actualLandPurchaseCost || ''} onChange={e => handleChange('', 'actualLandPurchaseCost', parseInt(e.target.value))} placeholder="e.g. 40000000" />
                   </div>
                 </div>
@@ -241,7 +246,7 @@ export function ProjectUnderwritingForm({ project, isOpen, onClose, onSave, onCo
                         <Input value={comp.name} onChange={e => updateCompetitor(idx, 'name', e.target.value)} className="h-8 text-sm" />
                       </div>
                       <div className="space-y-2">
-                        <Label className="text-xs">Selling Price (₹/sqm)</Label>
+                        <Label className="text-xs">Selling Price ({curr}{sqmUnit})</Label>
                         <Input type="number" value={comp.sellingPricePerSqm} onChange={e => updateCompetitor(idx, 'sellingPricePerSqm', parseInt(e.target.value))} className="h-8 text-sm" />
                       </div>
                       <div className="space-y-2">

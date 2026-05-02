@@ -16,6 +16,7 @@ import { Badge } from './ui/badge';
 import { ScrollArea } from './ui/scroll-area';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 import { Separator } from './ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const INDIAN_LOCATIONS = [
     "Delhi", "Mumbai", "Bangalore", "Pune", "Hyderabad", "Chennai",
@@ -46,7 +47,18 @@ export function CostRevenuePanel() {
         market_rate_per_sqm: 0,
         sellable_ratio: 0.75,
         currency: 'INR',
-        notes: ''
+        notes: '',
+        site_costs: {
+            road_cost_per_sqm: 7000,
+            road_cost_per_sqm_min: 5000,
+            road_cost_per_sqm_max: 10000,
+            parking_cost_per_sqm: 7000,
+            parking_cost_per_sqm_min: 5000,
+            parking_cost_per_sqm_max: 10000,
+            boundary_cost_per_m: 10000,
+            boundary_cost_per_m_min: 9000,
+            boundary_cost_per_m_max: 12000
+        }
     });
 
     const parametersCollection = collection(db, 'cost_revenue_parameters');
@@ -122,6 +134,10 @@ export function CostRevenuePanel() {
             utility_costs: {
                 ...(defaultParam.utility_costs || {}),
                 ...(param.utility_costs || {})
+            },
+            site_costs: {
+                ...(defaultParam.site_costs || {}),
+                ...(param.site_costs || {})
             }
         } as any);
         setIsEditing(false);
@@ -136,7 +152,18 @@ export function CostRevenuePanel() {
             building_type: 'Residential',
             sellable_ratio: 0.75,
             currency: 'INR',
-            notes: ''
+            notes: '',
+            site_costs: defaultParam.site_costs || {
+                road_cost_per_sqm: 7000,
+                road_cost_per_sqm_min: 5000,
+                road_cost_per_sqm_max: 10000,
+                parking_cost_per_sqm: 7000,
+                parking_cost_per_sqm_min: 5000,
+                parking_cost_per_sqm_max: 10000,
+                boundary_cost_per_m: 10000,
+                boundary_cost_per_m_min: 9000,
+                boundary_cost_per_m_max: 12000
+            }
         });
         setIsEditing(true);
     };
@@ -198,11 +225,13 @@ export function CostRevenuePanel() {
     };
 
     const groupedParams = parameters.reduce((acc, param) => {
-        const key = param.location;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(param);
+        const isUS = ['New York', 'Seattle', 'Chicago', 'Austin', 'Phoenix', 'Los Angeles', 'San Francisco', 'Houston', 'Dallas'].includes(param.location);
+        const country = isUS ? 'USA' : 'India';
+        if (!acc[country]) acc[country] = {};
+        if (!acc[country][param.location]) acc[country][param.location] = [];
+        acc[country][param.location].push(param);
         return acc;
-    }, {} as Record<string, CostRevenueParameters[]>);
+    }, {} as Record<string, Record<string, CostRevenueParameters[]>>);
 
     const formatCurrency = (value: number) => {
         return new Intl.NumberFormat('en-IN', {
@@ -218,62 +247,81 @@ export function CostRevenuePanel() {
 
     return (
         <div className="grid grid-cols-[320px_1fr] gap-6 h-full">
-            {/* Left Sidebar - Parameters List */}
-            <div className="space-y-4">
+            <div className="space-y-4 flex flex-col h-full">
                 <div className="flex items-center justify-between">
                     <h3 className="text-lg font-semibold">Cost & Revenue</h3>
                     <Button size="sm" onClick={handleNewParam}>
                         <Plus className="h-4 w-4 mr-1" /> New
                     </Button>
                 </div>
+                
+                <Tabs defaultValue="USA" className="flex-1 flex flex-col w-full h-full">
+                    <TabsList className="grid w-full grid-cols-2 mb-2">
+                        <TabsTrigger value="USA">USA</TabsTrigger>
+                        <TabsTrigger value="India">India</TabsTrigger>
+                    </TabsList>
 
-                <ScrollArea className="h-[calc(100vh-200px)]">
-                    {isLoading ? (
-                        <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            {Object.entries(groupedParams).map(([location, params]) => (
-                                <div key={location}>
-                                    <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                                        {location}
-                                    </div>
-                                    <div className="space-y-1">
-                                        {params.map(param => (
-                                            <Card
-                                                key={param.id}
-                                                className={`cursor-pointer transition-all hover:shadow-md ${selectedParam?.id === param.id ? 'border-primary bg-primary/5' : ''
-                                                    }`}
-                                                onClick={() => handleSelectParam(param)}
-                                            >
-                                                <CardHeader className="p-3">
-                                                    <div className="flex items-start justify-between">
-                                                        <div className="flex-1">
-                                                            <CardTitle className="text-sm">{param.building_type}</CardTitle>
-                                                            <CardDescription className="text-xs mt-1">
-                                                                {formatCurrency(param.total_cost_per_sqm)}/sqm
-                                                            </CardDescription>
+                    <ScrollArea className="flex-1 h-[calc(100vh-220px)]">
+                        {isLoading ? (
+                            <div className="flex items-center justify-center py-8">
+                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                            </div>
+                        ) : (
+                            <div className="pb-6">
+                                {['USA', 'India'].map(country => {
+                                    const countryParams = groupedParams[country] || {};
+                                    return (
+                                        <TabsContent key={country} value={country} className="m-0 space-y-4">
+                                            {Object.entries(countryParams).length === 0 ? (
+                                                <div className="text-center text-sm text-muted-foreground py-8">
+                                                    No parameters for {country}
+                                                </div>
+                                            ) : (
+                                                Object.entries(countryParams).map(([location, params]) => (
+                                                    <div key={location} className="mb-4">
+                                                        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-1">
+                                                            {location}
                                                         </div>
-                                                        <DollarSign className="h-4 w-4 text-muted-foreground" />
+                                                        <div className="space-y-1.5">
+                                                            {params.map(param => (
+                                                                <Card
+                                                                    key={param.id}
+                                                                    className={`cursor-pointer transition-all hover:shadow-md ${selectedParam?.id === param.id ? 'border-primary bg-primary/5' : ''
+                                                                        }`}
+                                                                    onClick={() => handleSelectParam(param)}
+                                                                >
+                                                                    <CardHeader className="p-3">
+                                                                        <div className="flex items-start justify-between">
+                                                                            <div className="flex-1">
+                                                                                <CardTitle className="text-sm">{param.building_type}</CardTitle>
+                                                                                <CardDescription className="text-xs mt-1">
+                                                                                    {formatCurrency(param.total_cost_per_sqm)}/sqm
+                                                                                </CardDescription>
+                                                                            </div>
+                                                                            <DollarSign className="h-4 w-4 text-muted-foreground" />
+                                                                        </div>
+                                                                        <div className="flex items-center gap-2 mt-2">
+                                                                            <Badge variant="secondary" className="text-[10px] py-0">
+                                                                                {param.currency}
+                                                                            </Badge>
+                                                                            <Badge variant="outline" className="text-[10px] py-0">
+                                                                                {(param.sellable_ratio * 100).toFixed(0)}% sellable
+                                                                            </Badge>
+                                                                        </div>
+                                                                    </CardHeader>
+                                                                </Card>
+                                                            ))}
+                                                        </div>
                                                     </div>
-                                                    <div className="flex items-center gap-2 mt-2">
-                                                        <Badge variant="secondary" className="text-xs">
-                                                            {param.currency}
-                                                        </Badge>
-                                                        <Badge variant="outline" className="text-xs">
-                                                            {(param.sellable_ratio * 100).toFixed(0)}% sellable
-                                                        </Badge>
-                                                    </div>
-                                                </CardHeader>
-                                            </Card>
-                                        ))}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </ScrollArea>
+                                                ))
+                                            )}
+                                        </TabsContent>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </ScrollArea>
+                </Tabs>
             </div>
 
             {/* Right Panel - Parameters Editor */}
@@ -435,6 +483,85 @@ export function CostRevenuePanel() {
                                         </span>
                                     </div>
                                     <p className="text-xs text-muted-foreground mt-1">Auto-calculated from above costs</p>
+                                </div>
+                            </div>
+
+                            <Separator />
+
+                            {/* Site Costs */}
+                            <div className="space-y-4">
+                                <h4 className="text-sm font-semibold flex items-center gap-2">Site-Level Costs</h4>
+                                <div className="grid grid-cols-2 gap-4">
+                                    {(() => {
+                                        const defaultParam = DEFAULT_COST_PARAMETERS.find(p => p.location === formData.location && p.building_type === formData.building_type);
+                                        return [
+                                            { key: 'road_cost_per_sqm', label: 'Road Cost (per sqm)' },
+                                            { key: 'parking_cost_per_sqm', label: 'Parking Cost (per sqm)' },
+                                            { key: 'boundary_cost_per_m', label: 'Boundary Wall (per m)' },
+                                        ].map(u => {
+                                            const dbVal = formData.site_costs?.[u.key as keyof typeof formData.site_costs];
+                                            const defVal = defaultParam?.site_costs?.[u.key as keyof typeof formData.site_costs];
+                                            
+                                            const dbValMin = formData.site_costs?.[`${u.key}_min` as keyof typeof formData.site_costs];
+                                            const defValMin = defaultParam?.site_costs?.[`${u.key}_min` as keyof typeof formData.site_costs];
+
+                                            const dbValMax = formData.site_costs?.[`${u.key}_max` as keyof typeof formData.site_costs];
+                                            const defValMax = defaultParam?.site_costs?.[`${u.key}_max` as keyof typeof formData.site_costs];
+
+                                            return (
+                                                <div key={u.key} className="space-y-2 p-3 border rounded-md bg-background/50">
+                                                    <Label className="text-xs font-semibold">{u.label}</Label>
+                                                    <div className="grid grid-cols-3 gap-2">
+                                                        <div className="space-y-1">
+                                                            <span className="text-[10px] text-muted-foreground block">Base</span>
+                                                            <Input
+                                                                type="number" className="h-7 text-xs"
+                                                                value={dbVal !== undefined ? dbVal : (defVal || '')}
+                                                                onChange={(e) => setFormData({
+                                                                    ...formData,
+                                                                    site_costs: {
+                                                                        ...formData.site_costs,
+                                                                        [u.key]: parseFloat(e.target.value) || undefined
+                                                                    }
+                                                                })}
+                                                                disabled={!isEditing}
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <span className="text-[10px] text-muted-foreground block">Min</span>
+                                                            <Input
+                                                                type="number" className="h-7 text-xs"
+                                                                value={dbValMin !== undefined ? dbValMin : (defValMin || '')}
+                                                                onChange={(e) => setFormData({
+                                                                    ...formData,
+                                                                    site_costs: {
+                                                                        ...formData.site_costs,
+                                                                        [`${u.key}_min`]: parseFloat(e.target.value) || undefined
+                                                                    }
+                                                                })}
+                                                                disabled={!isEditing}
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <span className="text-[10px] text-muted-foreground block">Max</span>
+                                                            <Input
+                                                                type="number" className="h-7 text-xs"
+                                                                value={dbValMax !== undefined ? dbValMax : (defValMax || '')}
+                                                                onChange={(e) => setFormData({
+                                                                    ...formData,
+                                                                    site_costs: {
+                                                                        ...formData.site_costs,
+                                                                        [`${u.key}_max`]: parseFloat(e.target.value) || undefined
+                                                                    }
+                                                                })}
+                                                                disabled={!isEditing}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        });
+                                    })()}
                                 </div>
                             </div>
 

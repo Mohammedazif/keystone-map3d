@@ -179,4 +179,23 @@ regulation sample.json
 ts_out2.txt
 ts_output.txt
 keystone_phase1_3_plan.html
-# Compliance documents for other geographie2.md
+Compliance documents for other geographie2.md
+Standard cost USA.txt
+fix-crores.js
+fix-currency-reports-safe.js
+fix-currency-reports.js
+fix-currency-safe.js
+fix-currency-simple.js
+fix-feas-final.js
+fix-isusd.js
+fix-parking-costs.js
+fix-ref-error.js
+fix-remnants.js
+fix-sim-cost.js
+fix-site-costs.js
+fix-sitedev-formula.js
+fix-uw-final.js
+fix-uw-remaining.js
+fix-uw-sitedev.js
+fix-uw-turf.js
+update-sitedev-formula.js

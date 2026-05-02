@@ -911,6 +911,19 @@ export interface CostRevenueParameters {
     owc_per_kg_per_day_max?: number;
   };
 
+  // Site-Level Costs (External Works — per-location tier data)
+  site_costs?: {
+    road_cost_per_sqm?: number;      // $/m² or ₹/m²
+    road_cost_per_sqm_min?: number;
+    road_cost_per_sqm_max?: number;
+    parking_cost_per_sqm?: number;    // $/m² or ₹/m²
+    parking_cost_per_sqm_min?: number;
+    parking_cost_per_sqm_max?: number;
+    boundary_cost_per_m?: number;     // $/m or ₹/m
+    boundary_cost_per_m_min?: number;
+    boundary_cost_per_m_max?: number;
+  };
+
   // Revenue Parameters
   market_rate_per_sqm: number; // Selling price per sqm
   sellable_ratio: number; // 0.70 - 0.85 (carpet/builtup)
@@ -1130,6 +1143,8 @@ export interface SimulationResults {
 
 export interface ProjectEstimates {
   isPotential?: boolean;
+  /** Currency code for all monetary values in this estimate ('INR' | 'USD') */
+  currency?: string;
   total_construction_cost: number;
   cost_breakdown: {
     earthwork: number;

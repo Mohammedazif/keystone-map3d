@@ -180,6 +180,21 @@ export function generateBuildingLayout(
   }
   // --- ROTATION WRAPPER END ---
 
+  // --- STRIP CIRCULAR-REFERENCE-PRONE PROPERTIES ---
+  // Geometric typology generators (L/U/T/H/Commercial) store layout results
+  // (units, cores, internalUtilities) in the polygon's properties. When turf.intersect
+  // creates unit geometries, it merges input properties into the result, creating a
+  // circular chain: unit → geometry → properties → units → unit.
+  // Strip these keys so turf operations don't propagate them.
+  for (const poly of [buildingPoly, workingPoly]) {
+    if (poly.properties) {
+      delete poly.properties.units;
+      delete poly.properties.cores;
+      delete poly.properties.internalUtilities;
+      delete poly.properties.entrances;
+    }
+  }
+
   const cores: Core[] = [];
   const units: Unit[] = [];
   const entrances: any[] = [];

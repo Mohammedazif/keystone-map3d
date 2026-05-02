@@ -2048,7 +2048,8 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
   const profit = estimates.potential_profit;
   const roi = estimates.roi_percentage;
 
-  const fmtCr = (v: number) => `₹${(v / 10000000).toFixed(1)} Cr`;
+  const isUSD = estimates?.currency === 'USD';
+  const fmtCr = (v: number) => isUSD ? `${(v / 1000000).toFixed(1)} M` : `₹${(v / 10000000).toFixed(1)} Cr`;
 
 
   // ----- New: Additional Site Cost Components (Road, Parking, Boundary Wall) -----
@@ -2117,18 +2118,23 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
   }, [landCostValue, project?.id]);
 
   // Calculations (reactive)
-  const roadMin = Math.round(5000 * roadArea);
-  const roadMax = Math.round(10000 * roadArea);
+  const sc = estimates?.site_costs || {};
+  const _rmin = sc.road_cost_per_sqm_min || (isUSD ? 150 : 5000);
+  const _rmax = sc.road_cost_per_sqm_max || (isUSD ? 500 : 10000);
+  const roadMin = Math.round(_rmin * roadArea);
+  const roadMax = Math.round(_rmax * roadArea);
 
-  const parkingMin = Math.round(5000 * parkingArea);
-  const parkingMax = Math.round(10000 * parkingArea);
+  const _pmin = sc.parking_cost_per_sqm_min || (isUSD ? 150 : 5000);
+  const _pmax = sc.parking_cost_per_sqm_max || (isUSD ? 500 : 10000);
+  const parkingMin = Math.round(_pmin * parkingArea);
+  const parkingMax = Math.round(_pmax * parkingArea);
 
-  const boundaryMin = Math.round(9000 * totalPerimeter);
-  const boundaryMax = Math.round(12000 * totalPerimeter);
+  const _bmin = sc.boundary_cost_per_m_min || (isUSD ? 100 : 9000);
+  const _bmax = sc.boundary_cost_per_m_max || (isUSD ? 300 : 12000);
+  const boundaryMin = Math.round(_bmin * totalPerimeter);
+  const boundaryMax = Math.round(_bmax * totalPerimeter);
 
-  const formatToCr = (value: number) => {
-    return `${(value / 10000000).toFixed(2)} Cr`;
-  };
+  const formatToCr = (value: number) => { return isUSD ? `${(value / 1000000).toFixed(2)} M` : `${(value / 10000000).toFixed(2)} Cr`; };
 
   // Adjust simulated totals to include these site-level costs for display
   const adj_cost_p10 = sim
@@ -2210,7 +2216,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
           <input
             type="number"
             className="w-full flex-1 min-w-0 bg-transparent text-center text-base font-bold text-amber-500 placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-amber-500/50 rounded [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-            placeholder="Enter Land Cost (₹)"
+            placeholder={isUSD ? "Enter Land Cost ($)" : "Enter Land Cost (₹)"}
             value={landCostInput}
             onChange={(e) => setLandCostInput(e.target.value)}
           />
@@ -2252,12 +2258,12 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
 
       {/* Cost Component Box Plot */}
       {sim && sim.cost_components_raw && (
-        <SimBoxPlot data={sim.cost_components_raw} />
+        <SimBoxPlot data={sim.cost_components_raw} isUSD={isUSD} />
       )}
 
       {/* Cost vs Time Scatter Plot */}
       {sim && sim.cost_raw && sim.time_raw && (
-        <SimScatterCostTime costData={sim.cost_raw} timeData={sim.time_raw} />
+        <SimScatterCostTime costData={sim.cost_raw} timeData={sim.time_raw} isUSD={isUSD} />
       )}
 
       {/* Cost Breakdown with ranges */}
@@ -2286,7 +2292,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                       width: `${(c.value / totalParts) * 100}%`,
                       backgroundColor: c.color,
                     }}
-                    title={`${c.label}: ₹${(c.value / 10000000).toFixed(2)} Cr`}
+                    title={`${c.label}: ${isUSD ? "$" : "₹"}${(c.value / (isUSD ? 1000000 : 10000000)).toFixed(2)} ${isUSD ? "M" : "Cr"}`}
                   />
                 ))}
               </div>
@@ -2302,7 +2308,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                     />
                     <span className="text-muted-foreground">{c.label}</span>
                     <span className="ml-auto font-medium">
-                      {(c.value / 10000000).toFixed(2)} Cr
+                      {(c.value / (isUSD ? 1000000 : 10000000)).toFixed(2)} {isUSD ? "M" : "Cr"}
                     </span>
                   </div>
                 ))}
@@ -2314,7 +2320,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
                   Construction Total
                 </span>
                 <span className="ml-auto font-bold text-blue-400">
-                  {(totalParts / 10000000).toFixed(2)} Cr
+                  {(totalParts / (isUSD ? 1000000 : 10000000)).toFixed(2)} {isUSD ? "M" : "Cr"}
                 </span>
               </div>
             </>
@@ -2344,7 +2350,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
               </div>
 
               <div className="text-[11px] text-muted-foreground italic mt-1">
-                Unit: ₹/m² (5,000–10,000)
+                Unit: {isUSD ? `$/m² (${_rmin}-${_rmax})` : `₹/m² (${_rmin / 1000}k-${_rmax / 1000}k)`}
               </div>
             </div>
 
@@ -2370,7 +2376,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
               </div>
 
               <div className="text-[11px] text-muted-foreground italic mt-1">
-                Unit: ₹/m² (5,000–10,000)
+                Unit: {isUSD ? `$/m² (${_pmin}-${_pmax})` : `₹/m² (${_pmin / 1000}k-${_pmax / 1000}k)`}
               </div>
             </div>
 
@@ -2396,7 +2402,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
               </div>
 
               <div className="text-[11px] text-muted-foreground italic mt-1">
-                Unit: ₹/m (9,000–12,000)
+                Unit: {isUSD ? `$/m (${_bmin}-${_bmax})` : `₹/m (${_bmin / 1000}k-${_bmax / 1000}k)`}
               </div>
             </div>
 
@@ -2412,6 +2418,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
       {/* S-Curve Cash-Flow Band */}
       {sim && (
         <SimSCurveBand
+          isUSD={isUSD}
           p10={sim.scurve_p10}
           p50={sim.scurve_p50}
           p90={sim.scurve_p90}
@@ -2424,6 +2431,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
       {/* Phase Breakdown — Cost */}
       {sim && sim.phases.length > 0 && (
         <PhaseBreakdownChart
+          isUSD={isUSD}
           phases={sim.phases}
           title={`Phase-wise Cost Breakdown (${sim.numPhases} Phases)`}
           mode="cost"
@@ -2433,6 +2441,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
       {/* Utility Costs */}
       {sim && sim.utility_costs.length > 0 && (
         <UtilityCostsTable
+          isUSD={isUSD}
           items={sim.utility_costs}
           total={sim.total_utility_cost}
           totalMin={sim.total_utility_cost_min}
@@ -2499,7 +2508,7 @@ function CostSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
           <div className="space-y-1.5">
             {estimates.breakdown.map((b: any, i: number) => {
               const pct = (b.cost.total / totalCost) * 100;
-              const costDisplay = `${(b.cost.total / 10000000).toFixed(2)} Cr`;
+              const costDisplay = isUSD ? `${(b.cost.total / 1000000).toFixed(2)} M` : `${(b.cost.total / 10000000).toFixed(2)} Cr`;
               return (
                 <div key={i} className="text-[10px]">
                   <div className="flex justify-between mb-0.5">
@@ -2563,6 +2572,7 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
         )
       : sim?.delivery_phases || [];
 
+  const isUSD = estimates?.currency === 'USD';
   const fmtMo = (v: number) => `${v.toFixed(1)} mo`;
 
   return (
@@ -2654,6 +2664,7 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
       {/* Phase Breakdown — Time */}
       {sim && sim.phases.length > 0 && (
         <PhaseBreakdownChart
+          isUSD={isUSD}
           phases={sim.phases}
           title={`Phase-wise Timeline (${sim.numPhases} Phases)`}
           mode="time"
@@ -2668,6 +2679,7 @@ function TimeSimulatorTab({ estimates, isLoading }: SimulatorTabProps) {
       {/* ─── DELIVERY PHASES ─────────────────────────────────────────── */}
       {deliveryPhases.length > 0 && (
         <DeliveryPhasesChart
+          isUSD={isUSD}
           phases={deliveryPhases}
           numPhases={numDeliveryPhases}
           onNumPhasesChange={setNumDeliveryPhases}
@@ -2864,7 +2876,8 @@ function MultiBuildingBudgetTab({
       </div>
     );
 
-  const fmtCr = (v: number) => `₹${(v / 10000000).toFixed(1)} Cr`;
+  const isUSD = estimates?.currency === 'USD';
+  const fmtCr = (v: number) => isUSD ? `${(v / 1000000).toFixed(1)} M` : `₹${(v / 10000000).toFixed(1)} Cr`;
   const selectedPlot = useSelectedPlot();
   const estimateBreakdown = estimates.breakdown || [];
   const totalCost = estimates.total_construction_cost;
@@ -3180,8 +3193,8 @@ function MultiBuildingBudgetTab({
         <div className="grid gap-2">
           <div className="grid grid-cols-7 gap-2 text-[11px] font-bold text-muted-foreground mb-2">
             <div>Building</div>
-            <div className="text-right">~Cost (₹ Cr)</div>
-            <div className="text-right">~Utility (₹ Cr)</div>
+            <div className="text-right">~Cost ({isUSD ? "$ M" : "₹ Cr"})</div>
+            <div className="text-right">~Utility ({isUSD ? "$ M" : "₹ Cr"})</div>
             <div className="text-right">% of Total</div>
             <div className="text-right">GFA (sqm)</div>
             <div className="text-right">Floors</div>
@@ -3194,7 +3207,7 @@ function MultiBuildingBudgetTab({
               usingEstimates && scopedConstructionCost > 0
                 ? (b.cost.total / scopedConstructionCost) * 100
                 : 0;
-            const costCr = usingEstimates ? b.cost.total / 10000000 : 0;
+            const costCr = usingEstimates ? b.cost.total / (isUSD ? 1000000 : 10000000) : 0;
             const utilityCr = usingEstimates
               ? (b.utilityCost || 0) / 10000000
               : 0;
@@ -3388,8 +3401,8 @@ function MultiBuildingBudgetTab({
                       </span>
                       <span className="font-semibold">
                         {u.minAmount != null && u.maxAmount != null
-                          ? `${(u.minAmount / 10000000).toFixed(2)} – ${(u.maxAmount / 10000000).toFixed(2)} Cr`
-                          : `~${(u.amount / 10000000).toFixed(2)} Cr`}
+                          ? `${(u.minAmount / (isUSD ? 1000000 : 10000000)).toFixed(2)} – ${(u.maxAmount / (isUSD ? 1000000 : 10000000)).toFixed(2)} ${isUSD ? "M" : "Cr"}`
+                          : `~${(u.amount / (isUSD ? 1000000 : 10000000)).toFixed(2)} ${isUSD ? "M" : "Cr"}`}
                       </span>
                     </div>
                   );
@@ -3410,18 +3423,18 @@ function MultiBuildingBudgetTab({
               • Largest building:{" "}
               <span className="font-bold">{largestBuilding?.buildingName}</span>{" "}
               (~
-              {(largestBuilding?.cost?.total ?? 0 / 10000000).toFixed(1)} Cr)
+              {isUSD ? "$" : "₹"}{((largestBuilding?.cost?.total ?? 0) / (isUSD ? 1000000 : 10000000)).toFixed(1)} {isUSD ? "M" : "Cr"})
             </div>
             <div>
               • Average per building:{" "}
               <span className="font-bold">
-                ~{(avgCostPerBuilding / 10000000).toFixed(1)} Cr
+                ~{(avgCostPerBuilding / (isUSD ? 1000000 : 10000000)).toFixed(1)} {isUSD ? "M" : "Cr"}
               </span>
             </div>
             <div>
               • Cost variance:{" "}
               <span className="font-bold">
-                ~{(costVariance / 10000000).toFixed(1)} Cr
+                ~{(costVariance / (isUSD ? 1000000 : 10000000)).toFixed(1)} {isUSD ? "M" : "Cr"}
               </span>
             </div>
             <div>
@@ -3770,6 +3783,7 @@ function FeasibilityTab({ estimates, isLoadingEstimates }: FeasibilityTabProps) 
   };
 
   const sim = estimates?.simulation;
+  const isUSD = estimates?.currency === 'USD';
 
   // Calculate ROI ranges based on cost ranges (including land cost and site costs)
   const dashRoadArea = metrics?.roadArea || 0;
@@ -4208,12 +4222,12 @@ function FeasibilityTab({ estimates, isLoadingEstimates }: FeasibilityTabProps) 
                 </div>
                 <div className="text-lg font-bold">
                   {sim
-                    ? `₹${(dashTotalCostWithLand_p10 / 10000000).toFixed(1)} – ${(dashTotalCostWithLand_p90 / 10000000).toFixed(1)} Cr`
-                    : `~₹${(dashEstTotalCost / 10000000).toFixed(2)} Cr`}
+                    ? `${isUSD?"$":"₹"}${(dashTotalCostWithLand_p10 / (isUSD ? 1000000 : 10000000)).toFixed(1)} – ${(dashTotalCostWithLand_p90 / (isUSD ? 1000000 : 10000000)).toFixed(1)} ${isUSD?"M":"Cr"}`
+                    : `~${isUSD?"$":"₹"}${(dashEstTotalCost / (isUSD ? 1000000 : 10000000)).toFixed(2)} ${isUSD?"M":"Cr"}`}
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   {sim
-                    ? `Median: ₹${((sim.cost_p50 + dashRoadMin + dashParkingMin + dashBoundaryMin + dashLandCost) / 10000000).toFixed(2)} Cr`
+                    ? `Median: ${isUSD?"$":"₹"}${((sim.cost_p50 + dashRoadMin + dashParkingMin + dashBoundaryMin + dashLandCost) / (isUSD ? 1000000 : 10000000)).toFixed(2)} ${isUSD?"M":"Cr"}`
                     : "Run simulation for range"}
                 </div>
               </div>
@@ -4223,12 +4237,11 @@ function FeasibilityTab({ estimates, isLoadingEstimates }: FeasibilityTabProps) 
                 </div>
                 <div className="text-lg font-bold text-emerald-500">
                   {sim
-                    ? `₹${(dashProfit_p10 / 10000000).toFixed(1)} – ${(dashProfit_p90 / 10000000).toFixed(1)} Cr`
-                    : `~₹${(dashEstProfit / 10000000).toFixed(2)} Cr`}
+                    ? `${isUSD?"$":"₹"}${(dashProfit_p10 / (isUSD ? 1000000 : 10000000)).toFixed(1)} – ${(dashProfit_p90 / (isUSD ? 1000000 : 10000000)).toFixed(1)} ${isUSD?"M":"Cr"}`
+                    : `~${isUSD?"$":"₹"}${(dashEstProfit / (isUSD ? 1000000 : 10000000)).toFixed(2)} ${isUSD?"M":"Cr"}`}
                 </div>
                 <div className="text-[10px] text-muted-foreground">
-                  Est. Revenue: ₹
-                  {((estimates.total_revenue || 0) / 10000000).toFixed(2)} Cr
+                  Est. Revenue: {isUSD ? "$" : "₹"}{((estimates.total_revenue || 0) / (isUSD ? 1000000 : 10000000)).toFixed(2)} {isUSD ? "M" : "Cr"}
                 </div>
               </div>
             </div>
@@ -4397,8 +4410,8 @@ function FeasibilityTab({ estimates, isLoadingEstimates }: FeasibilityTabProps) 
                           <span>{b.buildingName || b.name || `Building ${idx+1}`}</span>
                           <span className="text-emerald-500">
                             {sim
-                              ? `₹${costLo} – ${costHi} Cr`
-                              : `~₹${bCost.toFixed(2)} Cr`}
+                              ? `${isUSD?"$":"₹"}${costLo} – ${costHi} ${isUSD?"M":"Cr"}`
+                              : `~${isUSD?"$":"₹"}${bCost.toFixed(2)} ${isUSD?"M":"Cr"}`}
                           </span>
                         </div>
                         <div className="flex justify-between text-[10px] text-muted-foreground">

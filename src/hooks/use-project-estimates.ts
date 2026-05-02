@@ -14,6 +14,7 @@ import { db } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import { runFullSimulation } from '@/lib/cost-time-simulation';
 import { calculateStandardTimeEstimates, BuildingTimeInput } from '@/lib/standard-time-calc';
+import { DEFAULT_COST_PARAMETERS } from '@/lib/default-data/cost-parameters';
 
 export function useProjectEstimates(project: Project | null, metrics: AdvancedKPIs | null) {
     const projectId = project?.id;
@@ -97,7 +98,21 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
     const estimates: ProjectEstimates | null = useMemo(() => {
         if (!project || !metrics || isLoading) return null;
 
-        const location = typeof project.location === 'string' ? project.location : "Delhi"; // Default
+        let location = "Delhi";
+        if (typeof project.location === 'string') {
+            location = project.location;
+        } else if (project.locationLabel) {
+            location = project.locationLabel;
+        }
+        
+        // Sometimes location might be a full address, we should extract the city name if it's one of the known ones
+        const locLower = (location + " " + (project.name || "")).toLowerCase();
+        if (locLower.includes('austin')) location = 'Austin';
+        else if (locLower.includes('seattle')) location = 'Seattle';
+        else if (locLower.includes('phoenix')) location = 'Phoenix';
+        else if (locLower.includes('new york')) location = 'New York';
+        else if (locLower.includes('chicago')) location = 'Chicago';
+
         const buildingType = project.intendedUse || "Residential";
 
         let heightCategory: TimeEstimationParameter['height_category'] = 'Mid-Rise (15-45m)';
@@ -105,6 +120,7 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
         // console.log("Estimating for:", { location, buildingType, heightCategory });
 
         // 1. MATCH COST PARAMETERS
+        const US_LOCATIONS = new Set(['Austin', 'Seattle', 'Phoenix', 'New York', 'Chicago', 'Los Angeles', 'San Francisco', 'Houston', 'Dallas']);
         const lookupType = buildingType === 'Mixed-Use' ? 'Mixed Use' : buildingType;
         let costParam = costs.find(c => c.location === location && c.building_type === lookupType);
         if (!costParam) {
@@ -116,7 +132,18 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
             costParam = costs[0];
         }
 
-        // console.log("Selected Cost Param:", costParam);
+        // Ensure US locations always have USD currency, even if the DB record is stale
+        if (costParam && US_LOCATIONS.has(location) && costParam.currency !== 'USD') {
+            costParam = { ...costParam, currency: 'USD' };
+        }
+        
+        // Fallback for missing site_costs (since Firebase docs might be stale)
+        if (costParam && !costParam.site_costs) {
+            const fallbackParam = DEFAULT_COST_PARAMETERS.find(c => c.location === location && c.building_type === lookupType)
+                               || DEFAULT_COST_PARAMETERS.find(c => c.location === 'Delhi' && c.building_type === lookupType)
+                               || DEFAULT_COST_PARAMETERS[0];
+            costParam = { ...costParam, site_costs: fallbackParam.site_costs };
+        }
 
         // 2. MATCH TIME PARAMETERS
         const timeParam = times.find(t => t.building_type === buildingType && t.height_category === heightCategory)
@@ -505,6 +532,7 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
 
         return {
             isPotential,
+            currency: costParam.currency || 'INR',
             total_construction_cost: finalTotalCost,
             cost_breakdown: {
                 earthwork: totalEarthwork,
@@ -518,6 +546,7 @@ export function useProjectEstimates(project: Project | null, metrics: AdvancedKP
             roi_percentage: roi,
             market_rate_per_sqm: costParam.market_rate_per_sqm,
             sellable_ratio: costParam.sellable_ratio,
+            site_costs: costParam.site_costs || null,
             timeline: {
                 total_months: maxTimelineMonths,
                 phases: criticalPathPhases

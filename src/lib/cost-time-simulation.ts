@@ -363,90 +363,158 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
         );
     };
 
+    const isUSD = input.costParam?.currency === 'USD';
+    const sym = isUSD ? '$' : '₹';
+
     const formatRange = (min: number, max: number, formatAs: 'Cr' | 'L' | 'Raw', suffix: string = '') => {
+        if (isUSD) {
+            // For USD: always show raw dollar values with compact notation
+            const fmt = (n: number) => n >= 1000000
+                ? `$${(n / 1000000).toFixed(2)}M`
+                : n >= 1000
+                    ? `$${(n / 1000).toFixed(0)}K`
+                    : `$${n.toLocaleString('en-US')}`;
+            return `${fmt(min)} - ${fmt(max)}${suffix}`;
+        }
         if (formatAs === 'Cr') return `₹${(min/10000000).toFixed(2)} - ₹${(max/10000000).toFixed(2)} Cr${suffix}`;
         if (formatAs === 'L') return `₹${(min/100000).toFixed(1)} - ₹${(max/100000).toFixed(1)} L${suffix}`;
         return `₹${min.toLocaleString('en-IN')} - ₹${max.toLocaleString('en-IN')}${suffix}`;
     };
 
-    // UGT + Pumping (fixed cost) - Assume always required or basic site infrastructure
+    // UGT + Pumping
     if (hasUtility(['Water', 'UGT', 'WTP', 'STP'])) {
-        items.push({ 
-            label: 'UGT + Pumping', amount: u.ugt_pumping, unit: 'Fixed',
-            rateRange: '₹1.50 - ₹4.00 Cr', minAmount: 15000000, maxAmount: 40000000 
-        });
+        if (isUSD) {
+            // US: Unit rate based on tank volume (estimate 1.5 days of KLD demand)
+            const kld = (input.totalGFA / 15) * 150 / 1000;
+            const volumeM3 = kld * 1.5;
+            const minR = u.ugt_pumping_min ?? 400;
+            const maxR = u.ugt_pumping_max ?? 2000;
+            items.push({ 
+                label: 'UGT + Pumping', amount: volumeM3 * (u.ugt_pumping ?? 1200), unit: `${volumeM3.toFixed(0)} m³`,
+                rateRange: formatRange(minR, maxR, 'Raw', ' / m³'), minAmount: volumeM3 * minR, maxAmount: volumeM3 * maxR 
+            });
+        } else {
+            // India: Fixed cost
+            const minA = u.ugt_pumping_min ?? 15000000;
+            const maxA = u.ugt_pumping_max ?? 40000000;
+            items.push({ 
+                label: 'UGT + Pumping', amount: u.ugt_pumping ?? 25000000, unit: 'Fixed',
+                rateRange: formatRange(minA, maxA, 'Cr'), minAmount: minA, maxAmount: maxA 
+            });
+        }
     }
 
     // STP: estimate 150 liters/person/day, 1 person per 15sqm GFA → KLD ≈ GFA/15 * 150/1000
     if (hasUtility(['STP', 'Sewage'])) {
         const kld = (input.totalGFA / 15) * 150 / 1000;
+        const minR = isUSD ? 1200 : 25000;
+        const maxR = isUSD ? 4000 : 75000;
         items.push({ 
             label: 'STP', amount: kld * u.stp_per_kld, unit: `${kld.toFixed(0)} KLD`,
-            rateRange: '₹25,000 - ₹75,000 / KLD', minAmount: kld * 25000, maxAmount: kld * 75000 
+            rateRange: formatRange(minR, maxR, 'Raw', ' / KLD'), minAmount: kld * minR, maxAmount: kld * maxR 
         });
     }
 
     // WTP
     if (hasUtility(['WTP', 'Water'])) {
-        items.push({ 
-            label: 'WTP', amount: u.wtp_cost, unit: 'Fixed',
-            rateRange: '₹10.0 - ₹30.0 L', minAmount: 1000000, maxAmount: 3000000 
-        });
+        if (isUSD) {
+            // US: Unit rate per KLD
+            const kld = (input.totalGFA / 15) * 150 / 1000;
+            const minR = u.wtp_cost_min ?? 1500;
+            const maxR = u.wtp_cost_max ?? 4500;
+            items.push({ 
+                label: 'WTP', amount: kld * (u.wtp_cost ?? 3000), unit: `${kld.toFixed(0)} KLD`,
+                rateRange: formatRange(minR, maxR, 'Raw', ' / KLD'), minAmount: kld * minR, maxAmount: kld * maxR 
+            });
+        } else {
+            // India: Fixed cost
+            const minA = u.wtp_cost_min ?? 1000000;
+            const maxA = u.wtp_cost_max ?? 3000000;
+            items.push({ 
+                label: 'WTP', amount: u.wtp_cost ?? 2000000, unit: 'Fixed',
+                rateRange: formatRange(minA, maxA, 'L'), minAmount: minA, maxAmount: maxA 
+            });
+        }
     }
 
     // Transformer: estimate 20W/sqm → kVA ≈ GFA * 20 / 1000 / 0.8 PF
     const kva = input.electricalKVA ?? (input.totalGFA * 20 / 1000 / 0.8);
     if (hasUtility(['Transformer', 'Substation', 'Transformer Yard'])) {
+        const minR = isUSD ? 280 : 8000;
+        const maxR = isUSD ? 700 : 12000;
         items.push({ 
             label: 'Transformer + HT', amount: kva * u.transformer_per_kva, unit: `${kva.toFixed(0)} kVA`,
-            rateRange: '₹8,000 - ₹12,000 / kVA', minAmount: kva * 8000, maxAmount: kva * 12000 
+            rateRange: formatRange(minR, maxR, 'Raw', ' / kVA'), minAmount: kva * minR, maxAmount: kva * maxR 
         });
     }
 
     // DG Set: 30% of connected load as backup
     if (hasUtility(['DG Set'])) {
         const dgKva = kva * 0.3;
+        const minR = isUSD ? 350 : 6000;
+        const maxR = isUSD ? 900 : 10000;
         items.push({ 
             label: 'DG Set', amount: dgKva * u.dg_per_kva, unit: `${dgKva.toFixed(0)} kVA`,
-            rateRange: '₹6,000 - ₹10,000 / kVA', minAmount: dgKva * 6000, maxAmount: dgKva * 10000 
+            rateRange: formatRange(minR, maxR, 'Raw', ' / kVA'), minAmount: dgKva * minR, maxAmount: dgKva * maxR 
         });
     }
 
     // Fire Fighting
     if (hasUtility(['Fire Fighting', 'Fire'])) {
-        items.push({ 
-            label: 'Fire Fighting', amount: u.fire_fighting, unit: 'Fixed',
-            rateRange: '₹3.00 - ₹8.00 Cr', minAmount: 30000000, maxAmount: 80000000 
-        });
+        if (isUSD) {
+            // US: Unit rate per m² (GFA)
+            const minR = u.fire_fighting_min ?? 16;
+            const maxR = u.fire_fighting_max ?? 108;
+            items.push({ 
+                label: 'Fire Fighting', amount: input.totalGFA * (u.fire_fighting ?? 60), unit: `${input.totalGFA.toFixed(0)} sqm`,
+                rateRange: formatRange(minR, maxR, 'Raw', ' / sqm'), minAmount: input.totalGFA * minR, maxAmount: input.totalGFA * maxR 
+            });
+        } else {
+            // India: Fixed cost
+            const minA = u.fire_fighting_min ?? 30000000;
+            const maxA = u.fire_fighting_max ?? 80000000;
+            items.push({ 
+                label: 'Fire Fighting', amount: u.fire_fighting ?? 50000000, unit: 'Fixed',
+                rateRange: formatRange(minA, maxA, 'Cr'), minAmount: minA, maxAmount: maxA 
+            });
+        }
     }
 
-    // Lifts: estimate based on floors. If utilities array is present, only include if 'Lifts' or 'Core' is specifically generated.
+    // Lifts
     if (hasUtility(['Lifts', 'Core']) || (input.floors > 3 && !input.utilitiesPresent)) {
-        let numLifts = 0;
-        if (input.numLifts) {
-            numLifts = input.numLifts;
-        } else if (input.perBuildingBreakdown && input.perBuildingBreakdown.length > 0) {
-            numLifts = input.perBuildingBreakdown.reduce((acc, b) => {
-                const bFloors = b.floors || 1;
-                // Only tall buildings need lifts
-                return acc + (bFloors > 3 ? Math.max(2, Math.ceil(bFloors / 8) * 2) : 0);
-            }, 0);
-            
-            // Fallback if no buildings are >3 floors but the overall max was >3 (edge case)
-            if (numLifts === 0 && input.floors > 3) {
+        if (isUSD) {
+            // US: Lifts are priced per sqm of GFA
+            const minR = u.lifts_per_unit_min ?? 250;
+            const maxR = u.lifts_per_unit_max ?? 2000;
+            items.push({ 
+                label: 'Lifts', amount: input.totalGFA * (u.lifts_per_unit ?? 800), unit: `${input.totalGFA.toFixed(0)} sqm`,
+                rateRange: formatRange(minR, maxR, 'Raw', ' / sqm'), minAmount: input.totalGFA * minR, maxAmount: input.totalGFA * maxR 
+            });
+        } else {
+            // India: Lifts are priced per lift, estimate based on floors
+            let numLifts = 0;
+            if (input.numLifts) {
+                numLifts = input.numLifts;
+            } else if (input.perBuildingBreakdown && input.perBuildingBreakdown.length > 0) {
+                numLifts = input.perBuildingBreakdown.reduce((acc, b) => {
+                    const bFloors = b.floors || 1;
+                    return acc + (bFloors > 3 ? Math.max(2, Math.ceil(bFloors / 8) * 2) : 0);
+                }, 0);
+                if (numLifts === 0 && input.floors > 3) {
+                    numLifts = Math.max(2, Math.ceil(input.floors / 8) * 2);
+                }
+            } else {
                 numLifts = Math.max(2, Math.ceil(input.floors / 8) * 2);
             }
-        } else {
-            numLifts = Math.max(2, Math.ceil(input.floors / 8) * 2);
-        }
 
-        if (numLifts > 0) {
-            const minR = u.lifts_per_unit_min ?? 3000000;
-            const maxR = u.lifts_per_unit_max ?? 5000000;
-            items.push({ 
-                label: 'Lifts', amount: numLifts * (u.lifts_per_unit ?? 4500000), unit: `${numLifts} lifts`,
-                rateRange: formatRange(minR, maxR, 'L', ' / lift'), minAmount: numLifts * minR, maxAmount: numLifts * maxR 
-            });
+            if (numLifts > 0) {
+                const minR = u.lifts_per_unit_min ?? 3000000;
+                const maxR = u.lifts_per_unit_max ?? 5000000;
+                items.push({ 
+                    label: 'Lifts', amount: numLifts * (u.lifts_per_unit ?? 4500000), unit: `${numLifts} lifts`,
+                    rateRange: formatRange(minR, maxR, 'L', ' / lift'), minAmount: numLifts * minR, maxAmount: numLifts * maxR 
+                });
+            }
         }
     }
 
@@ -465,10 +533,10 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
         }
 
         if (solarKW > 0) {
-            const minR = u.solar_per_kw_min ?? 45000;
-            const maxR = u.solar_per_kw_max ?? 75000;
+            const minR = u.solar_per_kw_min ?? (isUSD ? 2500 : 45000);
+            const maxR = u.solar_per_kw_max ?? (isUSD ? 4500 : 75000);
             items.push({ 
-                label: 'Solar PV', amount: solarKW * (u.solar_per_kw ?? 52000), unit: `${solarKW.toFixed(0)} kW`,
+                label: 'Solar PV', amount: solarKW * (u.solar_per_kw ?? (isUSD ? 3500 : 52000)), unit: `${solarKW.toFixed(0)} kW`,
                 rateRange: formatRange(minR, maxR, 'Raw', ' / kW'), minAmount: solarKW * minR, maxAmount: solarKW * maxR 
             });
         }
@@ -494,10 +562,10 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
         }
 
         if (hvacTR > 0) {
-            const minR = u.hvac_per_tr_min ?? 80000;
-            const maxR = u.hvac_per_tr_max ?? 200000;
+            const minR = u.hvac_per_tr_min ?? (isUSD ? 2000 : 80000);
+            const maxR = u.hvac_per_tr_max ?? (isUSD ? 5500 : 200000);
             items.push({ 
-                label: 'HVAC', amount: hvacTR * (u.hvac_per_tr ?? 130000), unit: `${hvacTR.toFixed(0)} TR`,
+                label: 'HVAC', amount: hvacTR * (u.hvac_per_tr ?? (isUSD ? 3750 : 130000)), unit: `${hvacTR.toFixed(0)} TR`,
                 rateRange: formatRange(minR, maxR, 'Raw', ' / TR'), minAmount: hvacTR * minR, maxAmount: hvacTR * maxR 
             });
         }
@@ -507,10 +575,10 @@ function calculateUtilityCosts(input: UtilityInput): { items: UtilityCostBreakdo
     if (hasUtility(['OWC', 'Organic Waste', 'Waste'])) {
         const population = input.totalGFA / 15;
         const wasteKgPerDay = population * 0.3;
-        const minR = u.owc_per_kg_per_day_min ?? 2000;
-        const maxR = u.owc_per_kg_per_day_max ?? 10000;
+        const minR = u.owc_per_kg_per_day_min ?? (isUSD ? 40 : 2000);
+        const maxR = u.owc_per_kg_per_day_max ?? (isUSD ? 150 : 10000);
         items.push({ 
-            label: 'OWC', amount: wasteKgPerDay * (u.owc_per_kg_per_day ?? 6000), unit: `${wasteKgPerDay.toFixed(0)} kg/day`,
+            label: 'OWC', amount: wasteKgPerDay * (u.owc_per_kg_per_day ?? (isUSD ? 95 : 6000)), unit: `${wasteKgPerDay.toFixed(0)} kg/day`,
             rateRange: formatRange(minR, maxR, 'Raw', ' / kg/day'), minAmount: wasteKgPerDay * minR, maxAmount: wasteKgPerDay * maxR 
         });
     }

@@ -19,7 +19,8 @@ const CHART_COLORS = {
 
 const chartMargin = { top: 8, right: 8, bottom: 4, left: 8 };
 
-function fmtCr(v: number) { return `₹${(v / 10000000).toFixed(1)} Cr`; }
+function fmtCr(v: number, isUSD?: boolean) { return isUSD ? `$${(v / 1000000).toFixed(2)} M` : `₹${(v / 10000000).toFixed(1)} Cr`; }
+function fmtL(v: number, isUSD?: boolean) { return isUSD ? `$${(v / 1000000).toFixed(2)} M` : `₹${(v / 100000).toFixed(1)} L`; }
 function fmtMo(v: number) { return `${v.toFixed(1)} mo`; }
 
 // ─── HISTOGRAM ───────────────────────────────────────────────────────────────
@@ -152,9 +153,10 @@ interface SCurveBandProps {
     totalMonths: number;
     revenueTarget?: number;
     title: string;
+    isUSD?: boolean;
 }
 
-export function SimSCurveBand({ p10, p50, p90, totalMonths, revenueTarget, title }: SCurveBandProps) {
+export function SimSCurveBand({ p10, p50, p90, totalMonths, revenueTarget, title, isUSD }: SCurveBandProps) {
     const data = p50.map((_, i) => ({
         month: ((i + 1) / p50.length * totalMonths).toFixed(0),
         p10: p10[i] / 10000000,
@@ -180,7 +182,7 @@ export function SimSCurveBand({ p10, p50, p90, totalMonths, revenueTarget, title
                         contentStyle={{ background: '#1e1e2e', border: '1px solid #333', borderRadius: 8, fontSize: 12, color: '#e2e8f0' }}
                         itemStyle={{ color: '#e2e8f0' }}
                         wrapperStyle={{ zIndex: 100 }}
-                        formatter={(v: number) => [`₹${v.toFixed(1)} Cr`]}
+                        formatter={(v: number) => [isUSD ? `$${(v).toFixed(2)} M` : `₹${(v).toFixed(1)} Cr`]}
                     />
                     <Area type="monotone" dataKey="p90" stroke="transparent" fill="url(#bandGrad)" tooltipType="none" />
                     <Area type="monotone" dataKey="p10" stroke="#10b981" fill="transparent" strokeWidth={1} strokeDasharray="4 3" />
@@ -278,9 +280,10 @@ interface PhaseBreakdownProps {
     phases: ProjectPhase[];
     title: string;
     mode: 'cost' | 'time';
+    isUSD?: boolean;
 }
 
-export function PhaseBreakdownChart({ phases, title, mode }: PhaseBreakdownProps) {
+export function PhaseBreakdownChart({ phases, title, mode, isUSD }: PhaseBreakdownProps) {
     const phaseColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899'];
 
     return (
@@ -296,7 +299,7 @@ export function PhaseBreakdownChart({ phases, title, mode }: PhaseBreakdownProps
                                 <span className="text-muted-foreground truncate mr-2">{phase.name}</span>
                                 <span className="font-medium shrink-0">
                                     {mode === 'cost'
-                                        ? `₹${(phase.costAmount / 10000000).toFixed(1)} Cr`
+                                        ? fmtCr(phase.costAmount, isUSD)
                                         : `${phase.durationMonths.toFixed(1)} mo`}
                                 </span>
                             </div>
@@ -343,12 +346,13 @@ interface UtilityCostsProps {
     total: number;
     totalMin?: number;
     totalMax?: number;
+    isUSD?: boolean;
 }
 
-export function UtilityCostsTable({ items, total, totalMin, totalMax }: UtilityCostsProps) {
+export function UtilityCostsTable({ items, total, totalMin, totalMax, isUSD }: UtilityCostsProps) {
     const fmt = (v: number) => v >= 10000000 
-        ? `₹${(v / 10000000).toFixed(2)} Cr` 
-        : `₹${(v / 100000).toFixed(1)} L`;
+        ? fmtCr(v, isUSD) 
+        : fmtL(v, isUSD);
 
     return (
         <div className="rounded-lg border p-3 bg-secondary/10 border-border/30">
@@ -392,9 +396,9 @@ export function UtilityCostsTable({ items, total, totalMin, totalMax }: UtilityC
                 <div className="flex justify-between items-center text-xs pt-2 mt-1 border-t border-border/20 font-semibold">
                     <span>Total Utilities Estimate</span>
                     {totalMin && totalMax ? (
-                        <span className="text-amber-400 text-sm">₹{(totalMin / 10000000).toFixed(2)} Cr – ₹{(totalMax / 10000000).toFixed(2)} Cr</span>
+                        <span className="text-amber-400 text-sm">{fmtCr(totalMin, isUSD)} – {fmtCr(totalMax, isUSD)}</span>
                     ) : (
-                        <span className="text-amber-400 text-sm">₹{(total / 10000000).toFixed(2)} Cr</span>
+                        <span className="text-amber-400 text-sm">{fmtCr(total, isUSD)}</span>
                     )}
                 </div>
             </div>
@@ -443,9 +447,10 @@ interface DeliveryPhasesChartProps {
     title?: string;
     numPhases: number;
     onNumPhasesChange?: (n: number) => void;
+    isUSD?: boolean;
 }
 
-export function DeliveryPhasesChart({ phases, title = 'Project Delivery Phases', numPhases, onNumPhasesChange }: DeliveryPhasesChartProps) {
+export function DeliveryPhasesChart({ phases, title = 'Project Delivery Phases', numPhases, onNumPhasesChange, isUSD }: DeliveryPhasesChartProps) {
     if (!phases || phases.length === 0) return null;
 
     const maxMonth = Math.max(...phases.map(p => p.endMonth), 1);
@@ -588,8 +593,8 @@ export function DeliveryPhasesChart({ phases, title = 'Project Delivery Phases',
                         </div>
                         <div className="text-xs font-bold text-foreground">
                             {phase.totalCost >= 10000000
-                                ? `₹${(phase.totalCost / 10000000).toFixed(1)} Cr`
-                                : `₹${(phase.totalCost / 100000).toFixed(1)} L`}
+                                ? fmtCr(phase.totalCost, isUSD)
+                                : fmtL(phase.totalCost, isUSD)}
                         </div>
                         <div className="text-xs text-muted-foreground">
                             {phase.durationMonths.toFixed(1)} months
@@ -696,6 +701,7 @@ interface BoxPlotProps {
         services: number[];
     };
     title?: string;
+    isUSD?: boolean;
 }
 
 function computeBoxStats(arr: number[]) {
@@ -708,7 +714,7 @@ function computeBoxStats(arr: number[]) {
     return { min, q1, median, q3, max };
 }
 
-export function SimBoxPlot({ data, title = 'Cost Component Variability' }: BoxPlotProps) {
+export function SimBoxPlot({ data, title = 'Cost Component Variability', isUSD }: BoxPlotProps) {
     const components = [
         { label: 'Earthwork', color: '#f59e0b', stats: computeBoxStats(data.earthwork) },
         { label: 'Structure', color: '#3b82f6', stats: computeBoxStats(data.structure) },
@@ -730,7 +736,7 @@ export function SimBoxPlot({ data, title = 'Cost Component Variability' }: BoxPl
                             <div className="w-24 text-[11px] font-medium text-right shrink-0">{c.label}</div>
                             <div
                                 className="flex-1 relative h-6"
-                                title={`${c.label} Breakdown:\n• P95 (Worst Case): ${fmtCr(max)}\n• Q3 (75th Percentile): ${fmtCr(q3)}\n• Median: ${fmtCr(median)}\n• Q1 (25th Percentile): ${fmtCr(q1)}\n• P5 (Best Case): ${fmtCr(min)}`}
+                                title={`${c.label} Breakdown:\n• P95 (Worst Case): ${fmtCr(max, isUSD)}\n• Q3 (75th Percentile): ${fmtCr(q3, isUSD)}\n• Median: ${fmtCr(median, isUSD)}\n• Q1 (25th Percentile): ${fmtCr(q1, isUSD)}\n• P5 (Best Case): ${fmtCr(min, isUSD)}`}
                             >
                                 {/* Whisker line (min to max) */}
                                 <div
@@ -763,7 +769,7 @@ export function SimBoxPlot({ data, title = 'Cost Component Variability' }: BoxPl
                                 />
                             </div>
                             <div className="w-20 text-[10px] text-muted-foreground shrink-0">
-                                {fmtCr(median)}
+                                {fmtCr(median, isUSD)}
                             </div>
                         </div>
                     );
@@ -786,9 +792,10 @@ interface ScatterCostTimeProps {
     costData: number[];
     timeData: number[];
     title?: string;
+    isUSD?: boolean;
 }
 
-export function SimScatterCostTime({ costData, timeData, title = 'Cost vs Duration (Correlation)' }: ScatterCostTimeProps) {
+export function SimScatterCostTime({ costData, timeData, title = 'Cost vs Duration (Correlation)', isUSD }: ScatterCostTimeProps) {
     // Sample down to max 500 points for performance
     const maxPoints = 500;
     const step = Math.max(1, Math.floor(costData.length / maxPoints));

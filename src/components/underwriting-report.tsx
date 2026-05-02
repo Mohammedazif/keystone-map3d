@@ -11,11 +11,7 @@ interface UnderwritingReportProps {
     generationParams?: AlgoParams;
 }
 
-/* ── tiny helpers ─────────────────────────────────────────── */
-const fmt = (n: number | undefined | null, d = 0) =>
-    n != null ? n.toLocaleString('en-IN', { maximumFractionDigits: d }) : '—';
-const crore = (n: number) => `₹ ${(n / 10000000).toFixed(2)} Cr`;
-const lakh  = (n: number) => `₹ ${(n / 100000).toFixed(1)} L`;
+/* ── tiny helpers (moved inside component for currency awareness) ── */
 const pct   = (n: number) => `${n.toFixed(1)}%`;
 
 const PageBreak = () => <div className="page-break" style={{ breakAfter: 'page' }} />;
@@ -40,6 +36,21 @@ const Check = () => <span className="text-green-700 font-bold">✓ Compliant</sp
 
 /* ══════════════ MAIN COMPONENT ══════════════ */
 export function UnderwritingReport({ project, plot, metrics, estimates, generationParams }: UnderwritingReportProps) {
+    // ── Currency localization ──
+    const isUSD = project.market === 'USA' || project.countryCode === 'US' || (estimates as any)?.currency === 'USD';
+    const curr = isUSD ? '$' : '₹';
+    const cr = isUSD ? 'M' : 'Cr';
+    const unitLabel = isUSD ? 'Millions' : 'Crores';
+
+    const fmt = (n: number | undefined | null, d = 0) =>
+      n != null ? n.toLocaleString(isUSD ? 'en-US' : 'en-IN', { maximumFractionDigits: d }) : '—';
+    const crore = (n: number) => isUSD
+      ? `$ ${(n / 1000000).toFixed(2)} M`
+      : `₹ ${(n / 10000000).toFixed(2)} Cr`;
+    const lakh = (n: number) => isUSD
+      ? `$ ${(n / 1000).toFixed(1)} K`
+      : `₹ ${(n / 100000).toFixed(1)} L`;
+
     const stats = plot.developmentStats;
     let units = stats?.units?.breakdown || {};
     let totalUnits = stats?.units?.total || 0;
@@ -89,11 +100,17 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
     const stampDuty = landCost * 0.065;
     const landTotal = landCost + stampDuty; // 6.5% stamp duty already includes 0.5% legal fee
     
-    // Site Dev (align with dashboard)
-    const sitePlotArea = plot.area || stats.totalPlotArea || 0;
-    const roadMin = 50 * Math.max(0, sitePlotArea) * 0.15 * 0.8;
-    const parkingMin = 1500 * Math.max(0, sitePlotArea) * 0.1 * 0.8;
-    const boundaryMin = 3000 * Math.sqrt(Math.max(0, sitePlotArea)) * 4 * 0.8;
+    // Site Dev (align with dashboard KPI tab logic)
+    const uwSc = (estimates as any)?.site_costs || {};
+    const uwRmin = uwSc.road_cost_per_sqm_min || (isUSD ? 150 : 5000);
+    const uwPmin = uwSc.parking_cost_per_sqm_min || (isUSD ? 150 : 5000);
+    const uwBmin = uwSc.boundary_cost_per_m_min || (isUSD ? 100 : 9000);
+    const uwRoadArea = metrics?.roadArea || 0;
+    const uwParkingArea = (plot.parkingAreas || []).reduce((s: number, pa: any) => s + (pa.area || 0), 0);
+    const uwPerimeter = Math.round(Math.sqrt(Math.max(0, plot.area || 0)) * 4);
+    const roadMin = Math.round(uwRmin * uwRoadArea);
+    const parkingMin = Math.round(uwPmin * uwParkingArea);
+    const boundaryMin = Math.round(uwBmin * uwPerimeter);
     const siteDev = roadMin + parkingMin + boundaryMin;
 
     // Use simulated P50 if available, else fallback
@@ -659,10 +676,10 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 <table className="w-full border-collapse mb-2"><thead><tr><TH>Segment</TH><TH>Supply</TH><TH>Absorption Rate</TH><TH>Price Range</TH></tr></thead>
                     <tbody>
                         {([
-                            ['Luxury (>₹2 Cr)', '15,000 units', '2,500 units/year', '₹15,000-25,000/sq.ft'],
-                            ['Premium (₹1-2 Cr)', '25,000 units', '4,500 units/year', '₹12,000-18,000/sq.ft'],
-                            ['Mid-segment (₹50L-1Cr)', '35,000 units', '7,000 units/year', '₹8,000-12,000/sq.ft'],
-                            ['Affordable (<₹50L)', '20,000 units', '5,000 units/year', '₹4,000-7,000/sq.ft'],
+                            [`Luxury (>${curr}2 ${cr})`, '15,000 units', '2,500 units/year', '{curr}15,000-25,000/sq.ft'],
+                            [`Premium (${curr}1-2 ${cr})`, '25,000 units', '4,500 units/year', '{curr}12,000-18,000/sq.ft'],
+                            [`Mid-segment (${curr}50L-1${cr})`, '35,000 units', '7,000 units/year', '{curr}8,000-12,000/sq.ft'],
+                            [`Affordable (<${curr}50L)`, '20,000 units', '5,000 units/year', '{curr}4,000-7,000/sq.ft'],
                         ] as [string, string, string, string][]).map(([seg, sup, abs, pr], i) => (
                             <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}>
                                 <TD className="font-semibold whitespace-nowrap">{seg}</TD><TD>{sup}</TD><TD>{abs}</TD><TD>{pr}</TD>
@@ -671,7 +688,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     </tbody>
                 </table>
                 <p className="text-[9px] mb-3 italic">
-                    <strong>Subject Project Classification:</strong> Premium segment (estimated unit price {avgUnitPrice > 0 ? crore(avgUnitPrice) : 'Pending'} based on {pricePerSqft > 0 ? `₹${fmt(pricePerSqft)}/sq.ft` : 'Pending'})
+                    <strong>Subject Project Classification:</strong> Premium segment (estimated unit price {avgUnitPrice > 0 ? crore(avgUnitPrice) : 'Pending'} based on {pricePerSqft > 0 ? `${curr}${fmt(pricePerSqft)}/sq.ft` : 'Pending'})
                 </p>
 
                 <h4 className="text-[10px] font-bold mt-2 mb-1">Competitive Analysis (Similar Projects within 3-5 km radius)</h4>
@@ -683,38 +700,38 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                     <TD className="font-semibold">{comp.name}</TD>
                                     <TD>—</TD>
                                     <TD>Mixed</TD>
-                                    <TD>₹{fmt(comp.sellingPricePerSqm / 10.764)}</TD>
+                                    <TD>{curr}{fmt(comp.sellingPricePerSqm / 10.764)}</TD>
                                     <TD>{comp.absorptionRate}</TD>
                                 </tr>
                             ))
                         ) : (
                             [1, 2, 3].map((i) => (
                                 <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}>
-                                    <TDP>[Competitor {i}]</TDP><TDP>[Builder]</TDP><TDP>[2/3 BHK]</TDP><TDP>[₹XX,XXX]</TDP><TDP>[XX% sold]</TDP>
+                                    <TDP>[Competitor {i}]</TDP><TDP>[Builder]</TDP><TDP>[2/3 BHK]</TDP><TDP>[{curr}XX,XXX]</TDP><TDP>[XX% sold]</TDP>
                                 </tr>
                             ))
                         )}
                     </tbody>
                 </table>
                 <p className="text-[9px] mb-3 leading-tight">
-                    <strong>Competitive Positioning:</strong> Subject project pricing {pricePerSqft > 0 ? `at ₹${fmt(pricePerSqft)}/sq.ft` : ''} is competitive. All-{Object.keys(units)[0] || '3BHK'} configuration targets specific buyer segment. Expected sales velocity: 3-4 units per month.
+                    <strong>Competitive Positioning:</strong> Subject project pricing {pricePerSqft > 0 ? `at ${curr}${fmt(pricePerSqft)}/sq.ft` : ''} is competitive. All-{Object.keys(units)[0] || '3BHK'} configuration targets specific buyer segment. Expected sales velocity: 3-4 units per month.
                 </p>
 
                 <SH2 className="!mt-2">4.4 Price Trend Analysis</SH2>
                 <table className="w-full border-collapse mb-2"><thead><tr><TH>Year</TH><TH>Average Price/sq.ft</TH><TH>YoY Growth</TH><TH>Market Sentiment</TH></tr></thead>
                     <tbody>
                         {([
-                            ['2023', '₹ 12,300', '+9.8%', 'Strong growth'],
-                            ['2024', '₹ 13,200', '+7.3%', 'Sustained demand'],
-                            ['2025', '₹ 13,800', '+4.5%', 'Moderate growth'],
-                            ['2026 (Projected)', '₹ 14,400', '+4.3%', 'Stable appreciation'],
+                            ['2023', `${curr} 12,300`, '+9.8%', 'Strong growth'],
+                            ['2024', `${curr} 13,200`, '+7.3%', 'Sustained demand'],
+                            ['2025', `${curr} 13,800`, '+4.5%', 'Moderate growth'],
+                            ['2026 (Projected)', `${curr} 14,400`, '+4.3%', 'Stable appreciation'],
                         ] as [string, string, string, string][]).map(([yr, pr, gr, snt], i) => (
                             <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}><TD className="font-semibold">{yr}</TD><TD>{pr}</TD><TD className="text-green-700 font-bold">{gr}</TD><TD>{snt}</TD></tr>
                         ))}
                     </tbody>
                 </table>
                 <p className="text-[9px] mb-3 leading-tight">
-                    <strong>Price Appreciation Assumptions:</strong> Conservative estimate of 4-5% annual appreciation. Project completion exit price estimated at ~₹16,000-16,500/sq.ft, providing a cushion for sales during the construction phase.
+                    <strong>Price Appreciation Assumptions:</strong> Conservative estimate of 4-5% annual appreciation. Project completion exit price estimated at ~{curr}16,000-16,500/sq.ft, providing a cushion for sales during the construction phase.
                 </p>
 
                 <SH2>4.5 Target Customer Profile</SH2>
@@ -723,7 +740,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                         <strong className="block mb-1 text-slate-800">Working Professionals (45%)</strong>
                         <ul className="list-disc pl-4 space-y-0.5 text-slate-600">
                             <li>Age: 30-45 years, dual-income households</li>
-                            <li>Income: ₹20-40 lakhs per annum</li>
+                            <li>Income: {curr}20-40 lakhs per annum</li>
                             <li>Employment: IT, BFSI, MNCs</li>
                         </ul>
                     </div>
@@ -731,7 +748,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                         <strong className="block mb-1 text-slate-800">Business Owners/Entrepreneurs (25%)</strong>
                         <ul className="list-disc pl-4 space-y-0.5 text-slate-600">
                             <li>Age: 35-50 years, self-employed</li>
-                            <li>Income: ₹30-60 lakhs per annum</li>
+                            <li>Income: {curr}30-60 lakhs per annum</li>
                             <li>Seeking investment + own use</li>
                         </ul>
                     </div>
@@ -765,7 +782,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 </div>
 
                 <SH2>4.6 Absorption &amp; Sales Projection</SH2>
-                <table className="w-full border-collapse mb-1"><thead><tr><TH>Year</TH><TH>Units Sold</TH><TH>Cumulative %</TH><TH>Revenue (₹ Cr)</TH><TH>Phase</TH></tr></thead>
+                <table className="w-full border-collapse mb-1"><thead><tr><TH>Year</TH><TH>Units Sold</TH><TH>Cumulative %</TH><TH>Revenue ({curr} {cr})</TH><TH>Phase</TH></tr></thead>
                     <tbody>
                         {(() => {
                             const pre = Math.round(totalUnits * 0.31);
@@ -794,7 +811,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     </tbody>
                 </table>
                 <p className="text-[9px] mb-3 leading-tight">
-                    <strong>Revenue Waterfall Analysis:</strong> Gross Revenue: ₹{(totalRev / 10000000).toFixed(2)} Cr. Less GST @ 5% (if applicable): ₹{(totalRev * 0.05 / 10000000).toFixed(2)} Cr. Net Project Revenue: ₹{(totalRev * 0.95 / 10000000).toFixed(2)} Cr (excluding GST). Minimum 31% pre-sales required before loan disbursement.
+                    <strong>Revenue Waterfall Analysis:</strong> Gross Revenue: {curr}{isUSD ? (totalRev / 1000000).toFixed(2) : (totalRev / 10000000).toFixed(2)} {cr}. Less GST @ 5% (if applicable): {curr}{isUSD ? (totalRev * 0.05 / 1000000).toFixed(2) : (totalRev * 0.05 / 10000000).toFixed(2)} {cr}. Net Project Revenue: {curr}{isUSD ? (totalRev * 0.95 / 1000000).toFixed(2) : (totalRev * 0.95 / 10000000).toFixed(2)} {cr} (excluding GST). Minimum 31% pre-sales required before loan disbursement.
                 </p>
             </div>
             <PageBreak />
@@ -806,7 +823,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 {cb ? (
                     <>
                         <p className="text-[10px] font-bold mb-1">Detailed Cost Structure</p>
-                        <table className="w-full border-collapse mb-3"><thead><tr><TH>Cost Component</TH><TH>Amount (₹ Cr)</TH><TH>% of Total</TH><TH>Basis/Assumptions</TH></tr></thead>
+                        <table className="w-full border-collapse mb-3"><thead><tr><TH>Cost Component</TH><TH>Amount ({curr} {cr})</TH><TH>% of Total</TH><TH>Basis/Assumptions</TH></tr></thead>
                             <tbody>
                                 {([
                                     ['1. LAND ACQUISITION', '', '', ''],
@@ -815,7 +832,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                     ['Sub-total: Land', landTotal, '', ''],
 
                                     ['2. CONSTRUCTION COSTS', '', '', ''],
-                                    ['Civil & structural work', cb.structure, '', `₹${fmt(cb.structure / sqftArea)}/sq.ft × ${fmt(sqftArea)} sq.ft`],
+                                    ['Civil & structural work', cb.structure, '', `${curr}${fmt(cb.structure / sqftArea)}/sq.ft × ${fmt(sqftArea)} sq.ft`],
                                     ['Finishing & interiors', cb.finishing, '', 'Premium specifications'],
                                     ['MEP / Services', cb.services, '', 'Elevators, fire safety, electrical'],
                                     ['External dev & landscaping', cb.earthwork * 0.2, '', 'Common areas, driveways'],
@@ -905,7 +922,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                 <thead>
                                     <tr>
                                         <TH>Source</TH>
-                                        <TH>Amount (₹ Lakhs)</TH>
+                                        <TH>Amount ({curr} {isUSD ? 'K' : 'Lakhs'})</TH>
                                         <TH>% of Total</TH>
                                         <TH>Terms &amp; Conditions</TH>
                                     </tr>
@@ -949,7 +966,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                 <thead>
                                     <tr>
                                         <TH>Application</TH>
-                                        <TH>Amount (₹ Lakhs)</TH>
+                                        <TH>Amount ({curr} {isUSD ? 'K' : 'Lakhs'})</TH>
                                         <TH>% of Total</TH>
                                         <TH>Funding Source</TH>
                                     </tr>
@@ -981,7 +998,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     <tbody>
                         {([
                             ['Total saleable area', `${fmt(totalCarpet)} sq.m (${fmt(sqftArea)} sq.ft)`],
-                            ['Blended realization', `₹${fmt(pricePerSqft)} per sq.ft`],
+                            ['Blended realization', `${curr}${fmt(pricePerSqft)} per sq.ft`],
                             ['Gross revenue', crore(totalRev)],
                             ['GST @ 5%', crore(totalRev * 0.05) + ' (collected from buyers)'],
                             ['Net realizable revenue', crore(totalRev * 0.95)]
@@ -1000,17 +1017,17 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                             ['Stress', pricePerSqft * 0.8, totalRev * 0.8, '-20.0%', 'Project unviable', 'text-red-600'],
                         ] as [string, number, number, string, string, string][]).map(([scen, p, rev, chg, imp, col], i) => (
                             <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}>
-                                <TD className="font-semibold">{scen}</TD><TD>₹{fmt(p)}</TD><TD>{crore(rev)}</TD><TD>{chg}</TD><TD className={col}>{imp}</TD>
+                                <TD className="font-semibold">{scen}</TD><TD>{curr}{fmt(p)}</TD><TD>{crore(rev)}</TD><TD>{chg}</TD><TD className={col}>{imp}</TD>
                             </tr>
                         ))}
                     </tbody>
                 </table>
                 <div className="bg-slate-50 border border-slate-200 p-2 rounded mb-3 mt-1 text-[9px]">
-                    <strong>Break-even Analysis:</strong> Minimum price required to cover all active costs: <strong>₹{fmt(trueGrandTotal / Math.max(1, sqftArea))} / sq.ft</strong>. Safety margin at base case pricing: <strong>{pct((totalRev - trueGrandTotal) / totalRev * 100)}</strong>.
+                    <strong>Break-even Analysis:</strong> Minimum price required to cover all active costs: <strong>{curr}{fmt(trueGrandTotal / Math.max(1, sqftArea))} / sq.ft</strong>. Safety margin at base case pricing: <strong>{pct((totalRev - trueGrandTotal) / totalRev * 100)}</strong>.
                 </div>
 
                 <SH2 className="!mt-2">5.4 Profitability Analysis (Base Case)</SH2>
-                <table className="w-full border-collapse mb-2"><thead><tr><TH>Financial Metric</TH><TH>Amount (₹ Cr)</TH><TH>Calculation</TH></tr></thead>
+                <table className="w-full border-collapse mb-2"><thead><tr><TH>Financial Metric</TH><TH>Amount ({curr} {cr})</TH><TH>Calculation</TH></tr></thead>
                     <tbody>
                         {(() => {
                             const trueProfit = totalRev - trueGrandTotal;
@@ -1178,7 +1195,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
 
                 <SH2>5.7 Break-Even Analysis</SH2>
                 {(() => {
-                    const L = (n: number) => `₹${(n / 100000).toFixed(2)} lakhs`;
+                    const L = (n: number) => `${curr}${(n / 100000).toFixed(2)} lakhs`;
 
                     // Fixed costs = land + professional fees + approvals + marketing + overhead
                     const fixedCosts = totalCost * (0.2044 + 0.0297 + 0.0069 + 0.0519 + 0.0093);
@@ -1729,11 +1746,11 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 <table className="w-full border-collapse mb-1 text-[9px]"><thead><tr><TH>RERA Requirement</TH><TH>Compliance</TH><TH>Penalty for Non-Compliance</TH></tr></thead>
                     <tbody>
                         {[
-                            ['Project Registration', '[Pending]', 'Cannot advertise/sell; ₹10% project cost fine'],
+                            ['Project Registration', '[Pending]', 'Cannot advertise/sell; {curr}10% project cost fine'],
                             ['Separate Escrow Account', '[Not Created]', '3-year imprisonment + fine'],
                             ['70% Fund Usage Restriction', '[N/A until reg]', 'Refund to buyers + interest + penalty'],
-                            ['Quarterly Progress Updates', '[N/A]', '₹25,000/day penalty'],
-                            ['Timeline Adherence', '[N/A]', 'Delay penalty: ₹5% of unit cost as interest'],
+                            ['Quarterly Progress Updates', '[N/A]', '{curr}25,000/day penalty'],
+                            ['Timeline Adherence', '[N/A]', 'Delay penalty: {curr}5% of unit cost as interest'],
                             ['Structural Defects Warranty', '[N/A]', '5-year warranty mandatory'],
                         ].map((r, i) => (
                             <tr key={`rera-${i}`} className={i % 2 === 0 ? 'bg-slate-50' : ''}>
@@ -1823,7 +1840,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     <tbody>
                         <tr className="bg-slate-50"><TD className="font-semibold">Carpet Area Definition</TD><TD>Must be as per RERA (net usable); Loading factor disclosed; No hidden super built-up charges</TD></tr>
                         <tr><TD className="font-semibold">Payment Schedule</TD><TD>Linked to milestones; Not front-loaded; Favorable to project cash flow</TD></tr>
-                        <tr className="bg-slate-50"><TD className="font-semibold">Possession Timeline</TD><TD>Clear deadline + max 6mo grace; Delay penalty ~₹5-10/sq.ft/mo; Force majeure defined</TD></tr>
+                        <tr className="bg-slate-50"><TD className="font-semibold">Possession Timeline</TD><TD>Clear deadline + max 6mo grace; Delay penalty ~{curr}5-10/sq.ft/mo; Force majeure defined</TD></tr>
                         <tr><TD className="font-semibold">Cancellation &amp; Refund</TD><TD>Right to cancel before 2-3 stages; Refund w/in 45 days; Deduction max 10% or actual cost</TD></tr>
                         <tr className="bg-slate-50"><TD className="font-semibold">Specifications</TD><TD>Detailed specs annexed; Change only w/ buyer consent; Alternative of equal value if changed</TD></tr>
                     </tbody>
@@ -1936,7 +1953,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 <SH2 className="!mt-1">8.1 Primary Security Package</SH2>
                 <p className="font-bold text-[10px] mb-1">A. Land &amp; Building Mortgage</p>
                 {(() => {
-                    // Land value: prefer actual cost from form, else estimate from plot area at ₹60k/sqm
+                    // Land value: prefer actual cost from form, else estimate from plot area at {curr}60k/sqm
                     const landCostFromForm = (uw.actualLandPurchaseCost || 0) * 1.065; // includes 6.5% stamp/legal
                     const landValRaw  = landCostFromForm > 0 ? landCostFromForm : plotArea * 60000;
                     const buildValRaw = totalRev > 0 ? totalRev : totalCost * 1.3;
@@ -2118,9 +2135,9 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                 </tr></thead>
                     <tbody>
                         {[
-                            ['Promoter/Director 1', 'Personal', 'Min ₹10 Cr', 'ITR, bank statements', 'Guarantee deed, asset list'],
-                            ['Promoter/Director 2', 'Personal', 'Min ₹10 Cr', 'ITR, bank statements', 'Guarantee deed, asset list'],
-                            ['Holding Company', 'Corporate', 'Min ₹20 Cr', 'Audited financials', 'Board resolution, guarantee deed'],
+                            ['Promoter/Director 1', 'Personal', `Min ${curr}10 ${cr}`, 'ITR, bank statements', 'Guarantee deed, asset list'],
+                            ['Promoter/Director 2', 'Personal', `Min ${curr}10 ${cr}`, 'ITR, bank statements', 'Guarantee deed, asset list'],
+                            ['Holding Company', 'Corporate', `Min ${curr}20 ${cr}`, 'Audited financials', 'Board resolution, guarantee deed'],
                         ].map((r, i) => (
                             <tr key={i} className={i % 2 === 0 ? 'bg-slate-50' : ''}>
                                 <TD className="font-semibold">{r[0]}</TD><TD>{r[1]}</TD><TD>{r[2]}</TD><TD>{r[3]}</TD><TD>{r[4]}</TD>
@@ -2368,7 +2385,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     // Use the top-level pricePerSqft (carpet-area based) — no need to recompute with wrong GFA denominator
                     // Min threshold: break-even realization = trueGrandTotal / saleable sqft + 20% margin
                     const minViableRate = sqftArea > 0 ? Math.round((trueGrandTotal / sqftArea) * 1.20) : 12000;
-                    const minRateLabel = `Min ₹${Math.round(minViableRate / 100) * 100 >= 10000 ? (minViableRate / 1000).toFixed(1) + 'k' : fmt(minViableRate)}/sq.ft`;
+                    const minRateLabel = `Min ${curr}${Math.round(minViableRate / 100) * 100 >= 10000 ? (minViableRate / 1000).toFixed(1) + 'k' : fmt(minViableRate)}/sq.ft`;
 
                     const subjectBadge = `${use} Project ← (This Project)`;
 
@@ -2419,8 +2436,8 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                                                 ["Promoter's Equity", `30% = ${crore(totalCost * 0.30)}`, `${crore(equityAmount)} (${equityPct.toFixed(1)}%)`, equityPct >= 30],
                                                 ['Pre-Sales', `30% = ${crore(totalRev * 0.30)}`, `${crore(totalRev * 0.31)} projected (31%)`, true],
                                                 ['LTV on Land', 'Max 70%', '[Depends on valuation]', null],
-                                                ['Construction Cost', '<₹4,000/sq.ft', costPerSqft > 0 ? `₹${fmt(costPerSqft)}/sq.ft` : '—', costPerSqft < 4000 || costPerSqft === 0],
-                                                ['Sales Realization', minRateLabel, pricePerSqft > 0 ? `₹${fmt(pricePerSqft)}/sq.ft` : '—', pricePerSqft >= minViableRate || pricePerSqft === 0],
+                                                ['Construction Cost', `<${curr}4,000/sq.ft`, costPerSqft > 0 ? `${curr}${fmt(costPerSqft)}/sq.ft` : '—', costPerSqft < 4000 || costPerSqft === 0],
+                                                ['Sales Realization', minRateLabel, pricePerSqft > 0 ? `${curr}${fmt(pricePerSqft)}/sq.ft` : '—', pricePerSqft >= minViableRate || pricePerSqft === 0],
                                                 ['Gross Margin', 'Min 20%', pct(grossMargin), grossMargin >= 20],
                                                 ['Project IRR', 'Min 18%', '28-32% (est.)', true],
                                                 ['Professional Team', 'Architect, Engineer, PMC', '[TBD]', null],
@@ -2528,16 +2545,16 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                     <div className="font-mono text-[8px] bg-slate-100 border border-slate-300 p-2 rounded relative">
                         <div className="absolute top-0 right-0 bg-slate-300 text-slate-700 font-sans px-1 text-[6px] uppercase tracking-wider">Format Sample</div>
                         FUNDS UTILIZATION CERTIFICATE<br /><br />
-                        Loan Disbursed: ₹_____ L<br />
+                        Loan Disbursed: {curr}_____ {isUSD ? "K" : "L"}<br />
                         Period: [Month/Year]<br />
                         -----------------------------------------------<br />
                         Head        | Budget   | Utilized | Balance<br />
-                        Land Cost   | ₹1,340 L | ₹____ L  | ₹____ L<br />
-                        Civil Work  | ₹2,400 L | ₹____ L  | ₹____ L<br />
-                        Finishing   | ₹640 L   | ₹____ L  | ₹____ L<br />
-                        Marketing   | ₹340 L   | ₹____ L  | ₹____ L<br />
+                        Land Cost   | {curr}1,340 {isUSD ? "K" : "L"} | {curr}____ {isUSD ? "K" : "L"}  | {curr}____ {isUSD ? "K" : "L"}<br />
+                        Civil Work  | {curr}2,400 {isUSD ? "K" : "L"} | {curr}____ {isUSD ? "K" : "L"}  | {curr}____ {isUSD ? "K" : "L"}<br />
+                        Finishing   | {curr}640 {isUSD ? "K" : "L"}   | {curr}____ {isUSD ? "K" : "L"}  | {curr}____ {isUSD ? "K" : "L"}<br />
+                        Marketing   | {curr}340 {isUSD ? "K" : "L"}   | {curr}____ {isUSD ? "K" : "L"}  | {curr}____ {isUSD ? "K" : "L"}<br />
                         -----------------------------------------------<br />
-                        TOTAL       | ₹6,556 L | ₹____ L  | ₹____ L<br />
+                        TOTAL       | {curr}6,556 {isUSD ? "K" : "L"} | {curr}____ {isUSD ? "K" : "L"}  | {curr}____ {isUSD ? "K" : "L"}<br />
                     </div>
                 </div>
 
@@ -2678,7 +2695,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                             <li><strong>Strong Margins:</strong> {pct(grossMargin)} gross margin provides cushion for market fluctuations</li>
                             <li><strong>Location Advantage:</strong> {loc} market has demonstrated resilience</li>
                             <li><strong>Manageable Size:</strong> {totalUnits}-unit project is executable with proper management</li>
-                            <li><strong>Pricing Competitive:</strong> ₹{fmt(avgUnitPrice/100000)}L avg unit price is market-aligned with upside potential</li>
+                            <li><strong>Pricing Competitive:</strong> {curr}{fmt(avgUnitPrice/100000)}L avg unit price is market-aligned with upside potential</li>
                             <li><strong>Pre-sales Target Achievable:</strong> {Math.round(preSalesReq*100)}% pre-sales realistic for this segment</li>
                             <li><strong>Financial Viability:</strong> Project IRR demonstrates strong returns</li>
                         </ul>
@@ -2848,7 +2865,7 @@ export function UnderwritingReport({ project, plot, metrics, estimates, generati
                             <li><strong>Processing:</strong> 1.00% ({crore(loanAmount*0.01)})</li>
                             <li><strong>Commitment:</strong> 0.50% p.a. on undisbursed</li>
                             <li><strong>Penal Int:</strong> 2% p.a. over normal</li>
-                            <li><strong>Audit/Insp:</strong> ₹25k / qtr | ₹10k / mo</li>
+                            <li><strong>Audit/Insp:</strong> {curr}25k / qtr | {curr}10k / mo</li>
                         </ul>
                     </div>
                 </div>
@@ -3293,15 +3310,15 @@ Overall Progress         |           |          |          |
 
 B. FINANCIAL PROGRESS
 Head                     | Budget     | Spent     | Balance   | %Utilized
-Land                     | ₹1,340 L   |           |           |
-Construction             | ₹3,640 L   |           |           |
-Professional Fees        | ₹195 L     |           |           |
-Marketing                | ₹340 L     |           |           |
-Others                   | ₹1,041 L   |           |           |
-Total                    | ₹6,556 L   |           |           |
+Land                     | {curr}1,340 {isUSD ? "K" : "L"}   |           |           |
+Construction             | {curr}3,640 {isUSD ? "K" : "L"}   |           |           |
+Professional Fees        | {curr}195 {isUSD ? "K" : "L"}     |           |           |
+Marketing                | {curr}340 {isUSD ? "K" : "L"}     |           |           |
+Others                   | {curr}1,041 {isUSD ? "K" : "L"}   |           |           |
+Total                    | {curr}6,556 {isUSD ? "K" : "L"}   |           |           |
 
 C. SALES PROGRESS
-Period           | Target Units | Actual Units | Value (₹ Cr) | Cumulative %
+Period           | Target Units | Actual Units | Value ({curr} {cr}) | Cumulative %
 This Month       |              |              |              |
 Cumulative       |              |              |              |
 
@@ -3337,7 +3354,7 @@ Regulatory Covenants:
 □ RERA quarterly report filed on [Date]
 □ All approvals valid and current
 □ Insurance policies active
-□ No litigation exceeding ₹50 lakhs unreported
+□ No litigation exceeding {curr}50 lakhs unreported
 
 Negative Covenants:
 □ No new projects launched without bank consent

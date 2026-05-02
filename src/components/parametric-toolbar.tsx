@@ -163,7 +163,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
 
     const [shuffleUnits, setShuffleUnits] = useState(false);
     const [exactTypologyAllocation, setExactTypologyAllocation] = useState(true); // DEFAULT ON
-    const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('floor');
+    const [allocationMode, setAllocationMode] = useState<'floor' | 'plot'>('plot');
     const [commercialShape, setCommercialShape] = useState<'large-footprint' | 'block'>('block');
     const [selectedUtilities, setSelectedUtilities] = useState<string[]>(['Roads', 'Water', 'Electrical', 'HVAC', 'STP', 'WTP', 'Solar PV', 'EV Charging']);
 
@@ -859,27 +859,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             </Badge>
                                         </div>
 
-                                        {/* Allocation Mode Toggle */}
-                                        <div className="grid grid-cols-2 gap-1 bg-muted/30 p-1 rounded-md">
-                                            <button
-                                                onClick={() => setAllocationMode('floor')}
-                                                className={cn(
-                                                    "text-[10px] py-1 rounded-sm transition-all",
-                                                    allocationMode === 'floor' ? "bg-background shadow-sm text-primary font-medium" : "text-muted-foreground hover:text-foreground"
-                                                )}
-                                            >
-                                                Floor-wise (Vertical)
-                                            </button>
-                                            <button
-                                                onClick={() => setAllocationMode('plot')}
-                                                className={cn(
-                                                    "text-[10px] py-1 rounded-sm transition-all",
-                                                    allocationMode === 'plot' ? "bg-background shadow-sm text-primary font-medium" : "text-muted-foreground hover:text-foreground"
-                                                )}
-                                            >
-                                                Plot-wise (Horizontal)
-                                            </button>
-                                        </div>
+                                        {/* Commercial always uses Plot-wise allocation */}
 
                                         {/* Retail / Office Sliders */}
                                         <div className="space-y-3 pl-1">
@@ -1324,7 +1304,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                     })()}
 
                                     {/* Width Range */}
-                                    <div className="space-y-1">
+                                    {/* <div className="space-y-1">
                                         <div className="flex justify-between text-[10px]">
                                             <span className="text-muted-foreground">Arm Width</span>
                                             <span className={cn(buildingWidthRange[0] < 10 || buildingWidthRange[1] > 40 ? "text-destructive font-bold" : "")}>{buildingWidthRange[0]}m – {buildingWidthRange[1]}m</span>
@@ -1338,10 +1318,10 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                             onValueChange={(val) => setBuildingWidthRange(val as [number, number])}
                                             className="[&_.relative]:h-1.5 [&_.absolute]:bg-primary/20 [&_span]:h-3 [&_span]:w-3"
                                         />
-                                    </div>
+                                    </div> */}
 
                                     {/* Length (Arm Depth) Range */}
-                                    <div className="space-y-1">
+                                    {/* <div className="space-y-1">
                                         {(() => {
                                             const estH = floorRange[1] * floorHeight;
                                             const hSb = getHeightBasedSetback(estH);
@@ -1382,7 +1362,7 @@ export function ParametricToolbar({ embedded = false }: { embedded?: boolean }) 
                                                 </>
                                             );
                                         })()}
-                                    </div>
+                                    </div> */}
                                 </div>
                             )}
 
